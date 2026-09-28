@@ -673,8 +673,11 @@ bun scripts/e2e-retirement-admission.mjs --stream
 ```
 
 With a two-slot pending budget and a long retirement quarantine, seed two real
-sessions, switch profiles through HTTP, sweep GC and require a fresh request and
-its follow-up to answer correctly. Supported SDK history inspection verifies both
+sessions, switch profiles through HTTP, drop the old mappings, sweep GC and
+require a fresh request and its follow-up to answer correctly. The switch itself
+deliberately retains session mappings (`6ecfbaa7`): their keys are already
+profile-scoped, so the gate unpins them explicitly rather than assuming the
+switch did, which is what cache eviction and a proxy restart do in production. Supported SDK history inspection verifies both
 old histories remain unchanged and the new mapping contains the expected token.
 Both profile aliases use the existing authentication; this does not validate two
 distinct billing accounts. Meridian state and SDK working directory are isolated.
@@ -682,6 +685,28 @@ The one-slot configuration retains its existing behavior; reserving its only slo
 would disable passive cleanup. At limit two, passive retirement can pause while a
 publication is in flight, then resume after it completes. Capacity and cleanup
 progress are covered by the lifecycle tests.
+
+### Concurrent retirement admission (#1174)
+
+```bash
+bun scripts/e2e-retirement-concurrent-admission.mjs
+bun scripts/e2e-retirement-concurrent-admission.mjs --stream
+```
+
+The gate above is sequential and cannot reach the refusal this one covers: a turn
+holds its prepared publication slot across its whole SDK call, so the backlog only
+saturates when later turns arrive while an earlier one is still in the model. With
+a three-slot budget and a long quarantine, seed three real sessions, drop their
+mappings so the sweep parks two genuinely unpinned transcripts at the passive
+bound, then issue three concurrent real turns.
+
+Require zero refusals, each turn's own token in its own transcript and no other
+turn's token in it, one durable mapping per session, a pending count never above
+the budget, every parked transcript still tracked after the sweep, correct
+follow-up answers on each session and unchanged seeded histories. A refusal is
+reported with its response body rather than thrown, so the `overloaded_error`
+backlog message is recorded as evidence. Run both modes after any change to
+retirement admission or the pending budget.
 
 ### Fresh replay with completed tool calls (#888 / #858)
 
