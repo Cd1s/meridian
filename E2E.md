@@ -6731,6 +6731,23 @@ This validates macOS text and client tool use, not Windows/Linux runtime behavio
 Model ID, capability and pricing source:
 https://platform.claude.com/docs/en/models/opus-5-5/overview .
 
+## Sonnet 5.5 model availability
+
+Run `npm run build && node scripts/e2e-sonnet-55.mjs` with Claude Max
+authentication and Pi installed. This opt-in gate uses isolated proxy and client
+workdirs, config and session storage, and consumes subscription quota. It checks
+model discovery, explicit `claude-sonnet-5-5` and bare `sonnet` nonstreaming requests,
+then actual Pi streaming read/write tools against a random receipt with an exact
+file-content assertion.
+
+Verified 2026-09-28 on macOS arm64, Node 22.22.3, Agent SDK 0.2.141,
+bundled Claude Code 2.1.284 and Pi 0.72.1. All checks passed.
+Artifacts: passed `meridian-sonnet55-W87dtT` under the host temporary directory,
+containing report, HTTP response artifacts, and `pi.log`.
+This validates macOS text and client tool use, not Windows/Linux runtime behavior.
+Model ID, capability and pricing source:
+https://platform.claude.com/docs/en/models/sonnet-5-5/overview .
+
 ## Scrub plugin headless acceptance
 
 These opt-in harnesses preserve the actual client paths used for the 2026-09-24
