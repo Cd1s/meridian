@@ -6815,3 +6815,113 @@ disk 1,400-resource / 800-pin / 24-registration test in
 The [sanitized #1152 Linux evidence](docs/maintenance/evidence/1152-opencode-admission.json)
 records the matching baseline, six-client pass, disk contention and four E41
 results without publishing credentials or raw transcripts.
+
+## Desktop Dock preference and account sign-in UX (2026-09-29)
+
+Baseline: `446a0f163` / Meridian Desktop 1.78.0 on macOS arm64. The released
+app had no Dock visibility preference; sign-in prepended a panel without moving
+the viewport, cancellation surfaced as failure, and completion removed the
+panel without a persistent result.
+
+The local `1.78.0-local.1` app was built with Electron 44.3.0, signed with the
+owner's Developer ID, signature-verified, and installed in Applications. It is
+not a notarized/public release. The original signed 1.78.0 app was retained as a
+local backup. No service package or credential format changed.
+
+Reproduce the native Dock gate (no model calls or credentials required):
+
+```sh
+npm ci --prefix apps/desktop
+npm run build --prefix apps/desktop
+env -u ELECTRON_RUN_AS_NODE apps/desktop/node_modules/.bin/electron scripts/e2e-desktop-dock.cjs
+env -u ELECTRON_RUN_AS_NODE E2E_HIDE_DOCK=0 apps/desktop/node_modules/.bin/electron scripts/e2e-desktop-dock.cjs
+```
+
+Both modes passed: native `app.dock.isVisible()` matches saved settings,
+dashboard and tray panel load, background launch keeps windows hidden,
+activation/second launch reopen the dashboard without changing Dock visibility,
+and closing the dashboard keeps the application alive. The harness uses
+disposable preferences and never starts a managed service.
+
+Actual packaged-app UI checks: enabled Hide Dock icon, retained Open at login,
+enabled managed-service autostart, relaunched, and observed the existing managed
+1.78.0 service healthy. The real installed 1.78.0 CLI prepared a Claude sign-in
+link for an existing account. The final two-step panel is visible immediately
+above account controls; its code field is masked. Cancelling produced the
+persistent neutral cancellation state and restored the account sign-in actions.
+Before/after native screenshots were inspected in the working session; they
+are not public artifacts. No authorization code or OAuth URL was exported.
+
+`desktop-manager.test.ts` passes all 16 tests, including real fixture-child
+link preparation, premature/duplicate-code rejection, persistent success,
+failure/retry, cancellation/retry, and Dock preference persistence. Full
+`npm test`, root typecheck/build, and desktop typecheck/build passed. Focused
+manager checks and desktop build were repeated after review corrections.
+
+Adversarial review found and corrected the off-screen sign-in panel, focus
+blocking asynchronous completion feedback, duplicate code submission, cancellation
+being treated as failure, and a potential repeated Dock-show retry on failure.
+Default Dock behavior and non-macOS presentation remain unchanged. The preference
+is applied only after the tray exists, and delayed hide handles Electron's
+one-second native hide limitation. External services retain ownership; their
+account actions only copy validated CLI commands.
+
+Remaining acceptance evidence: complete a successful browser OAuth sign-in in
+the final app with the intended account, then verify identity/usage refresh.
+Success/failure completion is covered by real fixture subprocesses, not a claim
+of live OAuth completion. The PR remains draft pending that check. No model call
+is implicated by this desktop-only change, and no release was published.
+
+
+### Menu-bar readability follow-up (2026-09-29)
+
+The user's screenshot of `1.78.0-local.1` showed a clipped account name/action
+and horizontal scrolling because organization, plan and allowance badges all
+refused to shrink in the same flex row. The follow-up separates account identity,
+metadata and organization; primary limits remain side by side and secondary
+limits use an accessible disclosure. Activity numbers use equal visual weight
+and compact formatting, with exact counts in tooltips. Service controls remain
+outside the account scroll area. Colors come from the desktop theme tokens.
+
+A signed `1.78.0-local.2` app was installed and signature-verified on macOS arm64.
+Actual native screenshots confirmed both real accounts, organization lines,
+active/switch controls, primary limits, reset text, footer and service controls
+fit without horizontal or vertical scrolling in the default 420px panel. Opening
+additional limits leaves only the account list scrollable. Inspection caught and
+corrected nested outer/list scrollbars before the final local install. Native
+expand/collapse and service health checks passed; the selected account was not
+changed during live verification. Model calls are not implicated by this layout.
+
+Reproduce the overflow checks without credentials:
+
+```sh
+npm run build --prefix apps/desktop
+node scripts/preview-desktop-tray.mjs
+# Open http://127.0.0.1:4319/review (420 × 640 iframe).
+# In the review page console:
+# document.querySelector('iframe').contentWindow.assertTrayLayout()
+```
+
+The fixture uses the actual bundled tray renderer/styles and synthetic account
+metadata. Checks passed in dark/light appearances, with long organization/name
+strings, large counts, cached data, followed accounts, expanded limits and a
+420 × 400 viewport. Assertions detect horizontal overflow, identity/action
+overlap, clipped outer controls, and unnecessary default two-account scrolling.
+The extra-limit disclosure stayed open through refresh, and simulated switching
+updated the active account. Native macOS verification supplements these browser
+layout checks; it does not replace them with a different client's UI.
+
+The fixture and documented assertions are durable evidence. Screenshots were
+visually inspected in the session and kept free of OAuth URLs/codes; no public
+media upload or release was performed. Focused organization/follow rendering
+tests and desktop build passed; full validation results are recorded in the PR.
+
+### Release acceptance confirmation (2026-09-29)
+
+The owner confirmed successful account sign-in and subsequent identity/usage
+refresh in the updated installed desktop app. This is owner-observed live OAuth
+evidence, supplementing the agent-observed preparation/cancellation and native
+layout checks above; it closes the previously recorded OAuth acceptance gate.
+Final implementation `d244cc45` passed all required CI, including `test`, both
+desktop builds, Windows smoke and Docker smoke. Release publication is authorized
+by the owner and is tracked separately from local installation.

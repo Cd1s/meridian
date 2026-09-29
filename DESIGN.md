@@ -221,10 +221,15 @@ missing or stale quota data never looks like unused capacity.
 Menu-bar accounts use compact rows with side-by-side quota bars, so multiple
 accounts and their switch controls remain visible together. The active account
 shows its next reset; each limit retains full reset detail in its tooltip and
-accessible name. Account lists scroll only when they exceed the available space.
+accessible name. Account lists scroll only when they exceed the available space. Each account
+reserves a separate line for its name and action; plan/allowance and organization
+are secondary text, never a row of non-shrinking badges. The 5-hour and weekly
+limits are primary; model-specific limits live in a disclosure that stays open
+through refresh. Service controls stay outside the scrolling account list.
 
 The macOS menu-bar icon uses a transparent monochrome Meridian template, tinted
-by the system. The Dock retains the full-color app icon. Committed 18-point
+by the system. The Dock retains the full-color app icon unless the macOS **Hide Dock icon**
+preference is enabled; the menu-bar icon and dashboard remain available. Committed 18-point
 assets include 1x, 2x and 3x representations; regenerate them with
 `swift scripts/render-tray-icon.swift`.
 
