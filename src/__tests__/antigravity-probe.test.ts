@@ -156,20 +156,44 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
       expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
     } finally { await runtime.close() }
   })
-  it('reuses only successful account checks within the opt-in TTL', async () => {
-    const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable, accountCheckTtlMs: 300 })
+  it('reuses only successful account checks within the opt-in TTL and refreshes stale ones in the background', async () => {
+    const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable, accountCheckTtlMs: 200 })
     Object.assign(runtime.childEnv, f.env)
     const configCalls = () => f.calls().filter(call => call.args[1] === '/config').length
+    const until = async (done: () => boolean) => { for (let i = 0; i < 200 && !done(); i++) await new Promise(resolve => setTimeout(resolve, 25)) }
     try {
       await runtime.verifyAccount()
       await runtime.verifyAccount()
       expect(configCalls()).toBe(1)
-      await new Promise(resolve => setTimeout(resolve, 350))
+      await new Promise(resolve => setTimeout(resolve, 250))
       runtime.childEnv.AG_PROBE_MODE = 'paid'
+      await runtime.verifyAccount()
+      await until(() => configCalls() === 2 && !(runtime as any).verifying)
       await expect(runtime.verifyAccount()).rejects.toThrow()
       runtime.childEnv.AG_PROBE_MODE = 'success'
       await runtime.verifyAccount()
-      expect(configCalls()).toBe(3)
+      expect(configCalls()).toBe(4)
+      await new Promise(resolve => setTimeout(resolve, 1250))
+      const pending = runtime.verifyAccount()
+      expect(configCalls()).toBe(4)
+      await pending
+      expect(configCalls()).toBe(5)
+    } finally { await runtime.close() }
+  })
+  it('serves a stale model catalogue while one background discovery refreshes it', async () => {
+    const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable, accountCheckTtlMs: 60_000 })
+    Object.assign(runtime.childEnv, f.env)
+    const modelCalls = () => f.calls().filter(call => call.args[0] === 'models').length
+    try {
+      expect(await runtime.availableModels()).toEqual(['gemini-test'])
+      ;(runtime as any).checkedAt -= 61_000
+      expect(await runtime.availableModels()).toEqual(['gemini-test'])
+      await (runtime as any).checking
+      expect(modelCalls()).toBe(2)
+      ;(runtime as any).checkedAt -= 7 * 60_000
+      ;(runtime as any).models = []
+      expect(await runtime.availableModels()).toEqual(['gemini-test'])
+      expect(modelCalls()).toBe(3)
     } finally { await runtime.close() }
   })
   it('rejects account check TTLs outside 0..600000 ms', () => {

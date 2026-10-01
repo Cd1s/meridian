@@ -530,7 +530,13 @@ export class AntigravityRuntime {
     const retryAfter = Math.ceil((this.accountRetryAt - Date.now()) / 1000)
     if (retryAfter > 0) throw new AntigravityError(`Antigravity account checks are cooling down after a CLI failure; retry in ${retryAfter} seconds. No model request was sent.`, 503, "api_error", retryAfter)
     // Fork patch: each check cold-starts agy (~5s through a proxy); only successes are reused.
-    if (this.accountCheckTtlMs && Date.now() - this.accountVerifiedAt < this.accountCheckTtlMs) return
+    // Past the TTL a recent success keeps serving while one background check refreshes it; a failed refresh clears it.
+    const age = Date.now() - this.accountVerifiedAt
+    if (this.accountCheckTtlMs && age < this.accountCheckTtlMs) return
+    if (this.accountCheckTtlMs && age < this.accountCheckTtlMs * 6) { this.refreshAccount().catch(() => {}); return }
+    return this.refreshAccount()
+  }
+  private refreshAccount(): Promise<void> {
     this.verifying ??= this.verifyAccountOnce()
       .then(() => { this.accountVerifiedAt = Date.now() }, error => { this.accountVerifiedAt = 0; return this.probeFailed(error) })
       .finally(() => { this.verifying = undefined })
@@ -556,14 +562,20 @@ export class AntigravityRuntime {
     if (settings.modelProvider || settings.useG1Credits || settings.gcp) throw new Error("Antigravity requires default account authentication with paid overage credits disabled; configure agy first")
   }
   async availableModels(): Promise<string[]> {
-    if (Date.now() - this.checkedAt < 60_000) return this.models
+    const ttl = Math.max(60_000, this.accountCheckTtlMs), age = Date.now() - this.checkedAt
+    if (age < ttl) return this.models
+    // Fork patch: with an account check TTL, a stale catalogue is served while one background discovery refreshes it.
+    if (this.accountCheckTtlMs && age < ttl * 6) { this.refreshModels().catch(() => {}); return this.models }
+    return this.refreshModels()
+  }
+  private refreshModels(): Promise<string[]> {
     this.checking ??= (async () => {
       await this.verifyAccount()
       const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal }).catch(error => this.probeFailed(error))
       const models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
       if (!models.length) throw new Error("No account models available; sign in using agy")
       this.models = models; this.checkedAt = Date.now(); return models
-    })().finally(() => { this.checking = undefined })
+    })().catch(error => { this.checkedAt = 0; throw error }).finally(() => { this.checking = undefined })
     return this.checking
   }
   async initialize(): Promise<void> {
