@@ -72,7 +72,7 @@ describe("shared site header", () => {
       return profileBarCss.slice(start, profileBarCss.indexOf("}", start))
     }
 
-    const updateRule = rule(".mh-build.update")
+    const updateRule = rule(".mh-update")
     expect(updateRule).toContain("var(--accent, #58a6ff)")
     expect(updateRule).not.toContain("--accent2")
 
@@ -90,7 +90,7 @@ describe("shared site header", () => {
 
     // Pieces without a safe URL render as spans, never as href-less anchors.
     expect(profileBarJs).toContain("document.createElement(part.href ? 'a' : 'span')")
-    expect(profileBarJs).toContain("removeAttribute('href')")
+    expect(profileBarHtml).toContain('id="mhUpdate"')
   })
 
   test("drift is polled only for local builds, never overlapping, and bypasses the cache", () => {

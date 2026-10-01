@@ -205,7 +205,7 @@ src/
 │   ├── buildLock.ts           ← Local builder owner claims and dead-owner recovery
 │   ├── buildObserver.ts       ← Single-flight bounded disk observation cache
 │   ├── buildObservationWorker.ts ← Off-thread source/artifact observation
-│   ├── updateCheck.ts         ← Cached npm registry lookup for the newest published version
+│   ├── updateCheck.ts         ← Opt-in cached npm registry lookup for the newest published version
 │   ├── tools.ts               ← Tool blocking lists, MCP server name, allowed tools
 │   ├── messages.ts            ← Content normalization, message parsing
 │   ├── replay.ts              ← Pure rendering of assistant calls and tool results for SDK replay

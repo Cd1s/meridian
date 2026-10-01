@@ -859,6 +859,44 @@ that the title parses and the client copies a random fixture value through its
 tool loop. It does not mock client or model responses or exercise the terminal
 UI. Both fixtures isolate Meridian state and work only in temporary directories.
 
+### Update check consent
+
+The registry check behind `build.latest` and the header's **update available**
+badge is off until `checkForUpdates` is set. A loopback stand-in registry that
+counts requests proves "off" as zero rather than as silence:
+
+```bash
+BASE=/tmp/meridian-e2e-update; rm -rf $BASE; mkdir -p $BASE
+cat > $BASE/registry.mjs <<'EOF'
+let hits = 0
+Bun.serve({ port: 3472, hostname: "127.0.0.1", fetch(req) {
+  if (new URL(req.url).pathname === "/_hits") return Response.json({ hits })
+  hits++
+  return Response.json({ latest: "1.99.0" })
+} })
+EOF
+bun $BASE/registry.mjs &
+MERIDIAN_PORT=3471 MERIDIAN_CONFIG_DIR=$BASE/config MERIDIAN_SESSION_DIR=$BASE/sessions \
+MERIDIAN_TELEMETRY_DB=$BASE/telemetry.db MERIDIAN_UPDATE_CHECK_PATH=$BASE/update-check.json \
+MERIDIAN_UPDATE_CHECK_URL=http://127.0.0.1:3472/dist-tags MERIDIAN_CREDENTIALS_READONLY=1 \
+  node dist/cli.js > $BASE/proxy.log 2>&1 &
+until curl -sf http://127.0.0.1:3471/health >/dev/null; do sleep 1; done
+S=http://127.0.0.1:3471/settings/api/updates
+curl -s http://127.0.0.1:3472/_hits    # {"hits":0}
+curl -s -X PUT -H 'Content-Type: application/json' -d '{"checkForUpdates":true}' $S
+curl -s http://127.0.0.1:3472/_hits    # {"hits":1}
+curl -s -X PUT -H 'Content-Type: application/json' -d '{"checkForUpdates":false}' $S
+```
+
+**Pass criteria:**
+- No registry request from start until the check is switched on; `$BASE/update-check.json` does not exist.
+- Switching on returns `build.latest: "1.99.0"` and `updateAvailable: true` for a 1.x checkout, and writes `"checkForUpdates": true` to `$BASE/config/settings.json`.
+- Switching off returns no `build.latest`, and `/health` drops it too.
+- In a browser at 375 and 1280 px, the header reads Operational, then the
+  version (`v1.77.1 local` for a checkout), then a blue **update available**
+  link to the releases page. Clearing the Updates toggle on `/settings` hides
+  the link and leaves the version.
+
 ## Test Index
 
 | ID | Section | What It Proves | Verified |

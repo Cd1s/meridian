@@ -131,16 +131,13 @@ export const profileBarCss = `
   .meridian-header .mh-build {
     display: none; align-items: center; gap: 6px;
     font-size: 11px; font-weight: 500; white-space: nowrap;
-    padding: 3px 10px; border-radius: 20px; text-decoration: none;
-    transition: background 0.15s;
+    padding: 3px 10px; border-radius: 20px;
+    color: var(--muted, #8b949e);
+    background: var(--surface, #161b22);
+    border: 1px solid var(--border, #30363d);
+    cursor: default;
   }
   .meridian-header .mh-build.visible { display: inline-flex; }
-  .meridian-header .mh-build.update {
-    color: var(--accent, #58a6ff);
-    background: rgba(88,166,255,0.12);
-    border: 1px solid rgba(88,166,255,0.35);
-  }
-  .meridian-header .mh-build.update:hover { background: rgba(88,166,255,0.18); }
   /* Local/dev build identity: a violet meta pill whose branch and commit
      pieces become blue links only when the backend supplied a safe URL.
      Drift sits beside it as its own chip, because it is refreshed from a
@@ -179,6 +176,17 @@ export const profileBarCss = `
     background: rgba(210,153,34,0.12);
     border-color: rgba(210,153,34,0.35);
   }
+  .meridian-header .mh-update {
+    display: none; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 500; white-space: nowrap;
+    padding: 3px 10px; border-radius: 20px; text-decoration: none;
+    color: var(--accent, #58a6ff);
+    background: rgba(88,166,255,0.12);
+    border: 1px solid rgba(88,166,255,0.35);
+    transition: background 0.15s;
+  }
+  .meridian-header .mh-update.visible { display: inline-flex; }
+  .meridian-header .mh-update:hover { background: rgba(88,166,255,0.18); }
   .meridian-header .mh-profile.following { border-color: var(--accent2, #bc8cff); }
   .meridian-header .mh-profile .mh-profile-follow {
     color: var(--accent2, #bc8cff); font-size: 10px;
@@ -221,11 +229,12 @@ export const profileBarHtml = `
     <a href="/plugins" id="nav-plugins">Plugins</a>
   </nav>
   <div class="mh-right">
-    <a class="mh-build" id="mhBuild" target="_blank" rel="noopener"></a>
     <span class="mh-prov" id="mhProv" role="group"></span>
     <span class="mh-drift" id="mhDrift" role="status" hidden></span>
     <a class="mh-profile" id="mhProfile" href="/" title="Active profile — switch from the home page"></a>
     <span class="mh-status" id="mhStatus"><span class="mh-dot" id="mhDot"></span><span class="mh-status-text" id="mhStatusText"></span></span>
+    <span class="mh-build" id="mhBuild"></span>
+    <a class="mh-update" id="mhUpdate" href="https://github.com/rynfar/meridian/releases" target="_blank" rel="noopener"></a>
   </div>
 </header>
 `
@@ -234,6 +243,7 @@ export const profileBarJs = `
 (function() {
   var profileChip = document.getElementById('mhProfile');
   var buildChip = document.getElementById('mhBuild');
+  var updateChip = document.getElementById('mhUpdate');
   var statusDot = document.getElementById('mhDot');
   var statusText = document.getElementById('mhStatusText');
 
@@ -261,14 +271,18 @@ export const profileBarJs = `
   // yanks a link out from under the pointer or keyboard focus.
   function renderBuild(build) {
     var view = buildIdentityView(build);
-    if (view.mode === 'update') {
-      buildChip.textContent = view.text;
-      buildChip.href = view.href;
-      buildChip.title = view.title;
-      buildChip.className = 'mh-build update visible';
+    var known = build && build.version && build.version !== 'unknown';
+    buildChip.textContent = known ? 'v' + build.version : '';
+    buildChip.title = known ? 'Running Meridian ' + build.version : '';
+    // Local provenance already includes release/package version and run identity.
+    buildChip.className = known && build.source === 'npm' ? 'mh-build visible' : 'mh-build';
+    if (build && build.updateAvailable && build.latest) {
+      updateChip.textContent = 'update available';
+      updateChip.title = build.latest + ' is published, running ' + build.version + ' — ' +
+        (build.source === 'npm' ? 'update with:\\nnpm install -g @rynfar/meridian@latest' : 'pull and rebuild this checkout');
+      updateChip.className = 'mh-update visible';
     } else {
-      buildChip.removeAttribute('href');
-      buildChip.className = 'mh-build';
+      updateChip.className = 'mh-update';
     }
     var key = JSON.stringify(view);
     if (key !== provKey) {

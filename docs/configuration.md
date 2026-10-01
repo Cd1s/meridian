@@ -61,7 +61,7 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_BETA_POLICY` | — | `allow-safe` | Client `anthropic-beta` header handling: `allow-safe`, `strip-all`, or `allow-all` |
 | `MERIDIAN_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` | — | canonical ids | Pin the model id the SDK resolves for each tier alias (e.g. `MERIDIAN_DEFAULT_OPUS_MODEL`) |
 | `MERIDIAN_SESSION_DIR` | `CLAUDE_PROXY_SESSION_DIR` | `~/.cache/meridian` | Directory for the persisted session store |
-| `MERIDIAN_NO_UPDATE_CHECK` | — | unset | Set to `1` to disable the once-a-day npm registry lookup that fills in `build.latest` on `/health`. No outbound request is made at all when set. See [Build provenance](#build-provenance-and-staying-current). |
+| `MERIDIAN_NO_UPDATE_CHECK` | — | unset | Set to `1` to force the update check off even when the `checkForUpdates` setting is on. No outbound request is made at all when set. See [Build provenance](#build-provenance-and-staying-current). |
 | `MERIDIAN_UPDATE_CHECK_URL` | — | npm dist-tags | Registry endpoint for the update check. Point it at a mirror on restricted networks; it must return `{"latest":"<version>"}`. |
 | `MERIDIAN_UPDATE_CHECK_PATH` | — | `~/.cache/meridian/update-check.json` | Where the update check caches its result. |
 | `MERIDIAN_BUILD_SOURCE` | — | *(derived from the install path)* | Overrides the `build.source` reported by `/health`: `npm`, `local`, or `dev`. Normally set by [`bin/meridian-launchd.sh`](#running-as-a-service-without-drift), not by hand. |
@@ -152,7 +152,7 @@ second instance pointed at an empty directory starts genuinely empty:
 
 | File | Holds |
 |---|---|
-| `settings.json` | Active profile, routing mode, priority order |
+| `settings.json` | Active profile, routing mode, priority order, `checkForUpdates` |
 | `profiles.json` | Configured profiles ([Multi-Profile Support](profiles.md)) |
 | `profiles/<id>/` | Per-profile `CLAUDE_CONFIG_DIR` (credentials, SDK state) |
 | `adapter-instances.json` | [Adapter instances](agents.md#adapter-instances) |
@@ -293,7 +293,8 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `POST /profiles/active` | Switch the active profile |
 | `GET /v1/usage/quota` | Usage windows for the active profile (JSON) |
 | `GET /v1/usage/quota/all` | Usage windows for every profile (JSON) |
-| `GET /settings` | SDK feature toggles + model pricing UI |
+| `GET /settings` | Routing, SDK feature toggles, model pricing, telemetry storage and update-check UI |
+| `GET/PUT /settings/api/updates` | Read or set `checkForUpdates` (JSON `{"checkForUpdates": true}`); takes effect on the running proxy |
 | `GET /plugins` | Plugin management page (`/plugins/list`, `POST /plugins/reload` for JSON/actions) |
 
 Illustrative health response excerpt (versions and status vary by installation):
@@ -368,7 +369,7 @@ indistinguishable from one serving the published version.
 | `latest` | Newest published version, from the cached registry check. Absent until the check resolves, and on the first run of a fresh install. |
 | `updateAvailable` | `latest` is strictly newer than `version`. Absent — not `false` — while `latest` is unknown, because "not checked" and "current" are different claims. |
 
-The site header keeps npm update behavior unchanged. Local builds show their
+The site header always shows the running npm version. Local builds show their
 release base, build number (or explicit source/unnumbered status), branch, short
 commit and dirty marker. Branch/commit links are blue; metadata is violet.
 
@@ -402,11 +403,23 @@ builds retain the existing local-build display and cannot claim disk freshness.
 Unavailable Git before certification falls back to an uncertified archive build;
 failed build gates never fall back or consume a successful-build number.
 
-**The update check** runs once a day, caches to
+**The update check is off by default.** Nothing contacts the registry until you
+turn it on, either in the **Updates** section of `/settings` or in
+`settings.json`:
+
+```json
+{ "checkForUpdates": true }
+```
+
+Once on, it asks the npm registry's `dist-tags` endpoint (the same source
+`npm install -g @rynfar/meridian@latest` resolves) once a day, caches to
 `~/.cache/meridian/update-check.json`, times out after 5s, and never touches
 the request path. If the registry is unreachable it keeps reporting the last
-version it saw rather than dropping the field. Set `MERIDIAN_NO_UPDATE_CHECK=1`
-to turn it off entirely.
+version it saw rather than dropping the field. Toggling it in the UI applies to
+the running proxy; switching it off also clears `build.latest`.
+`MERIDIAN_NO_UPDATE_CHECK=1` forces it off regardless of the setting, so a
+fleet can refuse the call in one place. The launcher script's own install-time
+check below is separate and has its own switch.
 
 ### Running as a service without drift
 

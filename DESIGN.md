@@ -129,7 +129,9 @@ Every HTML page is assembled the same way:
 
 **The header owns the brand.** It shows the mark + wordmark (links home),
 the site nav (Home · Telemetry · Profiles · Settings · Plugins), the
-active-profile chip, and the live health pill. Consequences:
+active-profile chip, the live health pill, the running version to its right,
+and — when the update check is on and a newer release exists — a blue
+update badge after that. Consequences:
 
 - Page `<h1>` is the *page name* (“Telemetry”, “Profiles”) — never
   “Meridian”, never a logo. Subtitle below it: 13–14px `--muted`.

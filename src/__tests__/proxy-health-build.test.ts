@@ -36,6 +36,7 @@ mock.module("../proxy/models", () => ({
 
 const { createProxyServer } = await import("../proxy/server")
 const { startUpdateCheck, stopUpdateCheck } = await import("../proxy/updateCheck")
+const { setSetting } = await import("../settings")
 
 interface HealthBuild {
   source?: string
@@ -64,6 +65,7 @@ afterEach(() => {
   for (const key of STAMPS) delete process.env[key]
   authCalls.length = 0
   stopUpdateCheck()
+  setSetting("checkForUpdates", undefined)
 })
 
 describe("/v1/models profile auth context", () => {
@@ -170,6 +172,7 @@ describe("/health build provenance", () => {
   })
 
   it("reports an available update once the check resolves", async () => {
+    setSetting("checkForUpdates", true)
     await startUpdateCheck({
       cachePath: `/tmp/meridian-health-build-${process.pid}.json`,
       fetchLatest: async () => "1.99.0",
