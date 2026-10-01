@@ -14,6 +14,7 @@ export const profilePageHtml = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Meridian — Profiles</title>
+<link rel="icon" type="image/svg+xml" href="/telemetry/icon.svg">
 <style>
   ${themeCss}
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -31,39 +32,51 @@ export const profilePageHtml = `<!DOCTYPE html>
     padding: 20px; margin-bottom: 12px; transition: border-color 0.2s;
   }
   .profile-card.active { border-color: var(--accent); }
-  .profile-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  /* The header row carries the reorder handle, the name, every badge the
+     card can earn - active, the type, out of a limit - and the actions. On a
+     phone they do not fit on one line, and a row that cannot wrap pushed the
+     actions past the card's edge and scrolled the whole page sideways. The
+     row wraps, a long name may break anywhere, and the actions stay
+     right-aligned, on their own line once nothing else fits beside them.
+     When everything fits on one line, as on a desktop, none of this changes
+     the layout. */
+  .profile-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; }
   ${reorderCss}
-  .profile-name { font-size: 16px; font-weight: 600; }
-  .profile-card-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .profile-name { font-size: 16px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .profile-card-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
   .icon-btn {
     background: var(--bg); color: var(--muted); border: 1px solid var(--border);
     border-radius: 4px; padding: 4px 6px; cursor: pointer; display: inline-flex;
-    align-items: center; transition: all 0.15s;
+    align-items: center; transition: all 0.15s; flex-shrink: 0;
   }
   .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
   .rename-input {
     background: var(--surface2); color: var(--text); border: 1px solid var(--accent);
     border-radius: 6px; padding: 4px 8px; font-size: 14px; font-weight: 600;
-    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; width: 200px;
+    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; width: 200px; max-width: 100%;
   }
   .rename-input:focus { outline: none; }
   .rename-hint { font-size: 11px; color: var(--muted); }
   .rename-error { font-size: 12px; color: var(--red); margin-bottom: 12px; }
   .profile-badge {
     font-size: 10px; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
-    letter-spacing: 0.5px; font-weight: 500;
+    letter-spacing: 0.5px; font-weight: 500; min-width: 0; overflow-wrap: anywhere;
   }
   .badge-active { background: rgba(88,166,255,0.15); color: var(--accent); }
   .badge-type { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
   .badge-spent { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.35); }
   .spent-note { margin: 10px 0; padding: 10px 14px; border-radius: 8px; font-size: 12px; line-height: 1.5;
-    background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.3); color: var(--text); }
+    background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.3); color: var(--text);
+    overflow-wrap: anywhere; }
   .spent-note .spent-why { color: var(--muted); }
+  /* minmax(0, 1fr), not 1fr: a bare fr track is at least as wide as its
+     longest unbreakable value, so an email address widened the grid past
+     the card instead of wrapping. */
   .profile-details {
-    display: grid; grid-template-columns: 120px 1fr; gap: 6px 16px; font-size: 13px;
+    display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 16px; font-size: 13px;
   }
   .detail-label { color: var(--muted); }
-  .detail-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px; }
+  .detail-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
   .cached-tag { color: var(--muted); font-size: 10px; font-style: italic; margin-left: 6px; white-space: nowrap; }
   .detail-unknown { color: var(--muted); font-style: italic; }
   .status-ok { color: var(--green); }
@@ -71,7 +84,7 @@ export const profilePageHtml = `<!DOCTYPE html>
   .switch-btn {
     margin-top: 12px; padding: 6px 16px; font-size: 12px; font-weight: 500;
     background: var(--bg); color: var(--accent); border: 1px solid var(--accent);
-    border-radius: 6px; cursor: pointer; transition: all 0.15s;
+    border-radius: 6px; cursor: pointer; transition: all 0.15s; max-width: 100%; overflow-wrap: anywhere;
   }
   .switch-btn:hover { background: rgba(88,166,255,0.1); }
   .switch-btn:disabled { opacity: 0.4; cursor: default; }
@@ -82,6 +95,7 @@ export const profilePageHtml = `<!DOCTYPE html>
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
   }
   .empty-state h2 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+  .empty-state code { max-width: 100%; overflow-wrap: anywhere; }
 
   .guide {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
@@ -105,6 +119,7 @@ export const profilePageHtml = `<!DOCTYPE html>
     font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px;
     background: var(--bg); padding: 4px 10px; border-radius: 4px; color: var(--accent2);
     cursor: pointer; border: 1px solid var(--border); transition: border-color 0.15s;
+    min-width: 0; overflow-wrap: anywhere;
   }
   .copy-btn {
     background: var(--bg); color: var(--muted); border: 1px solid var(--border);
@@ -118,12 +133,12 @@ export const profilePageHtml = `<!DOCTYPE html>
   .usage-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
   .usage-section-title {
     font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px;
-    margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+    margin-bottom: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   }
   .usage-as-of { font-size: 10px; color: var(--muted); text-transform: none; letter-spacing: 0; opacity: 0.7; }
   .usage-stale-note { font-size: 11px; color: var(--yellow); line-height: 1.4; margin: -2px 0 10px; }
   .usage-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
     gap: 8px;
   }
   .usage-card {
@@ -134,7 +149,7 @@ export const profilePageHtml = `<!DOCTYPE html>
     display: flex; justify-content: space-between; align-items: baseline;
     font-size: 11px; gap: 8px; margin-bottom: 6px;
   }
-  .usage-label { color: var(--muted); font-weight: 500; white-space: nowrap; }
+  .usage-label { color: var(--muted); font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
   .usage-pct { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-weight: 600; font-size: 12px; }
   .usage-bar {
     height: 4px; background: rgba(127,127,127,0.18); border-radius: 2px; overflow: hidden;
@@ -155,6 +170,14 @@ export const profilePageHtml = `<!DOCTYPE html>
   .usage-extra-row { display: flex; justify-content: space-between; gap: 8px; }
   .usage-empty {
     font-size: 11px; color: var(--muted); padding: 6px 0; font-style: italic;
+  }
+  /* A phone leaves a card about 230px inside: beside a 120px label column an
+     email would wrap every few characters, so each label sits above its
+     value instead. */
+  @media (max-width: 480px) {
+    .profile-details { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+    .detail-value { margin-bottom: 6px; }
+    .empty-state { padding: 32px 16px; }
   }
 ` + profileBarCss + `
 </style>

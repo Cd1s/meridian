@@ -497,6 +497,14 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(await page.text()).toContain('data-provider-card="antigravity"')
   })
 
+  it("serves the favicon its provider page links", async () => {
+    const { server } = fixture()
+    const response = await server.app.fetch(new Request("http://local/telemetry/icon.svg"))
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toBe("image/svg+xml")
+    expect(await response.text()).toContain("<svg")
+  })
+
   it("runs the generated policy and permits only declared client MCP calls", async () => {
     const { send } = fixture()
     const response = await send(initial("POLICY_PROBE"))

@@ -6947,3 +6947,13 @@ layout checks above; it closes the previously recorded OAuth acceptance gate.
 Final implementation `d244cc45` passed all required CI, including `test`, both
 desktop builds, Windows smoke and Docker smoke. Release publication is authorized
 by the owner and is tracked separately from local installation.
+
+### Mobile account layout and packaged favicon
+
+Use `scripts/e2e-mobile-layout.mjs` with `E2E_BASELINE_ROOT` pointing at unchanged
+main. Open its synthetic fixture URL in the collaborative browser and evaluate
+`scripts/e2e-mobile-layout-browser.js`. The real DOM matrix asserts baseline
+overflow, final page bounds, keyboard details, sort focus and rename at seven
+widths. No credentials or model calls are needed for static page layout.
+After building, `node scripts/e2e-packaged-favicon.mjs` verifies real HTTP asset
+resolution and all six page links through the bundled Node entrypoint.

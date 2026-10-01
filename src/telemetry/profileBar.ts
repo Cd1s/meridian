@@ -85,7 +85,7 @@ export const meridianLogoSvg = `<svg class="mh-logo" width="24" height="24" view
 export const profileBarCss = `
   .meridian-header {
     position: sticky; top: 0; z-index: 100;
-    display: flex; align-items: center; gap: 20px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px;
     padding: 10px 24px;
     background: rgba(13, 17, 23, 0.92);
     backdrop-filter: blur(12px);
@@ -162,7 +162,9 @@ export const profileBarCss = `
   .meridian-header .mh-dot.degraded { background: var(--yellow, #d29922); }
   .meridian-header .mh-dot.unhealthy { background: var(--red, #f85149); }
   @media (max-width: 720px) {
-    .meridian-header { gap: 10px; padding: 10px 16px; flex-wrap: wrap; }
+    .meridian-header { gap: 10px; padding: 10px 16px; }
+    .meridian-header .mh-right { flex-wrap: wrap; justify-content: flex-end; row-gap: 6px; min-width: 0; }
+    .meridian-header .mh-profile { min-width: 0; overflow-wrap: anywhere; }
     .meridian-header .mh-name { display: none; }
     .meridian-header .mh-nav { order: 3; flex-basis: 100%; min-width: 0; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
     .meridian-header .mh-nav a { flex-shrink: 0; }

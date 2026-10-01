@@ -20,6 +20,7 @@ export const landingHtml = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Meridian</title>
+<link rel="icon" type="image/svg+xml" href="/telemetry/icon.svg">
 <style>
   ${themeCss}
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -39,7 +40,9 @@ export const landingHtml = `<!DOCTYPE html>
   .intro-meta { font-size: 12px; color: var(--muted); margin-top: 8px; }
 
   /* Profile cards — the centerpiece: usage + cost per account, click to switch */
-  .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  /* min() lets a single column shrink below 300px: a phone at 320px has only
+     272px inside the container, and a fixed 300px track scrolled the page. */
+  .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; margin-bottom: 24px; }
   .profile-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     padding: 18px 20px; position: relative; transition: border-color 0.15s; }
   .profile-card.switchable { cursor: pointer; }
@@ -73,9 +76,19 @@ export const landingHtml = `<!DOCTYPE html>
   .spend-pill.needs-login { color: var(--red); background: rgba(248,81,73,0.12);
     border-color: rgba(248,81,73,0.35); }
   ${reorderCss}
-  .profile-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-  .profile-name { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px; }
-  .profile-name .prof-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+  /* The name row carries every badge the card can earn - Active, the plan
+     chip, pool position, exhausted/refused, needs login, spent - and on a
+     narrow card they do not fit beside the cost. The row wraps its badges
+     onto further lines and may break a long label (an email) anywhere; the
+     cost never shrinks, and once the name would get narrower than 12em the
+     cost moves to its own right-aligned line. Nothing is pushed past the
+     card's edge. When everything fits on one line, as on a desktop, none of
+     this changes the layout. */
+  .profile-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+    gap: 2px 8px; margin-bottom: 4px; }
+  .profile-name { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px;
+    flex: 1 1 12em; flex-wrap: wrap; row-gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+  .profile-name .prof-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 50%; background: var(--border); }
   .profile-card.active .prof-dot { background: var(--accent); box-shadow: 0 0 6px rgba(88,166,255,0.5); }
   .active-pill { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--accent); background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.35);
@@ -83,7 +96,7 @@ export const landingHtml = `<!DOCTYPE html>
   .switch-hint { font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--muted); opacity: 0; transition: opacity 0.15s; }
   .profile-card.switchable:hover .switch-hint { opacity: 1; }
-  .profile-cost { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+  .profile-cost { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); flex-shrink: 0; margin-left: auto; }
 
   /* Account details on hover. Drawn rather than a title attribute: the native
      tooltip cannot show a label/value list, and this one has to match the grid
@@ -101,7 +114,8 @@ export const landingHtml = `<!DOCTYPE html>
     border: 1px solid var(--border); border-radius: 10px;
     box-shadow: 0 8px 24px rgba(0,0,0,0.35);
     opacity: 0; visibility: hidden; transition: opacity 0.12s;
-    text-align: left; font-weight: 400; letter-spacing: 0; text-transform: none; cursor: default; }
+    text-align: left; font-weight: 400; letter-spacing: 0; text-transform: none; cursor: default;
+    overflow-wrap: normal; }
   .prof-info:hover .prof-pop, .prof-info:focus-within .prof-pop { opacity: 1; visibility: visible; }
   .prof-pop-type { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--accent2); margin-bottom: 8px; }
@@ -110,6 +124,14 @@ export const landingHtml = `<!DOCTYPE html>
   .prof-pop-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; word-break: break-word; }
   .prof-pop-value.status-ok { color: var(--green); }
   .prof-pop-value.status-err { color: var(--red); }
+  /* A hidden overlay still counts toward the page's scroll width, and one
+     hung off the icon at 256px or more reaches past a phone's right edge.
+     On a narrow screen it spans the card's header row instead. */
+  @media (max-width: 720px) {
+    .profile-head { position: relative; }
+    .prof-info { position: static; }
+    .prof-pop { left: 0; right: 0; min-width: 0; }
+  }
   .profile-sub { font-size: 11px; color: var(--muted); text-align: right; margin-bottom: 12px; }
   .usage-row { display: flex; align-items: center; gap: 10px; font-size: 12px; padding: 4px 0; }
   .usage-row .w-label { color: var(--muted); width: 64px; flex-shrink: 0; }
@@ -149,10 +171,10 @@ export const landingHtml = `<!DOCTYPE html>
 
   /* Tabs rather than a dropdown: the current order stays legible without
      opening anything, which is the whole job of this page. */
-  .section-head { display: flex; align-items: baseline; justify-content: space-between;
+  .section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
     gap: 12px; margin-bottom: 12px; }
   .section-head .section-title { margin-bottom: 0; }
-  .sort-tabs { display: flex; gap: 2px; flex-shrink: 0; }
+  .sort-tabs { display: flex; flex-wrap: wrap; gap: 2px; min-width: 0; max-width: 100%; }
   .sort-tab { background: none; border: none; border-bottom: 2px solid transparent;
     color: var(--muted); font-family: inherit; font-size: 11px; font-weight: 500;
     letter-spacing: 0.3px; padding: 2px 8px 3px; cursor: pointer; }
