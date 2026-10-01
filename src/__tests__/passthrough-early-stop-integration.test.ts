@@ -2573,6 +2573,96 @@ describe("Integration: passthrough early stop", () => {
     expect(capturedQueryParamsAll[4]?.options.allowedTools ?? []).not.toContain("mcp__oc__glob")
   })
 
+  // Deferred tools lift the one-turn cap (maxTurns 4). The same bare-name
+  // rejection then keeps the SDK going after the checkpoint: the model retries
+  // under the registered name (dropped as hidden digest) or the bare name again
+  // (rejected again), and the turn ends at max_turns (4). The client already
+  // holds the complete streamed call, so it must still get a tool_use handoff.
+  it("stream: a CLI-rejected call recovers at the deferred-tools turn budget", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    const sessionHeader = "es-deferred-rejected"
+    const tools = [
+      { name: "bash", input_schema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
+      { name: "lsp_diagnostics", defer_loading: true, input_schema: { type: "object", properties: { file: { type: "string" } } } },
+    ]
+    mockMessages = [
+      messageStart("msg_deferred_rejected"),
+      toolUseBlockStart(0, "bash", "toolu_bare_bash"),
+      inputJsonDelta(0, '{"command":"ls"}'),
+      blockStop(0),
+      messageDelta("tool_use"),
+      messageStop(),
+      { ...assistantMessage([
+        { type: "tool_use", id: "toolu_bare_bash", name: "bash", input: { command: "ls" } },
+      ]), test_skip_pre_tool_hook: true },
+      unavailableToolMessage("toolu_bare_bash", "bash"),
+      assistantMessage([{ type: "tool_use", id: "toolu_retry_prefixed", name: "mcp__oc__bash", input: { command: "ls" } }]),
+      userDenyMessage("toolu_retry_prefixed"),
+      { ...assistantMessage([
+        { type: "tool_use", id: "toolu_retry_bare", name: "bash", input: { command: "ls -la" } },
+      ]), test_skip_pre_tool_hook: true },
+      unavailableToolMessage("toolu_retry_bare", "bash"),
+      { type: "result", subtype: "error_max_turns", is_error: true, session_id: "test-session" },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (4)")
+
+    const res = await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 400,
+      stream: true,
+      tools,
+      messages: [{ role: "user", content: "list the files" }],
+    }, sessionHeader)
+    expect(res.status).toBe(200)
+    const events = parseSSE(await res.text())
+    expect(capturedQueryParamsAll[0]?.options.maxTurns).toBe(4)
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    const toolBlocks = events.flatMap(({ event, data }) => {
+      const block = data.content_block as { type?: string; id?: string; name?: string } | undefined
+      return event === "content_block_start" && block?.type === "tool_use" ? [`${block.id}:${block.name}`] : []
+    })
+    expect(toolBlocks).toEqual(["toolu_bare_bash:bash"])
+    const terminalReasons = events.flatMap(({ event, data }) => {
+      const delta = data.delta as { stop_reason?: string } | undefined
+      return event === "message_delta" && typeof delta?.stop_reason === "string" ? [delta.stop_reason] : []
+    })
+    expect(terminalReasons).toEqual(["tool_use"])
+    expect(events.filter(e => e.event === "message_stop")).toHaveLength(1)
+    expect(lookupSharedSession(`${sessionHeader}-${TEST_RUN_ID}`)).toBeUndefined()
+  })
+
+  it("stream: an uncaptured call without CLI rejection still errors at the deferred budget", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "1"
+    const tools = [
+      { name: "bash", input_schema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
+      { name: "lsp_diagnostics", defer_loading: true, input_schema: { type: "object", properties: { file: { type: "string" } } } },
+    ]
+    mockMessages = [
+      messageStart("msg_deferred_unproven"),
+      toolUseBlockStart(0, "bash", "toolu_unproven"),
+      inputJsonDelta(0, '{"command":"ls"}'),
+      blockStop(0),
+      messageDelta("tool_use"),
+      messageStop(),
+      { ...assistantMessage([
+        { type: "tool_use", id: "toolu_unproven", name: "bash", input: { command: "ls" } },
+      ]), test_skip_pre_tool_hook: true },
+      { type: "result", subtype: "error_max_turns", is_error: true, session_id: "test-session" },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (4)")
+
+    const res = await post(app, {
+      model: "claude-sonnet-4-5",
+      max_tokens: 400,
+      stream: true,
+      tools,
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-deferred-unproven")
+    const events = parseSSE(await res.text())
+    expect(capturedQueryParamsAll[0]?.options.maxTurns).toBe(4)
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+  })
+
   it("stream: explicit empty tools do not spend the recovered grant", async () => {
     delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
     const sessionHeader = "es-pi-recovery-empty-tools"

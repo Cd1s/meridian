@@ -662,7 +662,15 @@ SDK session and only the tool set from that recovered turn:
 ```bash
 bun scripts/e2e-capped-turns.mjs --case=client-refusal --stream
 bun scripts/e2e-capped-turns.mjs --case=client-refusal --stream --headerless
+bun scripts/e2e-capped-turns.mjs --case=client-refusal --stream --deferred
 ```
+
+The third command adds a deferred client tool, so the turn budget is 4 rather
+than 1 (the OpenCode shape: its ~100 tools are auto-deferred). The fixture keeps
+answering with the bare name, plus one retry under the registered name that the
+hook drops as the hidden digest, until the real CLI reports `error_max_turns`.
+The client must still receive one clean `tool_use` handoff, not
+`Reached maximum number of turns (4)`.
 
 The second command omits Pi's optional session-affinity header and metadata
 identity, exercising the default fingerprint-scoped, one-shot result handoff

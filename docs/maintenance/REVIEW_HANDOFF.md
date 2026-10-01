@@ -84,7 +84,7 @@ causation or a guaranteed billing remedy. Final-head build CI passes; merge
 `e4002e54eb2ed3c9822f27425befabf9a8a9b347` matches tested head `adc3b140`.
 Issue closed. No publication authorized.
 
-**#1200 accepted with design corrections, integration under verification.**
+**#1200 accepted with design corrections and merged as #1207.**
 Source `517c91bd` maps to authored cherry `f90db029`. Shared-header profile
 anchors/search preserve routing. Restore DESIGN.md section micro-labels, bound
 pulse tint and add reduced-motion CSS. Actual browser matrix with 14 synthetic
@@ -92,7 +92,22 @@ accounts passes 320/375/800/1280 widths, header content growth, aliases, polling
 focus/scroll, filter/reorder controls and zero mutations following a home link.
 [Evidence](evidence/1200-profile-find.md) explicitly corrects an initial padding
 probe: no application timing defect claimed, speculative timing change removed.
-Final full local gates and exact-head CI pending.
+Final full local gates: 5010 pass / 0 fail / 4 skip, typecheck/build. All six
+executed CI checks pass. Merge `4c5e602e2640348a0fa32668e30e2e621eea700c`,
+tree `6256b0e41b9171250164acc895373ae67be371e0`, matches validated head
+`8aef41ba`. Nowaker credit and unchanged source head verified before closure.
+An unchanged Antigravity one-second probe failed once under full-suite load;
+baseline/final focused probes pass and the repeated full suite passes.
+
+**#1192 accepted, integration awaiting final-head CI.** Source `4e55f7de`
+maps to authored cherry `b636e878`; maintainer harnesses `57448870`.
+[Evidence](evidence/1192-deferred-tool-recovery.md): actual OpenCode controlled
+before/after on macOS and implicated Linux, plus live Opus 5.5 real tool receipts
+and same-client-session continuations on both platforms. Linux initial live
+authentication failures diagnosed from retained client errors; a stale access
+token snapshot differed from current host credentials, and the identical code
+passed after updating only the disposable read-only snapshot. 5014 tests,
+typecheck/build pass. Source remains open until exact-head delivery.
 
 **#1201 pending actual-client proof.** Source `30e01969`. Public implicated
 client is `XInTheDark/meowbert-ai-agent`. Its own commit `08e771a9` (2026-10-01

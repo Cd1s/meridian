@@ -6796,11 +6796,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 abortIsOurs: ownSingleStepAbort && sawDuplicateToolUse,
               }) && messageStartEmitted
 
-              // Uncaptured streamed calls can recover only at this proxy's
-              // one-turn cap, with a complete client-visible envelope and no
-              // cancellation. The opt-in covers the abort-window shape; an
-              // explicit CLI dispatch rejection also qualifies by default,
-              // even if that rejection settled the early-stop tracker.
+              // Uncaptured streamed calls can recover only with a complete
+              // client-visible envelope and no cancellation. The opt-in covers
+              // the abort-window shape at the one-turn cap; an explicit CLI
+              // dispatch rejection also qualifies by default, at any turn
+              // budget, even if that rejection settled the early-stop tracker.
               // A generic failed result may follow an executed tool. Only the
               // CLI's explicit dispatch rejection for EVERY streamed id proves
               // these calls were never run. The existing opt-in abort-window
