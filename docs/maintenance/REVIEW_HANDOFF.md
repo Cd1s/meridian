@@ -1,6 +1,6 @@
 # Upstream review handoff
 
-## Active authorized backlog (2026-09-30)
+## Active authorized backlog (2026-10-01)
 
 Owner requested a persistent goal covering PRs/issues, authored cherry-picks,
 maintainer corrections and headless actual-client evidence. Initial paginated
@@ -55,7 +55,7 @@ Node asset HTTP gate pass. Nowaker credit verified; both sources unchanged at
 closure. [Evidence](evidence/1198-1199-mobile-layout.md); local media captured,
 no durable GitHub media upload claimed because no uploader was available.
 
-**#1189 accepted with correction, final integration under verification.**
+**#1189 accepted with correction and merged as #1206.**
 Source `c2f4b67f` maps to authored cherry `6baaf143`; correction `632445c4`.
 Real Node processes confirm authored reporter makes warn/none fatal and aborts
 warn-with-error-code before its timer. Error.name leaks a synthetic Bearer value.
@@ -63,10 +63,12 @@ Corrected policy preserves all five modes, CLI-over-NODE_OPTIONS precedence
 and strict-mode exact-once reporting; names scrubbed/bounded before spool.
 Retained headless gate: 22 Node/Bun paired configurations and four actual
 compiled test-error-report CLI cases pass against local collector.
-[Evidence](evidence/1189-error-reporting.md). Current main is `2404eae1`;
-final local suite and exact-head CI remain gates. No third-party collector claimed.
+[Evidence](evidence/1189-error-reporting.md). Final npm test 4985 pass / 0 fail / 4 skip, typecheck/build and all six
+executed CI checks pass. Merge `cc74cd2dd65ec3a246512179fc7958a79a1bccd6`, tree
+`aace784e254fe63e4646563c06d9174aac41ac94` matches validated head `a9d1112d`.
+Nowaker co-author credit verified; source unchanged at closure. No third-party collector claimed.
 
-**Pi scrub issue #13 implementation and affected-client proof verified locally.**
+**Pi scrub issue #13 resolved by merged plugin PR #14.**
 Exact Pi 0.87.1 found under renamed package @earendil-works/pi-coding-agent.
 Published scrub 0.2.2 and current scrub main `23c98fac` reproduce two test
 failures. Complete header-scoped <docs> removal corrects both (17 pass/0 fail),
@@ -77,7 +79,20 @@ instructions and completes a read with random client-only tool-result receipt
 and a continuation. Both turns have zero errors. Pi arrives as adapter=opencode
 in this real custom-provider flow; content-scoped scrubbing correctly applies.
 Baseline also observed billing_error, which is not claimed as universal billing
-causation or a guaranteed billing remedy. PR and CI pending; no publication authorized.
+causation or a guaranteed billing remedy. Final-head build CI passes; merge
+`188115f355f423cbff50b20a2e5fd7d932ec1746` tree
+`e4002e54eb2ed3c9822f27425befabf9a8a9b347` matches tested head `adc3b140`.
+Issue closed. No publication authorized.
+
+**#1200 accepted with design corrections, integration under verification.**
+Source `517c91bd` maps to authored cherry `f90db029`. Shared-header profile
+anchors/search preserve routing. Restore DESIGN.md section micro-labels, bound
+pulse tint and add reduced-motion CSS. Actual browser matrix with 14 synthetic
+accounts passes 320/375/800/1280 widths, header content growth, aliases, polling
+focus/scroll, filter/reorder controls and zero mutations following a home link.
+[Evidence](evidence/1200-profile-find.md) explicitly corrects an initial padding
+probe: no application timing defect claimed, speculative timing change removed.
+Final full local gates and exact-head CI pending.
 
 **#1201 pending actual-client proof.** Source `30e01969`. Public implicated
 client is `XInTheDark/meowbert-ai-agent`. Its own commit `08e771a9` (2026-10-01

@@ -5,6 +5,7 @@
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
 import { profileFactsJs } from "./profileFacts"
+import { profileFindJs } from "./profileFind"
 import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
 import { WINDOW_LABELS } from "./profileUsage"
 
@@ -27,10 +28,43 @@ export const profilePageHtml = `<!DOCTYPE html>
   .section-title { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase;
                    letter-spacing: 0.5px; margin-bottom: 12px; }
 
+  .profile-search { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .profile-search[hidden] { display: none; }
+  .profile-search input {
+    flex: 1 1 260px; min-width: 0; padding: 8px 12px; border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 13px;
+  }
+  .profile-search input::placeholder { color: var(--muted); }
+  .profile-search input:focus { outline: none; border-color: var(--accent); }
+  .profile-search-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .profile-no-match { padding: 32px; }
+  .profile-no-match[hidden] { display: none; }
+  .link-btn {
+    background: none; border: none; padding: 0; font: inherit; color: var(--accent); cursor: pointer;
+  }
+  .link-btn:hover { text-decoration: underline; }
+  /* Reordering a filtered list would move cards past ones nobody can see. */
+  .filtering .drag-handle, .filtering .order-index, .filtering .order-note { display: none; }
+
   .profile-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     padding: 20px; margin-bottom: 12px; transition: border-color 0.2s;
   }
+  .profile-card[hidden] { display: none; }
+  /* Arriving from a /profiles#<name> link: one short pulse says which card. */
+  .profile-card.anchor-flash { animation: profile-anchor-flash 0.5s ease-out; }
+  @keyframes profile-anchor-flash {
+    0% { box-shadow: 0 0 0 0 rgba(88,166,255,0); background: var(--surface); }
+    35% { box-shadow: 0 0 0 4px rgba(88,166,255,0.35); background: rgba(88,166,255,0.12); }
+    100% { box-shadow: 0 0 0 0 rgba(88,166,255,0); background: var(--surface); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .profile-card.anchor-flash { animation: none; }
+  }
+  /* The name links to its own card. */
+  a.profile-name { color: inherit; text-decoration: none; }
+  a.profile-name:hover { color: var(--accent); }
   .profile-card.active { border-color: var(--accent); }
   /* The header row carries the reorder handle, the name, every badge the
      card can earn - active, the type, out of a limit - and the actions. On a
@@ -188,11 +222,26 @@ export const profilePageHtml = `<!DOCTYPE html>
 <h1>Profiles</h1>
 <div class="subtitle">Manage Claude account profiles</div>
 
-<div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
+<!-- The heading and search box sit outside #content, which render() rebuilds
+     on every poll: a box inside it would lose its text every ten seconds. -->
+<div class="section" id="profiles-section">
+  <h2 class="section-title">Configured Profiles</h2>
+  <div class="profile-search" id="profiles-filter-bar" hidden>
+    <input type="search" id="profiles-filter" autocomplete="off" spellcheck="false"
+      aria-label="Filter profiles" aria-controls="content"
+      placeholder="Filter by name, email, organization, plan (5x, 20x, max) or former name">
+    <span class="profile-search-count" id="profiles-filter-count" aria-live="polite"></span>
+  </div>
+  <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
+  <div class="empty-state profile-no-match" id="profiles-no-match" hidden>
+    No profile matches <strong id="profiles-no-match-query"></strong>.
+    <button type="button" class="link-btn" onclick="setProfileQuery('')">Clear the search</button>
+  </div>
+</div>
 ${reorderLiveRegionHtml}
 
 <div class="section" style="margin-top:32px">
-  <div class="section-title">Setup Guide</div>
+  <h2 class="section-title">Setup Guide</h2>
   <div class="guide">
     <h3>How profiles work</h3>
     <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
@@ -239,7 +288,7 @@ ${reorderLiveRegionHtml}
 </div>
 
 <script>
-` + profileFactsJs + `
+` + profileFactsJs + profileFindJs + `
 // Inlined from src/telemetry/profileUsage.ts. The TS source is unit-tested
 // (see profile-usage.test.ts) and the labels object is interpolated here so
 // the browser script and TS module share their data.
@@ -577,18 +626,19 @@ function render(data, quotaData) {
       + '<p style="margin-top:8px">Add your first profile from the terminal:</p>'
       + '<p style="margin-top:8px"><code class="mono" style="background:var(--bg);padding:8px 16px;border-radius:6px;display:inline-block">meridian profile add personal</code></p>'
       + '</div>';
+    afterRender();
     return;
   }
 
   const reorderable = profiles.length > 1 && !meridianReorder.envPinned();
 
-  let html = '<div class="section"><div class="section-title">Configured Profiles</div>';
+  let html = '';
   if (profiles.length > 1) html += meridianReorder.noteHtml(reorderable);
 
   for (let idx = 0; idx < profiles.length; idx++) {
     const p = profiles[idx];
     const isActive = p.id === active;
-    html += '<div class="profile-card' + (isActive ? ' active' : '') + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
+    html += '<div class="profile-card' + (isActive ? ' active' : '') + '" id="' + esc(profileAnchorElementId(p.id)) + '" data-id="' + esc(p.id) + '" data-index="' + idx + '">';
     html += '<div class="profile-card-header">';
     if (editingProfile === p.id) {
       html += "<input class=\\"rename-input\\" id=\\"rename-input\\" value=\\"" + esc(p.id) + "\\" spellcheck=\\"false\\" autocomplete=\\"off\\""
@@ -601,7 +651,7 @@ function render(data, quotaData) {
       html += "</span>";
     } else {
       if (reorderable) html += meridianReorder.handleHtml(p.id, idx, profiles.length);
-      html += "<span class=\\"profile-name\\">" + esc(p.id) + "</span>";
+      html += "<a class=\\"profile-name\\" href=\\"#" + esc(encodeURIComponent(p.id)) + "\\" title=\\"Link to this profile\\">" + esc(p.id) + "</a>";
       if (isActive) html += "<span class=\\"profile-badge badge-active\\">active</span>";
       html += "<span class=\\"profile-badge badge-type\\">" + esc(p.type || "claude-max") + "</span>";
       html += renderSpentBadge((quotaById[p.id] || {}).spent);
@@ -643,10 +693,124 @@ function render(data, quotaData) {
     html += '</div>';
   }
 
-  html += '</div>';
   document.getElementById('content').innerHTML = html;
   meridianReorder.restoreFocus(refocusId);
+  afterRender();
 }
+
+// The search and the #anchor both act on the cards render() just drew, so
+// they run after every render. Both change only visibility and scroll, never
+// the markup, so they cannot wipe a panel or input the poll is protecting.
+function afterRender() {
+  applyProfileFilter();
+  if (anchorPending && lastProfiles) {
+    anchorPending = false;
+    jumpToProfileAnchor();
+  }
+}
+
+var profileQuery = '';
+// Set on load and on hashchange; consumed by the first render with data, so
+// the 10s poll never yanks the page back to the card after someone scrolls.
+var anchorPending = !!location.hash;
+
+function profilesForFind() {
+  return (lastProfiles && Array.isArray(lastProfiles.profiles)) ? lastProfiles.profiles : [];
+}
+
+function writeProfilesUrl(hashId) {
+  var url = new URL(location.href);
+  if (profileQueryTerms(profileQuery).length > 0) url.searchParams.set('q', profileQuery);
+  else url.searchParams.delete('q');
+  if (hashId) url.hash = encodeURIComponent(hashId);
+  if (url.toString() !== location.href) history.replaceState(history.state, '', url.toString());
+}
+
+function applyProfileFilter() {
+  var profiles = profilesForFind();
+  var byId = Object.create(null);
+  for (var i = 0; i < profiles.length; i++) byId[profiles[i].id] = profiles[i];
+  var cards = document.querySelectorAll('#content .profile-card[data-id]');
+  var shown = 0;
+  for (var c = 0; c < cards.length; c++) {
+    var match = profileMatchesQuery(byId[cards[c].getAttribute('data-id')], profileQuery);
+    cards[c].hidden = !match;
+    if (match) shown++;
+  }
+  var filtering = profileQueryTerms(profileQuery).length > 0;
+  document.getElementById('profiles-section').classList.toggle('filtering', filtering);
+  document.getElementById('profiles-filter-bar').hidden = cards.length === 0 && !filtering;
+  var paused = filtering && document.querySelector('#content .drag-handle') ? ' \u00b7 clear to reorder' : '';
+  document.getElementById('profiles-filter-count').textContent = filtering
+    ? shown + ' of ' + cards.length + paused
+    : '';
+  document.getElementById('profiles-no-match-query').textContent = profileQuery.trim();
+  document.getElementById('profiles-no-match').hidden = !(filtering && cards.length > 0 && shown === 0);
+}
+
+function setProfileQuery(query) {
+  profileQuery = String(query || '');
+  var input = document.getElementById('profiles-filter');
+  if (input.value !== profileQuery) input.value = profileQuery;
+  applyProfileFilter();
+  writeProfilesUrl(null);
+}
+
+// Scrolls under the sticky header rather than behind it; the header wraps to
+// several rows on a phone, so its height is measured, not assumed.
+function alignProfileCard(card) {
+  var header = document.querySelector('.meridian-header');
+  var offset = (header ? header.getBoundingClientRect().height : 0) + 12;
+  window.scrollTo({ top: Math.max(0, card.getBoundingClientRect().top + window.scrollY - offset) });
+}
+
+// The header can still grow after the jump - its chips load on their own
+// fetches and wrap to another row on a phone - and scroll anchoring then keeps
+// the card where it was, now underneath. So a resize shortly after a jump
+// re-aligns, until the reader scrolls on their own.
+var anchorHold = null;
+function releaseAnchorHold() { anchorHold = null; }
+['wheel', 'touchstart', 'keydown', 'mousedown'].forEach(function (type) {
+  window.addEventListener(type, releaseAnchorHold, { passive: true });
+});
+if (window.ResizeObserver) {
+  var profilesHeader = document.querySelector('.meridian-header');
+  if (profilesHeader) new ResizeObserver(function () {
+    if (!anchorHold || Date.now() > anchorHold.until || !anchorHold.card.isConnected) return;
+    alignProfileCard(anchorHold.card);
+  }).observe(profilesHeader);
+}
+
+function jumpToProfileAnchor() {
+  var id = resolveProfileAnchor(location.hash, profilesForFind());
+  if (!id) return;
+  var card = document.getElementById(profileAnchorElementId(id));
+  if (!card) return;
+  // Following a link to one profile outranks a filter that hides it.
+  if (card.hidden) setProfileQuery('');
+  // A former name, or different casing, becomes the name the card shows.
+  if (profileIdFromHash(location.hash) !== id) writeProfilesUrl(id);
+  alignProfileCard(card);
+  anchorHold = { card: card, until: Date.now() + 5000 };
+  card.classList.remove('anchor-flash');
+  void card.offsetWidth;
+  card.classList.add('anchor-flash');
+  card.addEventListener('animationend', function () { card.classList.remove('anchor-flash'); }, { once: true });
+}
+
+(function initProfileFind() {
+  var input = document.getElementById('profiles-filter');
+  profileQuery = new URL(location.href).searchParams.get('q') || '';
+  input.value = profileQuery;
+  input.addEventListener('input', function () { setProfileQuery(input.value); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && input.value) { e.preventDefault(); setProfileQuery(''); }
+  });
+  window.addEventListener('hashchange', function () {
+    anchorPending = true;
+    if (lastProfiles) afterRender();
+  });
+})();
 
 function copyCmd(btn) {
   var cmd = btn.getAttribute('data-cmd');

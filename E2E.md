@@ -6988,3 +6988,10 @@ Node rejection policies (CLI and NODE_OPTIONS), checks actual Meridian recovery
 handlers, exact-once scrubbed envelopes, and compiled `test-error-report`
 wiring. It uses an isolated local collector and synthetic errors, not a model
 or third-party ingestion account. See the retained evidence for its limits.
+
+For profile navigation and search, serve actual templates with
+`E2E_BASELINE_ROOT=<unchanged-main> bun scripts/e2e-profile-find.mjs`, open the
+reported URL in the collaborative browser, and evaluate the full expression in
+`scripts/e2e-profile-find-browser.js`. Require PASS for the mobile/desktop matrix,
+anchor/header growth, polling/focus, filter/reorder and no-routing-mutation
+controls. See `docs/maintenance/evidence/1200-profile-find.md` for evidence limits.

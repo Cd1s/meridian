@@ -10,6 +10,7 @@
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
 import { profileFactsJs } from "./profileFacts"
+import { profileFindJs } from "./profileFind"
 import { reorderClientJs, reorderCss, reorderLiveRegionHtml } from "./profileOrder"
 import { DEFAULT_PROFILE_SORT, PROFILE_SORT_MODES } from "./profileSort"
 import { FADE_FROM, GENERAL_WINDOW_TYPES, SPENT_AT } from "./profileSpent"
@@ -75,6 +76,8 @@ export const landingHtml = `<!DOCTYPE html>
     border-radius: 10px; padding: 1px 8px; }
   .spend-pill.needs-login { color: var(--red); background: rgba(248,81,73,0.12);
     border-color: rgba(248,81,73,0.35); }
+  a.spend-pill { text-decoration: none; }
+  a.spend-pill:hover { border-color: var(--red); }
   ${reorderCss}
   /* The name row carries every badge the card can earn - Active, the plan
      chip, pool position, exhausted/refused, needs login, spent - and on a
@@ -120,6 +123,8 @@ export const landingHtml = `<!DOCTYPE html>
   .prof-pop-type { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
     color: var(--accent2); margin-bottom: 8px; }
   .prof-pop-grid { display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 11px; }
+  .prof-pop-link { display: block; margin-top: 10px; font-size: 11px; color: var(--accent); text-decoration: none; }
+  .prof-pop-link:hover { text-decoration: underline; }
   .prof-pop-label { color: var(--muted); white-space: nowrap; }
   .prof-pop-value { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; word-break: break-word; }
   .prof-pop-value.status-ok { color: var(--green); }
@@ -195,7 +200,7 @@ export const landingHtml = `<!DOCTYPE html>
   ${reorderLiveRegionHtml}
 </div>
 <script>
-` + profileFactsJs + `
+` + profileFactsJs + profileFindJs + `
 function ms(v){if(v==null||v===0)return '—';return v<1000?v+'ms':(v/1000).toFixed(1)+'s'}
 function esc(s){return String(s).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[ch]})}
 function usd(v){if(v==null)return '—';if(v>0&&v<0.01)return '$'+v.toFixed(4);if(v<100)return '$'+v.toFixed(2);return '$'+Math.round(v).toLocaleString()}
@@ -334,6 +339,7 @@ function infoIcon(entry,type){
     +'<span class="prof-pop" role="tooltip">'
     +'<span class="prof-pop-type">'+esc(type||'claude-max')+'</span>'
     +'<span class="prof-pop-grid">'+rows+'</span>'
+    +'<a class="prof-pop-link" href="'+esc(profileHref(entry.id))+'">Open in Profiles \\u2192</a>'
     +'</span></span>';
 }
 
@@ -441,7 +447,9 @@ function profileSection(q,s,pl,h){
         +(sp.until?', back '+resetIn(sp.until):'')
         +'<div class="spent-banner-sub">figures below are the last successful read, not live</div></div>';
     }
-    if(spend.reason==='unusable')badge+=' <span class="spend-pill needs-login">needs login</span>';
+    if(spend.reason==='unusable')badge+=' '+(p.configured
+      ?'<a class="spend-pill needs-login" href="'+esc(profileHref(p.id))+'" title="Open this profile to log in again">needs login</a>'
+      :'<span class="spend-pill needs-login">needs login</span>');
     else if(spend.state==='spent')badge+=' <span class="spend-pill">spent</span>';
     var spendClass=spend.reason==='unusable'?' needs-login':spend.fade>0?' spend-'+spend.state:'';
     var spendStyle=spend.fade>0?' style="--spend-fade:'+spend.fade.toFixed(2)+'"':'';
@@ -530,6 +538,8 @@ document.getElementById('content').addEventListener('click',function(e){
   // The card is itself the switch button, so the icon inside one has to opt
   // out of it or reading an account would move all traffic to that account.
   if(e.target.closest('.prof-info'))return;
+  // Same for a link to the account's /profiles entry: following it is not a switch.
+  if(e.target.closest('a'))return;
   var tab=e.target.closest('.sort-tab');
   if(tab&&tab.dataset.sort){setViewSort(tab.dataset.sort);return}
   var card=e.target.closest('.profile-card.switchable');
@@ -538,7 +548,7 @@ document.getElementById('content').addEventListener('click',function(e){
 document.getElementById('content').addEventListener('keydown',function(e){
   if(e.key!=='Enter'&&e.key!==' ')return;
   if(onHandle(e))return;
-  if(e.target.closest('.prof-info'))return;
+  if(e.target.closest('.prof-info')||e.target.closest('a'))return;
   var card=e.target.closest('.profile-card.switchable');
   if(card&&card.dataset.profile){e.preventDefault();switchProfile(card.dataset.profile)}
 });
