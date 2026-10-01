@@ -379,6 +379,7 @@ export class AntigravityRuntime {
   readonly executable: string
   readonly turnTimeoutMs: number
   readonly pendingToolTimeoutMs: number
+  readonly accountCheckTtlMs: number
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
   // Warm live conversations; expired or restarted processes replay client history.
@@ -466,6 +467,8 @@ export class AntigravityRuntime {
     this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000
     this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
     for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
+    this.accountCheckTtlMs = options.accountCheckTtlMs ?? 0
+    if (!Number.isSafeInteger(this.accountCheckTtlMs) || this.accountCheckTtlMs < 0 || this.accountCheckTtlMs > 600_000) throw new Error("Antigravity account check TTL must be an integer from 0 to 600000 ms")
     this.state = options.statePath ? new AgState(options.statePath) : undefined
     try {
     this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
@@ -521,11 +524,16 @@ export class AntigravityRuntime {
     return this.quotaCheck
   }
   private accountRetryAt = 0
+  private accountVerifiedAt = 0
   async verifyAccount(): Promise<void> {
     if (this.shutdown.signal.aborted) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     const retryAfter = Math.ceil((this.accountRetryAt - Date.now()) / 1000)
     if (retryAfter > 0) throw new AntigravityError(`Antigravity account checks are cooling down after a CLI failure; retry in ${retryAfter} seconds. No model request was sent.`, 503, "api_error", retryAfter)
-    this.verifying ??= this.verifyAccountOnce().catch(error => this.probeFailed(error)).finally(() => { this.verifying = undefined })
+    // Fork patch: each check cold-starts agy (~5s through a proxy); only successes are reused.
+    if (this.accountCheckTtlMs && Date.now() - this.accountVerifiedAt < this.accountCheckTtlMs) return
+    this.verifying ??= this.verifyAccountOnce()
+      .then(() => { this.accountVerifiedAt = Date.now() }, error => { this.accountVerifiedAt = 0; return this.probeFailed(error) })
+      .finally(() => { this.verifying = undefined })
     return this.verifying
   }
   private probeFailed(error: unknown): never {

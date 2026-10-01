@@ -156,6 +156,25 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
       expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
     } finally { await runtime.close() }
   })
+  it('reuses only successful account checks within the opt-in TTL', async () => {
+    const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable, accountCheckTtlMs: 300 })
+    Object.assign(runtime.childEnv, f.env)
+    const configCalls = () => f.calls().filter(call => call.args[1] === '/config').length
+    try {
+      await runtime.verifyAccount()
+      await runtime.verifyAccount()
+      expect(configCalls()).toBe(1)
+      await new Promise(resolve => setTimeout(resolve, 350))
+      runtime.childEnv.AG_PROBE_MODE = 'paid'
+      await expect(runtime.verifyAccount()).rejects.toThrow()
+      runtime.childEnv.AG_PROBE_MODE = 'success'
+      await runtime.verifyAccount()
+      expect(configCalls()).toBe(3)
+    } finally { await runtime.close() }
+  })
+  it('rejects account check TTLs outside 0..600000 ms', () => {
+    for (const accountCheckTtlMs of [-1, 1.5, 600_001]) expect(() => new AntigravityRuntime({ accountCheckTtlMs })).toThrow('TTL')
+  })
   for (const mode of ['version', 'provider', 'paid', 'malformed']) it(`does not retry invalid ${mode} validation`, async () => {
     const f = fixture(mode), runtime = new AntigravityRuntime({ executable: f.executable })
     Object.assign(runtime.childEnv, f.env)

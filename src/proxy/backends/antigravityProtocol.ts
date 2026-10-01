@@ -87,9 +87,9 @@ export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): Ag
     request.output_config = { ...request.output_config, format: request.output_format }
     delete request.output_format
   }
-  for (const key of ["temperature", "top_p", "top_k", "betas"]) {
-    if (request[key] !== undefined) throw new AntigravityError(`Antigravity does not support ${key}`)
-  }
+  // Fork patch: agy exposes no sampling controls, so drop them instead of rejecting gateway health checks that always send temperature.
+  for (const key of ["temperature", "top_p", "top_k"] as const) delete request[key]
+  if (request.betas !== undefined) throw new AntigravityError("Antigravity does not support betas")
   if (request.output_config?.effort && !request.model.endsWith("-" + request.output_config.effort)) throw new AntigravityError("This agy model does not support the requested effort override; select the matching low/medium/high model slug from /v1/models")
   const choice = request.tool_choice
   if (choice?.type === "tool" && !request.tools.some(t => t.name === choice.name)) throw new AntigravityError("tool_choice names an unknown tool")
