@@ -88,9 +88,33 @@ export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): Ag
     delete request.output_format
   }
   for (const key of ["temperature", "top_p", "top_k", "betas"]) {
-    if (request[key] !== undefined) throw new AntigravityError(`Antigravity does not support ${key}`)
+    if (request[key] !== undefined) delete request[key]
   }
-  if (request.output_config?.effort && !request.model.endsWith("-" + request.output_config.effort)) throw new AntigravityError("This agy model does not support the requested effort override; select the matching low/medium/high model slug from /v1/models")
+
+  // Dynamic effort and clean model adaptation
+  const rawValue = value as Record<string, unknown>
+  const rawEffort = rawValue?.reasoning_effort || rawValue?.effort || request.output_config?.effort
+  let targetEffort = (typeof rawEffort === "string" && ["low", "medium", "high"].includes(rawEffort.toLowerCase())) ? rawEffort.toLowerCase() : undefined
+
+  if (request.thinking?.type === "enabled" && request.thinking.budget_tokens !== undefined) {
+    const b = request.thinking.budget_tokens
+    targetEffort = b <= 2048 ? "low" : b <= 8192 ? "medium" : "high"
+  }
+
+  const modelMatch = /^([a-zA-Z0-9._-]+)-(low|medium|high)$/.exec(request.model)
+  if (modelMatch) {
+    if (targetEffort) {
+      request.model = `${modelMatch[1]}-${targetEffort}`
+    }
+  } else {
+    // Model slug without effort suffix (e.g. gemini-3.8-flash)
+    const eff = targetEffort || "low"
+    request.model = `${request.model}-${eff}`
+    targetEffort = eff
+  }
+  if (targetEffort) {
+    request.output_config = { ...request.output_config, effort: targetEffort }
+  }
   const choice = request.tool_choice
   if (choice?.type === "tool" && !request.tools.some(t => t.name === choice.name)) throw new AntigravityError("tool_choice names an unknown tool")
   if (request.tool_choice?.type === "any" && !request.tools.length) throw new AntigravityError("tool_choice any requires tools")
