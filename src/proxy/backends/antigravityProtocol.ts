@@ -67,6 +67,15 @@ export type AgMessage = z.infer<typeof message>
 export type AgBlock = z.infer<typeof block>
 export type AgCall = z.infer<typeof callBlock>
 export type AgResult = z.infer<typeof resultBlock>
+const agEffortSlug = /^(gemini-[a-zA-Z0-9._-]+)-(low|medium|high)$/
+const agEffortFallbacks = { low: ["medium", "high"], medium: ["high", "low"], high: ["medium", "low"] } as const
+/** Fork patch: nearest official level when an effort-selected slug is not in the account catalogue (3.1 Pro has no medium). */
+export function agEffortFallback(model: string, models: readonly string[]): { model: string, effort: "low" | "medium" | "high" } | undefined {
+  const slug = agEffortSlug.exec(model)
+  if (!slug) return undefined
+  const effort = agEffortFallbacks[slug[2] as keyof typeof agEffortFallbacks].find(level => models.includes(`${slug[1]}-${level}`))
+  return effort && { model: `${slug[1]}-${effort}`, effort }
+}
 export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): AgRequest {
   const parsed = schema.safeParse(value)
   if (!parsed.success) throw new AntigravityError("Antigravity supports text, images, documents and adapted media; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
@@ -90,6 +99,9 @@ export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): Ag
   // Fork patch: agy exposes no sampling controls, so drop them instead of rejecting gateway health checks that always send temperature.
   for (const key of ["temperature", "top_p", "top_k"] as const) delete request[key]
   if (request.betas !== undefined) throw new AntigravityError("Antigravity does not support betas")
+  // Fork patch: gateways map bare names to one level (Sub2API: -low); the client's effort selects the sibling official slug.
+  const slug = agEffortSlug.exec(request.model)
+  if (slug && request.output_config?.effort && request.output_config.effort !== slug[2]) request.model = `${slug[1]}-${request.output_config.effort}`
   if (request.output_config?.effort && !request.model.endsWith("-" + request.output_config.effort)) throw new AntigravityError("This agy model does not support the requested effort override; select the matching low/medium/high model slug from /v1/models")
   const choice = request.tool_choice
   if (choice?.type === "tool" && !request.tools.some(t => t.name === choice.name)) throw new AntigravityError("tool_choice names an unknown tool")

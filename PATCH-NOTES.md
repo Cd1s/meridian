@@ -9,6 +9,7 @@
 | :--- | :--- | :--- |
 | 放宽 agy 1.2.14 版本门禁 | `src/proxy/backends/antigravityRuntime.ts` | 上游只认 `1.2.7`；Linux ARM64 官方最新是 `1.2.14` |
 | 丢弃 `temperature` / `top_p` / `top_k` | `src/proxy/backends/antigravityProtocol.ts` | agy 没有采样参数；上游直接 400，Sub2API 的账号测试固定带 `temperature`，会全部失败。`betas` 仍按上游拒绝 |
+| 思考等级选择同系列官方 slug | `src/proxy/backends/antigravityProtocol.ts`、`antigravityRuntime.ts` | Sub2API 把纯名（如 `gemini-3.8-flash`）映射到 `-low`；客户端带 `effort` / `reasoning_effort` 时换成同系列 `-<effort>`（上游 budget 适配也是这样换后缀）。账号没有该档（3.1 Pro 无 medium）时取最近档，优先更高。非 `gemini-*-low/medium/high` 模型仍按上游报错 |
 | 授权检查可选缓存 `MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 上游每个请求都冷启动一次 `agy -p /config`（经代理约 5s）。设 TTL 后，成功结果在 TTL 内复用；失败不缓存。默认 0 = 上游行为，上限 600000 |
 
 ## 线上配置（<生产机>，`/etc/systemd/system/meridian@.service`）
@@ -17,7 +18,10 @@
 Environment="MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1"
 Environment="MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS=300000"   # fork 补丁：授权检查成功后 5 分钟内不重查
 Environment="MERIDIAN_AGY_TOOL_TIMEOUT_MS=300000"        # 上游选项：已完成对话的热进程保留 5 分钟，续轮免冷启动
+Environment="MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1"      # 上游选项：budget_tokens ≤2048 low / ≤8192 medium / 其余 high
 ```
+
+Sub2API 账号 <id>/<id>/<id>/<id> 的 `model_mapping`：纯名 → `-low`（如 `gemini-3.8-flash → gemini-3.8-flash-low`），带后缀的原样。
 
 ## 变更记录
 
@@ -29,6 +33,9 @@ Environment="MERIDIAN_AGY_TOOL_TIMEOUT_MS=300000"        # 上游选项：已完
 - 效果：新对话 12s → 6.5–7s；同一对话续轮 2.5–3.5s（`/health` 的 `reused` 计数增长）。偶发 40s+ 是 Google `streamGenerateContent` 自身慢。
 - 回滚点：`/opt/meridian/backups/dist-20261002-021937`（temperature 补丁前）、`dist-20261002-022938` 与 `meridian@.service-20261002-022938`（提速前）；还原后 `systemctl daemon-reload && systemctl restart meridian@acc{1..4}`。
 - 线上影响：4 个实例各重启，单次约 10s 不可用。
+- 同日（02:41）：客户端 `gemini-3.8-flash` + effort high 报 `This agy model does not support the requested effort override`（Sub2API 映射成 -low 后与 high 冲突）。加入思考等级选 slug 补丁并开启 `ADAPT_THINKING_BUDGETS`。
+  验证：176 pass / 0 fail；acc1 实测 -low+high→`gemini-3.8-flash-high`、-low+medium→medium、无等级→low、3.1-pro-low+medium→`gemini-3.1-pro-high`、budget 10000→high、OpenAI `reasoning_effort: high`→high（agy 日志 `Model ID` 确认）。
+  回滚点：`/opt/meridian/backups/dist-20261002-024155`、`meridian@.service-20261002-024155`。
 - 同日：acc4（<账号邮箱>）重新登录成功，实测可用（此前判断的 ToS 封禁不成立），`meridian@acc4` 已 enable。
 
 ## 同步上游
