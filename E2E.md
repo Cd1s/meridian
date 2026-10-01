@@ -6,6 +6,28 @@ Live tests against the real proxy + Claude Max SDK. These verify the full reques
 
 > **Droid tests (D1–D10)** additionally require `droid` installed (`droid --version` ≥ 0.89.0) and a Factory AI account for BYOK configuration. Tests D1–D10 cover internal mode (the default). Passthrough mode for Droid is opt-in via `MERIDIAN_PASSTHROUGH=1` and requires `droid` ≥ 0.109 — see "Droid passthrough mode" below.
 
+## Large session-store mutation and actual OpenCode continuation
+
+```sh
+bun scripts/e2e-session-store-cost.mjs
+E2E_SESSION_STORE_FIXTURE=<printed-artifact>/sessions.json \
+E2E_TOOL_RECEIPT=1 E2E_CONCURRENCY=2 E2E_MODEL=claude-opus-5-5 \
+E2E_PLUGIN_PATH=<installed-opencode-scrub>/dist/index.js \
+bun scripts/e2e-opencode-lifecycle-admission.mjs
+```
+
+The first harness measures 30 writes against a disposable 19.3 MB / 856-entry
+store and asserts retained history; compare the same script on unchanged main.
+It reports timing without enforcing a noisy benchmark threshold.
+`--trace-freeze` measures cold-lookup freeze work when diagnosing overhead.
+The actual headless OpenCode gate runs two isolated clients against that large
+store. Each must execute a real read whose random client-only file receipt
+reaches the SDK through a tool-result request, then complete a same-session
+follow-up. This opt-in fixture enables client tools inside disposable projects;
+normal admission-gate runs retain their existing denied-tool configuration.
+Run all four live E41 modes alongside it for changes to store/resume behavior.
+See [review and before/after evidence](docs/maintenance/evidence/1186-store-mutation.md).
+
 ## Auth-status refresh responsiveness
 
 ```sh

@@ -15,25 +15,37 @@ has tree `0f62d771d385bcbd619725072a449811524177c8`, identical to validated
 `84902f520bfa70f85227369b40f1cde0518070e5`. Explicit verified Nowaker human
 co-author trailer present. Source head unchanged at closure. Existing independent
 browser proof and local/CI gates remain valid: base did not change before merge.
-Browser recheck was unavailable this session (collaborative preview open/navigation
-failed), so no new browser result is claimed. No unrelated model calls for CSS.
+The collaborative preview initially failed, then recovered. Its repeated live
+phone/desktop probe matched the retained measurements exactly: 375px page/client
+360/360, internal table scroll 311px; desktop 1265/1265 with no inner scroll;
+rule-removal control 626/360. No unrelated model calls for CSS.
 
-**#1197 accepted direction, authored integration under verification.**
+**#1197 accepted and delivered as [#1203](https://github.com/rynfar/meridian/pull/1203).**
 Source `3baf6f59` cherry-picked as `e97c6f61`; Author/AuthorDate preserved.
 [Durable proof](evidence/1197-auth-refresh.md) includes the committed real-CLI
 delay harness: unchanged baseline health probes 2258 ms, fixed 2–4 ms, one
 refresh. Actual headless OpenCode 1.18.33 / Opus 5.5 / SDK 0.2.141 / scrub
 0.2.3 same-session continuation passes. Final local suite and exact-head CI
-remain gates until the delivery PR records their outcomes.
+passed: final npm test 4949 pass / 0 fail / 4 skip, standalone typecheck and build;
+all six executed CI checks passed, including
+[test](https://github.com/rynfar/meridian/actions/runs/36820232911/job/110234024099).
+Merge `98c48c03ff65f0b8ce428c8b60718655c49f85dd`, tree
+`40110cc03377380c1a9ef4568ef28a4079880e89`, identical to validated head
+`96aaac51`. Nowaker co-author trailer verified; source unchanged at closure.
 
 **#1186 accepted direction, blocking nested immutability correction underway.**
-Source `9d33e45f` cherry-picked as `f855702a` in
+Source `9d33e45f` initially cherry-picked as `f855702a`, rebased onto merged
+#1203 as `25defa35` (Author/AuthorDate preserved), in
 `/private/tmp/meridian-backlog-store-1186`. Two maintainer regression tests fail
 on the authored change: modifying caller-owned arrays changes cached history,
 and nested lookup edits bypass the shallow freeze. The serialization memo then
 retains different disk bytes. Own and deeply freeze new entries; preserve memo
-identity for unchanged entries. Focused corrected tests/typecheck pass; full
-suite, performance and real OpenCode/E41 gates remain open.
+identity for unchanged entries. Correction `d5dc2a43` owns changed arrays and
+freezes nested parsed data at lookup/snapshot exposure. Focused corrected
+tests/typecheck/build pass. All four final rebased Opus E41 modes pass; actual
+two-client OpenCode large-store read/continuation proof passes and is being
+strengthened to require each client's distinct receipt. Final full suite/CI
+remain gates. [Durable findings and process proof](evidence/1186-store-mutation.md).
 
 **#1201 pending actual-client proof.** Source `30e01969`. Public implicated
 client is `XInTheDark/meowbert-ai-agent`. Its own commit `08e771a9` (2026-10-01

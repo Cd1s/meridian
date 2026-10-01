@@ -491,6 +491,10 @@ but a running durable callback always finishes before returning ownership.
 Cleanup never receives the canceled admission signal. Publication callbacks
 remain synchronous; same-context recursive acquisition is rejected explicitly.
 
+## Session store write cost
+
+`sessionStore.ts` mutations are synchronous and run on the event loop, so their cost is lag for every request. The parsed document is cached by file identity (device, inode, size, mtime, ctime); every writer publishes by rename while holding the store lock, so a locked mutation that finds the cache current builds on it without re-parsing. Mutators receive a copy-on-write draft and replace entries rather than editing them. New entries own a deep copy of caller data before serialization. Cached entries/maps and metadata are frozen; privately parsed nested arrays are frozen before a lookup or snapshot exposes them, avoiding a full nested walk for a single cold lookup. Each entry's serialized UTF-8 bytes are memoized, so a write encodes only the entries it changed. Unchanged entries keep their identity and serialized bytes. The file format, lock, fsync and rename are unchanged.
+
 ## Lineage hash encoding
 
 `session/lineage.ts` hashes structured v2 records with separate history, message and block domains. Records preserve roles, block and message boundaries, tool call identity/arguments, and result identity/error status. JSON object keys are canonicalized; plain text and a single text block remain equivalent, and opaque thinking/cache hints remain excluded. Display-oriented `normalizeContent` is not a lineage proof.
