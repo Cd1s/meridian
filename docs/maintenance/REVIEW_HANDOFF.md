@@ -121,7 +121,7 @@ maintainer commit `70385c83` removes fork-only packaging workflow. Current main
 and published 1.76.5 share guard blob `b93ea333e1263b903dac074baf30942a480f5607`.
 Authored reproduction exits 1 before (120 seconds of ping-only events), 0 after
 (timeout at 90 seconds); focused controls pass 8 tests. Full suite and actual
-client/model evidence remain gates; do not infer proof from a unit replay.
+client/model evidence are recorded below; a unit replay alone is insufficient.
 A disposable real SDK / CLI 2.1.284 local API probe filters transport pings
 before message_start and ends with no_events, rather than reproducing the nested
 SDK event. The longer 2.1.283 probe observed six actual nested SDK pings. Its duration
@@ -142,10 +142,38 @@ affected model/version and before-code live path still need establishing;
 owner does not know them. Do not call a synthetic HTTP-only success actual
 Meowbert E2E. Continue independent work while that gate is open.
 
-Remaining PRs/issues are still queued; the dated September 29 plan supplies
-review leads, not current approvals. Refresh each live head/discussion before
-acting, and inventory again after merges. #1192 is now GitHub-ready, but its
-current body no longer requests a draft hold; live affected-client proof remains a gate.
+**Final behavior deliveries and queue dispositions (2026-10-01).**
+#1177 merged as [#1209](https://github.com/rynfar/meridian/pull/1209), merge
+`0f2a4a541b3b7b14022317ecd9ffe14c149b8f1d`, tree
+`d1250b1c059860ff994ef0cf9b86f046eee64788` equals tested head
+`d08011f8624d62ef8f66d261cc9b1295eaf7883d`. Final local suite 5017 pass /
+zero fail / four skip, standalone typecheck/build and all six executed CI checks
+including [test](https://github.com/rynfar/meridian/actions/runs/36831203611/job/110267982115)
+pass. Nate Berkopec co-author trailer verified; issue closed by validated fix.
+
+OpenCode scrub #5 accepted with correction in merged
+[scrub #19](https://github.com/rynfar/meridian-plugin-opencode-scrub/pull/19).
+Source `40094cd9adaef32456befa54c1b969d611785395` retained as authored cherry
+`eddcf85a40701b94c6b95cfbe16b7cd644d57350`, maintainer correction `a2c479c`.
+Restore current guards/OMO fixes and remove environment preamble in minimal
+mode while keeping cwd, policy and optional identity rewrite. 28 tests / zero
+fail, typecheck/build/pack, two default fixtures byte-identical to main; actual
+OpenCode 1.18.33 / Opus 5.5 / SDK 0.2.141 / Code 2.1.284 on macOS arm64 passes
+actual read receipts/same-session continuation in both modes, independent
+installed tarball. Final escrowed minimal harness rerun also passes. Final-head
+[build CI](https://github.com/rynfar/meridian-plugin-opencode-scrub/actions/runs/36832792431/job/110273021200)
+passes. Merge `77316d2ba4ed77ef3d5f12e40256ba1c3699d85a`, tree
+`fbb9c0a4e44ab2161a0854fe93c305db30cc3b2d` equals tested `a2c479c`.
+briankeefe human co-author verified; source unchanged before closure. No
+publication. [Durable plugin proof](https://github.com/rynfar/meridian-plugin-opencode-scrub/blob/main/docs/evidence/5-minimal-mode.md).
+
+[Complete refreshed dispositions](BACKLOG_DISPOSITIONS_2026-10-01.md) record
+all remaining source heads, product-fit/regression findings and observable
+revisit triggers, including reproduced #792 prototype-dictionary skip. Current
+owner closure of #1009 does not supply historical missing abort-window proof.
+No release or external message performed. The queue retains explicit public
+contract, actual-client evidence, dedicated-lane and credential gates; it is not
+empty. Refresh live status before resuming any deferred item.
 
 ## Historical PR review and plan (2026-09-29)
 
