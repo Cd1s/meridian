@@ -102,7 +102,9 @@ export const settingsPageHtml = `<!DOCTYPE html>
   }
   .reset-btn:hover { border-color: var(--red); color: var(--red); }
 
-  /* Model pricing */
+  /* Model pricing. Four fixed-width rate inputs cannot shrink to a phone
+     viewport, so the table scrolls inside its card instead of the page. */
+  .pricing-scroll { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   .pricing-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .pricing-table th { text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 500;
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
@@ -167,10 +169,12 @@ ${profileBarHtml}
     dashboard until defined here). Changes apply on the next dashboard refresh.
   </p>
   <div class="adapter-card">
-    <table class="pricing-table">
-      <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th><th>Source</th><th></th></tr></thead>
-      <tbody id="pricingRows"></tbody>
-    </table>
+    <div class="pricing-scroll">
+      <table class="pricing-table">
+        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache Read</th><th>Cache Write</th><th>Source</th><th></th></tr></thead>
+        <tbody id="pricingRows"></tbody>
+      </table>
+    </div>
     <div class="pricing-add">
       <input type="text" class="pricing-input" id="newModelName" placeholder="model id (e.g. claude-opus-9)">
       <input type="number" class="pricing-input" id="newModelInput" placeholder="input" min="0" step="0.01">

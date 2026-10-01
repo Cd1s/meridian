@@ -1,5 +1,26 @@
 # Upstream review handoff
 
+## PR review and plan (2026-09-29)
+
+Live inventory: 12 Meridian PRs and two OpenCode scrub PRs, refreshed against
+`0ec52a28d9c70d0f9aa84767613c7a08125d25e4`. See the
+[prioritized plan](PR_REVIEW_PLAN_2026-09-29.md) for each source head,
+disposition, correction and E2E gate. This supersedes historical ready/draft
+status for #792 (now ready); #1192 remains draft under author observation.
+
+Delivery [#1196](https://github.com/rynfar/meridian/pull/1196) is open.
+Local gates passed: 4,943 tests, 0 failures, 4 skips; typecheck/build and the
+retained browser probe passed. Required final-head CI remains tracked on the PR.
+
+#1191 is incorporated as authored commit `de0f00329ce0468e3b3bc274e197fbbd199fa407`
+in `/tmp/meridian-review-20260929`, branch `codex/pr-review-plan-20260929`.
+[Independent browser evidence](evidence/1191-settings-overflow.md) proves the
+pricing overflow fix at 375px with a failing rule-removal control and desktop
+parity. Other viewport overflow remains outside the pricing table. The larger
+PRs have a triage plan, not completed independent acceptance validation.
+No merge/release/comment/source closure is authorized or performed by this entry.
+
+
 ## Contributor fix batch #1174/#1178/#1172/#1173/#1169 (2026-09-28)
 
 Live queue at start: 9 contributor PRs plus release PR #1167 and own #1050, from

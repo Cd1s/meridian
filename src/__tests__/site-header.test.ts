@@ -189,6 +189,13 @@ describe("design-system conformance (DESIGN.md)", () => {
   })
 })
 
+describe("settings page layout", () => {
+  test("pricing table scrolls inside its card so a phone viewport never scrolls sideways", () => {
+    expect(settingsPageHtml).toMatch(/\.pricing-scroll \{[^}]*overflow-x: auto/)
+    expect(settingsPageHtml).toMatch(/<div class="pricing-scroll">\s*<table class="pricing-table">/)
+  })
+})
+
 describe("per-page titles do not repeat the brand", () => {
   test("dashboard h1 is the page name, not the brand", () => {
     expect(dashboardHtml).not.toContain("<h1>Meridian</h1>")
