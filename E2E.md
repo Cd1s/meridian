@@ -7003,3 +7003,15 @@ reported URL in the collaborative browser, and evaluate the full expression in
 `scripts/e2e-profile-find-browser.js`. Require PASS for the mobile/desktop matrix,
 anchor/header growth, polling/focus, filter/reorder and no-routing-mutation
 controls. See `docs/maintenance/evidence/1200-profile-find.md` for evidence limits.
+
+## SDK ping idle regression (#1177)
+
+See [durable evidence](docs/maintenance/evidence/1177-sdk-ping-idle.md).
+`node scripts/repro-sdk-ping-idle.mjs` directly asserts the deadline.
+`E2E_PI_CLI=<cli.js> E2E_CLAUDE_BIN=<2.1.283> node scripts/e2e-pi-sdk-ping-idle.mjs`
+drives actual Pi/SDK/CLI against a controlled ping-only API;
+`E2E_EXPECT_STALL=0` asserts the unchanged baseline waits past its deadline.
+Use the live companion with the same client/CLI and installed Pi scrub entry:
+`E2E_MERIDIAN_ROOT=<built checkout> E2E_PI_CLI=<cli.js> E2E_CLAUDE_BIN=<2.1.283> E2E_PLUGIN_PATH=<entrypoint> node scripts/e2e-pi-live-idle-control.mjs`.
+The controlled upstream is not a live model; the companion uses actual Opus 5.5
+and proves a real read receipt and Pi session continuation.
