@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
 import { AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
 import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
-import { parseAgRequest, renderAgPrompt, historyKey, contractKey } from "../proxy/backends/antigravityProtocol"
+import { parseAgRequest, agEffortFallback, renderAgPrompt, historyKey, contractKey } from "../proxy/backends/antigravityProtocol"
 
 interface TestReply {
   id: string
@@ -45,6 +45,17 @@ describe("Antigravity request contract", () => {
     expect(contractKey(base)).not.toBe(contractKey({ ...base, output_config: { effort: "low" } }))
     expect(() => parseAgRequest({ ...initial(), output_config: { effort: "max" } })).toThrow()
     expect(parseAgRequest({ ...initial(), output_config: { format: { type: "json_schema", schema: {} } } }).output_config?.format?.type).toBe("json_schema")
+  })
+  it("lets client effort select the sibling official Gemini slug", () => {
+    const high = parseAgRequest({ ...initial(), model: "gemini-3.8-flash-low", output_config: { effort: "high" } })
+    expect([high.model, high.output_config?.effort]).toEqual(["gemini-3.8-flash-high", "high"])
+    expect(parseAgRequest({ ...initial(), model: "gemini-3.8-flash-low" }).model).toBe("gemini-3.8-flash-low")
+    expect(() => parseAgRequest({ ...initial(), model: "fixture-model-low", output_config: { effort: "high" } })).toThrow("model slug")
+    const pro = ["gemini-3.1-pro-low", "gemini-3.1-pro-high"]
+    expect(agEffortFallback("gemini-3.1-pro-medium", pro)).toEqual({ model: "gemini-3.1-pro-high", effort: "high" })
+    expect(agEffortFallback("gemini-3.1-pro-medium", ["gemini-3.1-pro-low"])).toEqual({ model: "gemini-3.1-pro-low", effort: "low" })
+    expect(agEffortFallback("gemini-3.1-pro-medium", [])).toBeUndefined()
+    expect(agEffortFallback("claude-sonnet-4-6", pro)).toBeUndefined()
   })
   it("adapts numeric budgets only by explicit opt-in, without mutating client input", () => {
     const original = { ...initial(), model: "gemini-fixture-low", thinking: { type: "enabled", budget_tokens: 8192 } }
