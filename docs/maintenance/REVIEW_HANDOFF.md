@@ -1,6 +1,54 @@
 # Upstream review handoff
 
-## PR review and plan (2026-09-29)
+## Active authorized backlog (2026-09-30)
+
+Owner requested a persistent goal covering PRs/issues, authored cherry-picks,
+maintainer corrections and headless actual-client evidence. Initial paginated
+inventory: Meridian 18 PRs / 11 issues; OpenCode scrub 2 PRs; Pi scrub issue #13;
+Hermes scrub, OpenClaw scrub and hudscrub empty. Accessible owner/org repository
+discovery found no additional scrub candidates. No release or community-message
+authorization. Preserve the dirty desktop checkout at `446a0f163`.
+
+**#1191 accepted and integrated as #1196.** Refreshed exact source/base/head and
+all required CI before squash. Merge `c04a861ba8a4fb71d105065afa9b73019d9985f4`
+has tree `0f62d771d385bcbd619725072a449811524177c8`, identical to validated
+`84902f520bfa70f85227369b40f1cde0518070e5`. Explicit verified Nowaker human
+co-author trailer present. Source head unchanged at closure. Existing independent
+browser proof and local/CI gates remain valid: base did not change before merge.
+Browser recheck was unavailable this session (collaborative preview open/navigation
+failed), so no new browser result is claimed. No unrelated model calls for CSS.
+
+**#1197 accepted direction, authored integration under verification.**
+Source `3baf6f59` cherry-picked as `e97c6f61`; Author/AuthorDate preserved.
+[Durable proof](evidence/1197-auth-refresh.md) includes the committed real-CLI
+delay harness: unchanged baseline health probes 2258 ms, fixed 2–4 ms, one
+refresh. Actual headless OpenCode 1.18.33 / Opus 5.5 / SDK 0.2.141 / scrub
+0.2.3 same-session continuation passes. Final local suite and exact-head CI
+remain gates until the delivery PR records their outcomes.
+
+**#1186 accepted direction, blocking nested immutability correction underway.**
+Source `9d33e45f` cherry-picked as `f855702a` in
+`/private/tmp/meridian-backlog-store-1186`. Two maintainer regression tests fail
+on the authored change: modifying caller-owned arrays changes cached history,
+and nested lookup edits bypass the shallow freeze. The serialization memo then
+retains different disk bytes. Own and deeply freeze new entries; preserve memo
+identity for unchanged entries. Focused corrected tests/typecheck pass; full
+suite, performance and real OpenCode/E41 gates remain open.
+
+**#1201 pending actual-client proof.** Source `30e01969`. Public implicated
+client is `XInTheDark/meowbert-ai-agent`. Its own commit `08e771a9` (2026-10-01
+01:07:50 UTC) identifies Opus and fixes interleaving by recording all response
+calls before outputs. Current client already uses that ordering. Original
+affected model/version and before-code live path still need establishing;
+owner does not know them. Do not call a synthetic HTTP-only success actual
+Meowbert E2E. Continue independent work while that gate is open.
+
+Remaining PRs/issues are still queued; the dated September 29 plan supplies
+review leads, not current approvals. Refresh each live head/discussion before
+acting, and inventory again after merges. #1192 is now GitHub-ready, but its
+explicit three-day observation criterion must be checked in the current body.
+
+## Historical PR review and plan (2026-09-29)
 
 Live inventory: 12 Meridian PRs and two OpenCode scrub PRs, refreshed against
 `0ec52a28d9c70d0f9aa84767613c7a08125d25e4`. See the
@@ -8,7 +56,7 @@ Live inventory: 12 Meridian PRs and two OpenCode scrub PRs, refreshed against
 disposition, correction and E2E gate. This supersedes historical ready/draft
 status for #792 (now ready); #1192 remains draft under author observation.
 
-Delivery [#1196](https://github.com/rynfar/meridian/pull/1196) is open.
+Delivery [#1196](https://github.com/rynfar/meridian/pull/1196) was open at this checkpoint; it is now merged as recorded above.
 Local gates passed: 4,943 tests, 0 failures, 4 skips; typecheck/build and the
 retained browser probe passed. Required final-head CI remains tracked on the PR.
 

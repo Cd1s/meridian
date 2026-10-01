@@ -19,19 +19,34 @@
  *     gives isolation without any shared-singleton race — which is what drove
  *     the reimplementation in the first place.
  */
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from "bun:test"
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock, setSystemTime } from "bun:test"
+import * as realChildProcess from "node:child_process"
 import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-/** Controls what the mocked `claude auth status` does on the next call. */
-let authBehavior: "success" | "fail" = "success"
+/**
+ * Controls what the mocked `claude auth status` does on the next call.
+ * "hang" models a spawn stalled on a loaded host: the callback is parked in
+ * `hungSpawns` until the test settles it with `releaseHungSpawns`.
+ */
+let authBehavior: "success" | "fail" | "hang" = "success"
 let execFileCalls = 0
 /** Options the probe passed to execFile, so spawn flags can be asserted. */
 let execFileOptions: any
 let currentPayload = { loggedIn: true, email: "test@test.com", subscriptionType: "max" }
+let hungSpawns: Array<(err: Error | null, out: { stdout: string; stderr: string }) => void> = []
 
+function releaseHungSpawns(): void {
+  const pending = hungSpawns
+  hungSpawns = []
+  for (const done of pending) done(null, { stdout: JSON.stringify(currentPayload), stderr: "" })
+}
+
+// The /health test loads server.ts, which imports more of child_process than
+// the auth probe uses; only exec and execFile are replaced.
 mock.module("child_process", () => ({
+  ...realChildProcess,
   exec: (_cmd: string, optsOrCb: any, cb?: any) => {
     const done = typeof optsOrCb === "function" ? optsOrCb : cb
     done?.(null, { stdout: "", stderr: "" })
@@ -40,6 +55,10 @@ mock.module("child_process", () => ({
     execFileCalls++
     execFileOptions = typeof optsOrCb === "function" ? undefined : optsOrCb
     const done = typeof optsOrCb === "function" ? optsOrCb : cb
+    if (authBehavior === "hang") {
+      hungSpawns.push(done)
+      return
+    }
     if (authBehavior === "fail") {
       done?.(new Error("claude auth status failed"), { stdout: "", stderr: "" })
       return
@@ -56,12 +75,23 @@ const {
   getAuthCacheInfo,
   resetCachedClaudeAuthStatus,
   expireAuthStatusCache,
+  pendingAuthStatusRefresh,
+  authStatusFailureTtlMs,
 } = await import("../proxy/models")
 
 afterAll(() => {
   if (savedClaudePath === undefined) delete process.env.MERIDIAN_CLAUDE_PATH
   else process.env.MERIDIAN_CLAUDE_PATH = savedClaudePath
 })
+
+const NOT_SETTLED = Symbol("not settled")
+
+function settledWithin<T>(promise: Promise<T>, ms: number): Promise<T | typeof NOT_SETTLED> {
+  return Promise.race([promise, new Promise<typeof NOT_SETTLED>((r) => setTimeout(() => r(NOT_SETTLED), ms))])
+}
+
+/** Let the refresh reach execFile: it first awaits executable resolution. */
+const tick = () => new Promise((r) => setTimeout(r, 10))
 
 /** Unique profile per test — the isolation that replaces the local copy. */
 let profileSeq = 0
@@ -72,8 +102,14 @@ describe("getClaudeAuthStatusAsync — real implementation", () => {
     authBehavior = "success"
     execFileCalls = 0
     execFileOptions = undefined
+    hungSpawns = []
     currentPayload = { loggedIn: true, email: "test@test.com", subscriptionType: "max" }
     resetCachedClaudeAuthStatus()
+  })
+
+  afterEach(() => {
+    releaseHungSpawns()
+    setSystemTime()
   })
 
   // Windows allocates a visible console for a child launched without this flag,
@@ -105,15 +141,67 @@ describe("getClaudeAuthStatusAsync — real implementation", () => {
     await getClaudeAuthStatusAsync(p)
     expireAuthStatusCache()
     await getClaudeAuthStatusAsync(p)
+    await pendingAuthStatusRefresh(p)
     expect(execFileCalls).toBe(2)
   })
 
-  it("picks up a changed payload after expiry", async () => {
+  it("picks up a changed payload after expiry, one call later", async () => {
     const p = nextProfile()
-    await getClaudeAuthStatusAsync(p)
+    const previous = await getClaudeAuthStatusAsync(p)
     currentPayload = { loggedIn: true, email: "new@test.com", subscriptionType: "team" }
     expireAuthStatusCache()
+    // The caller that finds the cache expired is answered from it...
+    expect(await getClaudeAuthStatusAsync(p)).toEqual(previous!)
+    await pendingAuthStatusRefresh(p)
+    // ...and the refresh it started answers the next one.
     expect(await getClaudeAuthStatusAsync(p)).toEqual(currentPayload)
+  })
+
+  it("does not wait on the auth-status spawn once the cache has expired", async () => {
+    // The /health freeze: a load balancer probing with a 2 s timeout marked the
+    // proxy down whenever the expired cache made the probe wait on a spawn
+    // that a loaded host stretched past it.
+    const p = nextProfile()
+    const previous = await getClaudeAuthStatusAsync(p)
+    expireAuthStatusCache()
+    authBehavior = "hang"
+
+    expect(await settledWithin(getClaudeAuthStatusAsync(p), 200)).toEqual(previous!)
+    await tick()
+    expect(hungSpawns).toHaveLength(1)
+
+    currentPayload = { loggedIn: true, email: "later@test.com", subscriptionType: "max" }
+    releaseHungSpawns()
+    await pendingAuthStatusRefresh(p)
+    expect(await getClaudeAuthStatusAsync(p)).toEqual(currentPayload)
+  })
+
+  it("starts a single background refresh for concurrent callers after expiry", async () => {
+    const p = nextProfile()
+    const previous = await getClaudeAuthStatusAsync(p)
+    expireAuthStatusCache()
+    authBehavior = "hang"
+
+    const results = await settledWithin(
+      Promise.all(Array.from({ length: 5 }, () => getClaudeAuthStatusAsync(p))),
+      200,
+    )
+    expect(results).toEqual(Array.from({ length: 5 }, () => previous!))
+    await tick()
+    // One warm-up spawn plus exactly one refresh, still in flight.
+    expect(execFileCalls).toBe(2)
+    expect(await settledWithin(getClaudeAuthStatusAsync(p), 200)).toEqual(previous!)
+    await tick()
+    expect(execFileCalls).toBe(2)
+  })
+
+  it("still waits on a cold start with nothing to fall back on", async () => {
+    const p = nextProfile()
+    authBehavior = "hang"
+    const first = getClaudeAuthStatusAsync(p)
+    expect(await settledWithin(first, 100)).toBe(NOT_SETTLED)
+    releaseHungSpawns()
+    expect(await first).toEqual(currentPayload)
   })
 
   it("falls back to last-known-good when the auth check fails", async () => {
@@ -159,6 +247,64 @@ describe("getClaudeAuthStatusAsync — real implementation", () => {
     authBehavior = "fail"
     await getClaudeAuthStatusAsync(p)
     expect(getAuthCacheInfo(p).lastSuccessAt).toBe(0)
+  })
+
+  it("doubles the retry delay per consecutive failure, capped at 5 minutes", () => {
+    expect(authStatusFailureTtlMs(1)).toBe(5_000)
+    expect(authStatusFailureTtlMs(2)).toBe(10_000)
+    expect(authStatusFailureTtlMs(3)).toBe(20_000)
+    expect(authStatusFailureTtlMs(6)).toBe(160_000)
+    expect(authStatusFailureTtlMs(7)).toBe(300_000)
+    expect(authStatusFailureTtlMs(1_000)).toBe(300_000)
+  })
+
+  it("backs off after repeated failures and resets on success", async () => {
+    // A flat 5 s retry re-spawned `claude auth status` on every health probe
+    // for as long as the check kept failing.
+    const p = nextProfile()
+    let now = Date.parse("2026-01-01T00:00:00Z")
+    const advance = (ms: number) => { now += ms; setSystemTime(new Date(now)) }
+    setSystemTime(new Date(now))
+
+    authBehavior = "fail"
+    await getClaudeAuthStatusAsync(p)
+    expect(execFileCalls).toBe(1)
+
+    advance(4_000)
+    await getClaudeAuthStatusAsync(p)
+    expect(execFileCalls).toBe(1)
+    advance(1_500)
+    await getClaudeAuthStatusAsync(p)
+    expect(execFileCalls).toBe(2)
+
+    // Second consecutive failure: 10 s, not 5 s.
+    advance(6_000)
+    await getClaudeAuthStatusAsync(p)
+    expect(execFileCalls).toBe(2)
+    advance(4_500)
+    await getClaudeAuthStatusAsync(p)
+    expect(execFileCalls).toBe(3)
+
+    // Third: 20 s.
+    advance(15_000)
+    await getClaudeAuthStatusAsync(p)
+    expect(execFileCalls).toBe(3)
+    advance(5_500)
+    authBehavior = "success"
+    expect(await getClaudeAuthStatusAsync(p)).toEqual(currentPayload)
+    expect(execFileCalls).toBe(4)
+
+    // A success resets the count: the next failure is retried after 5 s again.
+    advance(61_000)
+    authBehavior = "fail"
+    await getClaudeAuthStatusAsync(p)
+    await pendingAuthStatusRefresh(p)
+    expect(execFileCalls).toBe(5)
+    expect(getAuthCacheInfo(p).isFailure).toBe(true)
+    advance(5_500)
+    await getClaudeAuthStatusAsync(p)
+    await pendingAuthStatusRefresh(p)
+    expect(execFileCalls).toBe(6)
   })
 
   it("de-duplicates concurrent cold-cache calls into one subprocess", async () => {
@@ -252,6 +398,7 @@ describe("auth-status cache — credential mtime invalidation", () => {
 
     ageCredentialFile()
     await getClaudeAuthStatusAsync(p, overrides)
+    await pendingAuthStatusRefresh(p)
     expect(execFileCalls).toBe(2)
   })
 
@@ -264,6 +411,8 @@ describe("auth-status cache — credential mtime invalidation", () => {
     currentPayload = { loggedIn: true, email: "rotated@test.com", subscriptionType: "max" }
 
     ageCredentialFile()
+    await getClaudeAuthStatusAsync(p, overrides)
+    await pendingAuthStatusRefresh(p)
     expect(await getClaudeAuthStatusAsync(p, overrides)).toEqual(currentPayload)
   })
 
@@ -277,5 +426,45 @@ describe("auth-status cache — credential mtime invalidation", () => {
     ageCredentialFile()
     await getClaudeAuthStatusAsync(p, overrides)
     expect(execFileCalls).toBe(1)
+  })
+})
+
+/**
+ * The same property end to end: `/health` over the real auth-status cache.
+ * Caddy probes it with a 2 s timeout, so a probe that waits on the spawn is a
+ * proxy marked down.
+ */
+describe("/health with an expired auth-status cache", () => {
+  beforeEach(() => {
+    authBehavior = "success"
+    execFileCalls = 0
+    hungSpawns = []
+    currentPayload = { loggedIn: true, email: "test@test.com", subscriptionType: "max" }
+    resetCachedClaudeAuthStatus()
+  })
+
+  afterEach(() => {
+    releaseHungSpawns()
+  })
+
+  it("answers healthy from the previous status while the refresh is stalled", async () => {
+    const { createProxyServer } = await import("../proxy/server")
+    const { app } = createProxyServer({ port: 0, host: "127.0.0.1" })
+    const probe = async () => {
+      const res = await app.fetch(new Request("http://localhost/health"))
+      return { status: res.status, body: await res.json() as Record<string, unknown> }
+    }
+
+    expect((await probe()).body.status).toBe("healthy")
+    expireAuthStatusCache()
+    authBehavior = "hang"
+
+    const stalled = await settledWithin(probe(), 1_000)
+    expect(stalled).not.toBe(NOT_SETTLED)
+    if (stalled === NOT_SETTLED) return
+    expect(stalled.status).toBe(200)
+    expect(stalled.body.status).toBe("healthy")
+    await tick()
+    expect(hungSpawns).toHaveLength(1)
   })
 })

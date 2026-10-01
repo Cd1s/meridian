@@ -6,6 +6,28 @@ Live tests against the real proxy + Claude Max SDK. These verify the full reques
 
 > **Droid tests (D1–D10)** additionally require `droid` installed (`droid --version` ≥ 0.89.0) and a Factory AI account for BYOK configuration. Tests D1–D10 cover internal mode (the default). Passthrough mode for Droid is opt-in via `MERIDIAN_PASSTHROUGH=1` and requires `droid` ≥ 0.109 — see "Droid passthrough mode" below.
 
+## Auth-status refresh responsiveness
+
+```sh
+bun scripts/e2e-auth-status-refresh.mjs
+```
+
+Requires actual Claude login on macOS/Linux. The gate forwards to the installed
+Claude CLI, delaying only `auth status` by two seconds. Five concurrent warm
+`/health` probes must answer within one second while a single refresh remains
+in flight; `/v1/models` must also answer during that refresh. It asserts healthy
+actual login and that fresh probes do not start another subprocess. Disposable
+configuration/session/work directories and read-only credentials isolate state.
+No authentication payload is fabricated. On an unchanged pre-fix checkout,
+the same harness with `--expect-blocking` must exhibit the two-second stall.
+
+Verified macOS arm64 with Claude Code 2.1.284: baseline five probes 2258 ms
+each; fixed probes 2–4 ms, one real refresh. Adjacent actual headless OpenCode
+1.18.33 / Opus 5.5 / scrub 0.2.3 same-session continuation passed.
+See [durable evidence](docs/maintenance/evidence/1197-auth-refresh.md).
+This demonstrates a controlled auth-subprocess delay, not a reproduction of
+the contributor's entire overloaded Linux deployment or Windows behavior.
+
 ## Antigravity subscription CLI backend
 
 ```sh

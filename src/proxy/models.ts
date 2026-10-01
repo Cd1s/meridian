@@ -98,8 +98,21 @@ export interface ClaudeAuthStatus {
 
 
 const AUTH_STATUS_CACHE_TTL_MS = 60_000
-/** Shorter TTL for failed auth checks — retry sooner to recover */
+/** Retry delay after the first failed auth check. */
 const AUTH_STATUS_FAILURE_TTL_MS = 5_000
+const AUTH_STATUS_FAILURE_MAX_TTL_MS = 5 * 60_000
+
+/**
+ * How long a failed auth check is trusted before the next attempt: 5 s after
+ * the first failure, doubling with each consecutive one up to 5 min. A
+ * success resets the count. A flat 5 s retry spawned `claude auth status`
+ * every few seconds for as long as the check kept failing - under host load
+ * that is the very thing keeping it slow.
+ */
+export function authStatusFailureTtlMs(consecutiveFailures: number): number {
+  const doublings = Math.max(0, consecutiveFailures - 1)
+  return Math.min(AUTH_STATUS_FAILURE_TTL_MS * 2 ** doublings, AUTH_STATUS_FAILURE_MAX_TTL_MS)
+}
 
 let cachedAuthStatus: ClaudeAuthStatus | null = null
 /** Last successfully retrieved auth status — survives transient failures
@@ -107,6 +120,7 @@ let cachedAuthStatus: ClaudeAuthStatus | null = null
 let lastKnownGoodAuthStatus: ClaudeAuthStatus | null = null
 let cachedAuthStatusAt = 0
 let cachedAuthStatusIsFailure = false
+let cachedAuthStatusFailures = 0
 let cachedAuthStatusPromise: Promise<ClaudeAuthStatus | null> | null = null
 let cachedAuthStatusCredMtimeMs = 0
 
@@ -489,6 +503,8 @@ interface AuthCache {
   lastKnownGood: ClaudeAuthStatus | null
   at: number
   isFailure: boolean
+  /** Consecutive failed checks, for the retry backoff. 0 after a success. */
+  failures: number
   promise: Promise<ClaudeAuthStatus | null> | null
   lastSuccessAt: number
   credMtimeMs: number
@@ -509,7 +525,7 @@ export function getAuthCacheInfo(profileId?: string): { lastCheckedAt: number; l
 function getAuthCache(key: string): AuthCache {
   let cache = profileAuthCaches.get(key)
   if (!cache) {
-    cache = { status: null, lastKnownGood: null, at: 0, isFailure: false, promise: null, lastSuccessAt: 0, credMtimeMs: 0 }
+    cache = { status: null, lastKnownGood: null, at: 0, isFailure: false, failures: 0, promise: null, lastSuccessAt: 0, credMtimeMs: 0 }
     profileAuthCaches.set(key, cache)
   }
   return cache
@@ -531,21 +547,39 @@ export async function getClaudeAuthStatusAsync(profileId?: string, envOverrides?
   const c_lastKnownGood = cache ? cache.lastKnownGood : lastKnownGoodAuthStatus
   const c_at = cache ? cache.at : cachedAuthStatusAt
   const c_isFailure = cache ? cache.isFailure : cachedAuthStatusIsFailure
-  let c_promise = cache ? cache.promise : cachedAuthStatusPromise
+  const c_failures = cache ? cache.failures : cachedAuthStatusFailures
+  const c_promise = cache ? cache.promise : cachedAuthStatusPromise
 
   const c_credMtime = cache ? cache.credMtimeMs : cachedAuthStatusCredMtimeMs
 
-  const ttl = c_isFailure ? AUTH_STATUS_FAILURE_TTL_MS : AUTH_STATUS_CACHE_TTL_MS
+  const ttl = c_isFailure ? authStatusFailureTtlMs(c_failures) : AUTH_STATUS_CACHE_TTL_MS
   // A changed credential file means the other instance rotated the token, so
   // the cached answer predates it regardless of how recently it was taken.
   // Always 0 === 0 unless MERIDIAN_CREDENTIALS_READONLY is set.
   const credMtime = credentialFileMtimeMs(envOverrides)
+  const previous = c_status ?? c_lastKnownGood
   if (c_at > 0 && Date.now() - c_at < ttl && credMtime === c_credMtime) {
-    return c_status ?? c_lastKnownGood
+    return previous
   }
-  if (c_promise) return c_promise
 
-  c_promise = (async () => {
+  // Stale-while-revalidate. `/health` reads this on every probe, and the
+  // refresh spawns the claude binary with a 5 s timeout; a load balancer
+  // probing with a shorter timeout marked a healthy proxy down each time the
+  // cache expired on a loaded host. With a previous answer in hand, serve it
+  // and refresh in the background - a changed answer reaches the next caller.
+  // Only a caller with nothing to fall back on waits. One refresh at a time:
+  // concurrent callers share the in-flight one.
+  const inflight = c_promise ?? startAuthStatusRefresh(cache, profileId, envOverrides, credMtime)
+  return previous ?? inflight
+}
+
+function startAuthStatusRefresh(
+  cache: AuthCache | null,
+  profileId: string | undefined,
+  envOverrides: Record<string, string> | undefined,
+  credMtime: number,
+): Promise<ClaudeAuthStatus | null> {
+  const refresh = (async (): Promise<ClaudeAuthStatus | null> => {
     try {
       // Route through the resolver instead of relying on `claude` being
       // on PATH. Stefan's case (#478): bunx-installed meridian under
@@ -575,27 +609,30 @@ export async function getClaudeAuthStatusAsync(profileId?: string, envOverrides?
       })
       if (cache) {
         cache.status = parsed; cache.lastKnownGood = parsed
-        cache.at = Date.now(); cache.isFailure = false; cache.lastSuccessAt = Date.now()
+        cache.at = Date.now(); cache.isFailure = false; cache.failures = 0; cache.lastSuccessAt = Date.now()
         cache.credMtimeMs = credMtime
       } else {
         cachedAuthStatus = parsed; lastKnownGoodAuthStatus = parsed
-        cachedAuthStatusAt = Date.now(); cachedAuthStatusIsFailure = false
+        cachedAuthStatusAt = Date.now(); cachedAuthStatusIsFailure = false; cachedAuthStatusFailures = 0
         cachedAuthStatusCredMtimeMs = credMtime
       }
       return parsed
     } catch (err) {
+      const failures = (cache ? cache.failures : cachedAuthStatusFailures) + 1
       claudeLog("auth.status_failed", {
         source: "cli_async",
         profile: profileId ?? "default",
         error: String(err),
         servingLastKnownGood: Boolean(cache ? cache.lastKnownGood : lastKnownGoodAuthStatus),
+        consecutiveFailures: failures,
+        retryInMs: authStatusFailureTtlMs(failures),
       })
       if (cache) {
-        cache.isFailure = true; cache.at = Date.now(); cache.status = null
+        cache.isFailure = true; cache.failures = failures; cache.at = Date.now(); cache.status = null
         cache.credMtimeMs = credMtime
         return cache.lastKnownGood
       } else {
-        cachedAuthStatusIsFailure = true; cachedAuthStatusAt = Date.now()
+        cachedAuthStatusIsFailure = true; cachedAuthStatusFailures = failures; cachedAuthStatusAt = Date.now()
         cachedAuthStatus = null
         cachedAuthStatusCredMtimeMs = credMtime
         return lastKnownGoodAuthStatus
@@ -603,15 +640,25 @@ export async function getClaudeAuthStatusAsync(profileId?: string, envOverrides?
     }
   })()
 
-  if (cache) cache.promise = c_promise
-  else cachedAuthStatusPromise = c_promise
+  // The refresh never rejects (failures resolve to last-known-good), so the
+  // `finally` below cannot surface an unhandled rejection. It releases the
+  // slot only if it still holds this refresh - a test reset may have replaced it.
+  const inflight = refresh.finally(() => {
+    if (cache) {
+      if (cache.promise === inflight) cache.promise = null
+    } else if (cachedAuthStatusPromise === inflight) {
+      cachedAuthStatusPromise = null
+    }
+  })
+  if (cache) cache.promise = inflight
+  else cachedAuthStatusPromise = inflight
+  return inflight
+}
 
-  try {
-    return await c_promise
-  } finally {
-    if (cache) cache.promise = null
-    else cachedAuthStatusPromise = null
-  }
+/** The auth-status refresh currently in flight, if any - for testing only. */
+export function pendingAuthStatusRefresh(profileId?: string): Promise<ClaudeAuthStatus | null> | null {
+  if (!profileId) return cachedAuthStatusPromise
+  return profileAuthCaches.get(profileId)?.promise ?? null
 }
 
 // --- Claude Executable Resolution ---
@@ -898,6 +945,7 @@ export function resetCachedClaudeAuthStatus(): void {
   lastKnownGoodAuthStatus = null
   cachedAuthStatusAt = 0
   cachedAuthStatusIsFailure = false
+  cachedAuthStatusFailures = 0
   cachedAuthStatusPromise = null
   cachedAuthStatusCredMtimeMs = 0
   profileAuthCaches.clear()
