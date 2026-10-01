@@ -520,12 +520,13 @@ export class AntigravityRuntime {
     })().finally(() => { this.quotaCheck = undefined })
     return this.quotaCheck
   }
-  private accountRetryAt = 0
+  private verifiedAt = 0
   async verifyAccount(): Promise<void> {
     if (this.shutdown.signal.aborted) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
+    if (Date.now() - this.verifiedAt < 300_000) return
     const retryAfter = Math.ceil((this.accountRetryAt - Date.now()) / 1000)
     if (retryAfter > 0) throw new AntigravityError(`Antigravity account checks are cooling down after a CLI failure; retry in ${retryAfter} seconds. No model request was sent.`, 503, "api_error", retryAfter)
-    this.verifying ??= this.verifyAccountOnce().catch(error => this.probeFailed(error)).finally(() => { this.verifying = undefined })
+    this.verifying ??= this.verifyAccountOnce().then(() => { this.verifiedAt = Date.now() }).catch(error => this.probeFailed(error)).finally(() => { this.verifying = undefined })
     return this.verifying
   }
   private probeFailed(error: unknown): never {
@@ -540,7 +541,7 @@ export class AntigravityRuntime {
     const options = { env: this.childEnv, signal: this.shutdown.signal }
     this.cliVersion = (await readAgProbe(this.executable, "version", options)).trim()
     // Validate the binary before asking it to inspect subscription configuration.
-    if (this.cliVersion !== "1.2.7") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.2.7. Validate a CLI upgrade before updating the compatibility gate.`)
+    if (this.cliVersion !== "1.2.7" && this.cliVersion !== "1.2.14") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.2.7 / 1.2.14. Validate a CLI upgrade before updating the compatibility gate.`)
     const config = await readAgProbe(this.executable, "configuration", options)
     const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.unknown().optional(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config)).command.data.config
     const customModels = settings.customModelsConfig
@@ -552,7 +553,13 @@ export class AntigravityRuntime {
     this.checking ??= (async () => {
       await this.verifyAccount()
       const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal }).catch(error => this.probeFailed(error))
-      const models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
+      const baseModels = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
+      const extraSlugs = new Set<string>()
+      for (const m of baseModels) {
+        const match = /^([a-zA-Z0-9._-]+)-(low|medium|high)$/.exec(m)
+        if (match) extraSlugs.add(match[1])
+      }
+      const models = [...baseModels, ...extraSlugs]
       if (!models.length) throw new Error("No account models available; sign in using agy")
       this.models = models; this.checkedAt = Date.now(); return models
     })().finally(() => { this.checking = undefined })
