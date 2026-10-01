@@ -281,6 +281,7 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `GET/POST /v1/design/*` | Claude Design MCP proxy (see [Claude Design MCP](agents.md#claude-design-mcp)) |
 | `GET/POST /design-login` | OAuth flow for the design scopes |
 | `GET /health` | Auth status, mode, plugin status |
+| `GET /inflight` | Client requests in flight per upstream; loopback clients only. See [Restarting when idle](#restarting-when-idle) |
 | `POST /auth/refresh` | Manually refresh the OAuth token |
 | `GET /telemetry` | Performance dashboard |
 | `GET /telemetry/requests` | Recent request metrics (JSON) |
@@ -483,6 +484,51 @@ Restart=no
 ```
 
 The idle exit setting is optional. It starts a graceful shutdown after the configured period without a model request; the socket unit starts a new process on the next connection. The inherited fd is not passed on to the SDK subprocess. [E59](../E2E.md#e59-node-socket-activation-and-idle-exit) describes the process-level probe.
+
+## Restarting when idle
+
+`GET /inflight` lets a supervisor on the same host observe admitted client
+HTTP requests before requesting a graceful shutdown:
+
+```json
+{
+  "scope": "client-http",
+  "at": "2026-09-28T11:02:03.456Z",
+  "total": 3,
+  "oldestStartedAt": "2026-09-28T11:01:40.012Z",
+  "upstreams": {
+    "claude": { "streams": 1, "requests": 0, "queued": 2 },
+    "antigravity": { "streams": 0, "requests": 0, "queued": 0 }
+  }
+}
+```
+
+- `scope` is `"client-http"`. `total` counts admitted Claude Messages requests
+  (including internal OpenAI translations) and combined Antigravity POSTs; zero
+  means that none of those requests is currently admitted. It does not mean
+  that restarting will interrupt no work. Each request counts once: in `queued`
+  while it waits for its session's turn or a free SDK slot, otherwise in
+  `streams` or `requests` by whether the client asked for a stream. A request
+  stays counted until its application response body is consumed by the HTTP
+  adapter, cancelled or failed. This is not an acknowledgement of remote receipt.
+- `oldestStartedAt` is when the longest-running of them arrived, or `null`.
+- `antigravity` appears only with `MERIDIAN_BACKEND=combined` and counts
+  `POST /antigravity/*` requests. Background Responses jobs that keep running
+  after their `POST` returned and processes waiting for a client tool result
+  are not counted. The standalone
+  `MERIDIAN_BACKEND=antigravity` server does not serve `/inflight`.
+- Meridian's own background work (token refresh, usage polling, session
+  cleanup) is never counted.
+- Only a loopback peer (`127.0.0.0/8`, `::1`) gets an answer, and not through a
+  proxy: a request with `Forwarded`, `X-Forwarded-For` or `X-Real-IP` gets
+  `403`, as does any other address. No API key is needed. The response holds
+  counts only: no session ids, prompts, profiles or accounts.
+
+A request arriving between a probe and the restart is not covered by the
+probe. Use the [graceful shutdown](#graceful-shutdown) drain; this endpoint
+is not an admission barrier. Background Responses jobs are not restart
+resumable, so a supervisor must also wait for those jobs and pending client
+tool continuations to finish through their own lifecycle APIs.
 
 ## Graceful shutdown
 

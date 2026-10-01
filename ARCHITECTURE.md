@@ -186,6 +186,7 @@ src/
 │   ├── requestAbort.ts        ← HTTP request abort → SDK query abort bridge
 │   ├── sessionTree.ts         ← Live parent→child request registry; subtree cancellation (PURE bookkeeping)
 │   ├── shutdown.ts            ← Bounded HTTP drain and connection tracking
+│   ├── inflight.ts            ← Per-upstream in-flight request counts for GET /inflight (PURE bookkeeping)
 │   ├── adapter.ts             ← AgentAdapter interface (extensibility point for multi-agent support)
 │   ├── adapters/
 │   │   ├── opencode.ts        ← OpenCode adapter (session headers, CWD extraction, tool config)

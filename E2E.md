@@ -7052,3 +7052,15 @@ synthetic API states; it does not prove real artifact certification, which
 requires `node scripts/e2e-build-provenance.mjs` separately. It uses no model or
 credentials. [Incorporation evidence](docs/maintenance/evidence/1171-build-provenance.md)
 records the platform and measured preview viewport.
+
+## Client HTTP activity (#1190)
+
+After build, run `E2E_AUTH_FILE=<private access-only JSON snapshot>
+E2E_PLUGIN_PATH=<independently installed scrub entrypoint> bun
+scripts/e2e-inflight-client.mjs`. The actual OpenCode/SDK/model gate launches two
+independent clients, observes active/queued/idle counts over real sockets, checks
+forwarding refusal, and resumes one client's conversation. The snapshot contains
+`accessToken` and `expiresAt`, never a refresh token, and must stay mode 0600.
+The proxy uses a read-only isolated OAuth-token profile. The endpoint describes
+`scope: client-http`; zero cannot establish background-job, pending-continuation
+or post-probe restart safety. See the durable [evidence](docs/maintenance/evidence/1190-request-activity.md).
