@@ -358,12 +358,48 @@ indistinguishable from one serving the published version.
 |-------|---------|
 | `source` | `npm` — resolved from a `node_modules` install, so `version` is trustworthy. `local` — running from a checkout or a build next to sources. `dev` — explicitly stamped as a development build. |
 | `version` | The `package.json` version. Proof of what is running **only** when `source` is `npm`. |
-| `sha`, `branch`, `dirty` | Present only when the launcher stamped them. `dirty` means uncommitted changes were in the tree. |
+| `sha`, `branch`, `dirty` | Captured from the local tree at build/startup, or from launcher stamps when no Git snapshot is available. `dirty` describes that captured tree, not later edits. |
+| `kind` | Local execution: `artifact` for bundled output, `source` for direct TypeScript execution. |
+| `releaseVersion` | Reachable release tag at build/startup, when available and not older than `package.json` (an older one means newer tags were never fetched). Never an invented next release. |
+| `counter`, `counterScope` | Successful local build ordinal and its worktree-specific history ID. Absent for source runs or unverifiable artifacts. Compare counters only within the same scope. |
+| `attemptId`, `certification` | Embedded artifact identity and its verification result. A process never adopts a newer artifact's identity after startup. |
+| `branchUrl`, `commitUrl` | Public GitHub/GitLab links derived from the checkout's origin, without credentials, query strings or fragments. A dirty build links to its base commit, not its uncommitted edits. |
 | `latest` | Newest published version, from the cached registry check. Absent until the check resolves, and on the first run of a fresh install. |
 | `updateAvailable` | `latest` is strictly newer than `version`. Absent — not `false` — while `latest` is unknown, because "not checked" and "current" are different claims. |
 
-The site header renders this: a blue chip links to the releases page when an
-update is available, and a violet chip marks a non-npm build.
+The site header keeps npm update behavior unchanged. Local builds show their
+release base, build number (or explicit source/unnumbered status), branch, short
+commit and dirty marker. Branch/commit links are blue; metadata is violet.
+
+`GET /build-status` is available only for local/dev execution and uses the
+existing optional API-key protection. It returns `{runtime, latest?, state,
+buildsBehind?}` with `Cache-Control: no-store`. Runtime identity is immutable;
+disk state is refreshed separately in a bounded worker, shared across requests
+and refreshed on demand at most every ten seconds. An initial reading may be
+`unknown` until the worker finishes. `behind` reports the difference between
+successful build counters, for example `3 builds behind`. `current`, `rollback`,
+`incomparable`, `source-changed`, `building`, `missing`, `invalid` and `unknown`
+distinguish other outcomes rather than claiming an update without evidence.
+Source edits alone never count as completed builds. npm installs return 404.
+
+`npm run build` certifies output only after bundling, declarations, export fixes
+and Node entrypoint checks succeed. Local records live under the worktree's
+Git directory in `meridian-builds/`; deleting `dist` does not reset the counter.
+Separate worktrees have separate histories. The runtime checks its embedded
+identity against the success record and artifact hashes; missing or altered
+evidence produces an unnumbered artifact, not a guessed number. Git-less source
+archives still build but do not receive local counters.
+
+Builds use owner-PID claim directories under `meridian-builds/`; competing builds
+wait briefly or report contention. Claims belonging to exited processes are
+reclaimed, never by age alone. An unreaped or reused PID can require operator
+inspection. Source changes during a build prevent certification. This is local integrity checking,
+not signed attestation or atomic deployment: do not replace a live `dist` while
+it may still need to load chunks. Direct `bun run bin/cli.ts` execution is labeled
+`source run`, with source drift rather than a build count. Unstamped archive
+builds retain the existing local-build display and cannot claim disk freshness.
+Unavailable Git before certification falls back to an uncertified archive build;
+failed build gates never fall back or consume a successful-build number.
 
 **The update check** runs once a day, caches to
 `~/.cache/meridian/update-check.json`, times out after 5s, and never touches
@@ -1019,3 +1055,11 @@ $env:ANTHROPIC_API_KEY = "x" # Use your Meridian API key if protection is enable
 
 Then follow the [setup instructions for your client](agents.md). The desktop app
 is currently a Mac preview; it is not required for Windows headless use.
+
+Local provenance verification accepts complete fingerprints only. Source and
+artifact scans allow at most 64 MiB per file, 256 MiB total, 10,000 entries,
+and two seconds of scan work; artifact traversal additionally caps depth at 32.
+Git output is capped at 2 MiB, metadata at 4 MiB (package metadata 1 MiB).
+Oversized or unavailable inputs report unavailable/invalid provenance rather
+than certifying a partial hash. A local certified build refuses such inputs;
+Git-less archives retain their uncertified build path.

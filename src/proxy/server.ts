@@ -79,7 +79,8 @@ import {
   DESIGN_UPSTREAM_ORIGIN,
 } from "./design"
 import { checkPluginConfigured, isPluginlessOpenCodeRequest, notePluginlessOpenCodeRequest } from "./setup"
-import { describeBuildDrift, getBuildInfo } from "./buildInfo"
+import { describeBuildDrift } from "./buildInfo"
+import { buildRuntime } from "./buildRuntime"
 import { getLatestVersion, startUpdateCheck, stopUpdateCheck } from "./updateCheck"
 import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveClaudeExecutableSync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext } from "./models"
 import { livenessReport, readinessReport, renderProbe } from "./probes"
@@ -637,11 +638,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   proxyLogSilent = finalConfig.silent
   const serverVersion = finalConfig.version ?? "unknown"
 
-  // What code is actually running, for /health. Recomputed per request rather
-  // than frozen at startup because `latest` arrives asynchronously from the
-  // registry check — everything else in it is static.
   const currentBuild = () =>
-    getBuildInfo({ version: serverVersion, modulePath: import.meta.url, latest: getLatestVersion() })
+    buildRuntime.info(serverVersion, getLatestVersion())
 
   // Restore persisted active profile from last session
   restoreActiveProfile(finalConfig.profiles)
@@ -994,6 +992,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   app.use("/telemetry/*", requireAuth)
   app.use("/telemetry", requireAuth)
   app.use("/metrics", requireAuth)
+  app.use("/build-status", requireAuth)
   app.use("/profiles/*", requireAuth)
   app.use("/profiles", requireAuth)
   app.use("/plugins/*", requireAuth)
@@ -8156,6 +8155,11 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   })
 
   // Health check endpoint — verifies auth status
+  app.get("/build-status", (c) => {
+    c.header("Cache-Control", "no-store")
+    return buildRuntime.local ? c.json(buildRuntime.status()) : c.notFound()
+  })
+
   app.get("/health", async (c) => {
     // Checked first and unconditionally: a fleet manager routing on this
     // endpoint (e.g. a gateway's account-pool scheduler) needs to learn
@@ -9485,11 +9489,7 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
   startUpdateCheck({
     onResolved: (latest) => {
       if (finalConfig.silent) return
-      const build = getBuildInfo({
-        version: finalConfig.version ?? "unknown",
-        modulePath: import.meta.url,
-        latest,
-      })
+      const build = buildRuntime.info(finalConfig.version ?? "unknown", latest)
       if (build.source !== "npm" || !build.updateAvailable) return
       console.log(`\n[meridian] Update available: ${build.version} → ${latest}`)
       console.log(`  npm install -g @rynfar/meridian@latest`)
@@ -9525,11 +9525,7 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
       // A build that did not come from npm reports the tree's last released
       // version, which is indistinguishable from the real thing. Say so once,
       // at startup, rather than letting the version string imply otherwise.
-      const buildDrift = describeBuildDrift(getBuildInfo({
-        version: finalConfig.version ?? "unknown",
-        modulePath: import.meta.url,
-        latest: getLatestVersion(),
-      }))
+      const buildDrift = describeBuildDrift(buildRuntime.info(finalConfig.version ?? "unknown", getLatestVersion()))
       if (buildDrift) console.log(`Build: ${buildDrift}`)
       console.log(`\nPoint any Anthropic-compatible tool at this endpoint:`)
       console.log(`  ANTHROPIC_API_KEY=x ANTHROPIC_BASE_URL=http://${finalConfig.host}:${port}`)

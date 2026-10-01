@@ -195,6 +195,15 @@ src/
 │   ├── retryAfter.ts          ← Retry-After computation for 429/503/529 (PURE)
 │   ├── models.ts              ← Model mapping, Claude executable resolution
 │   ├── buildInfo.ts           ← Build provenance: source detection, semver compare (PURE)
+│   ├── localBuildInfo.ts      ← Local build comparisons and public forge links (PURE)
+│   ├── buildRuntime.ts        ← Immutable runtime identity and independent disk status
+│   ├── buildSnapshot.ts       ← Git/source snapshot boundary
+│   ├── buildFingerprint.ts    ← Streaming file hashing and bounded metadata reads
+│   ├── buildProvenanceError.ts ← Shared provenance boundary errors
+│   ├── buildArtifacts.ts      ← Serialized build certification and artifact validation
+│   ├── buildLock.ts           ← Local builder owner claims and dead-owner recovery
+│   ├── buildObserver.ts       ← Single-flight bounded disk observation cache
+│   ├── buildObservationWorker.ts ← Off-thread source/artifact observation
 │   ├── updateCheck.ts         ← Cached npm registry lookup for the newest published version
 │   ├── tools.ts               ← Tool blocking lists, MCP server name, allowed tools
 │   ├── messages.ts            ← Content normalization, message parsing

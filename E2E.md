@@ -50,6 +50,32 @@ See [durable evidence](docs/maintenance/evidence/1197-auth-refresh.md).
 This demonstrates a controlled auth-subprocess delay, not a reproduction of
 the contributor's entire overloaded Linux deployment or Windows behavior.
 
+## Local build provenance
+
+```sh
+npm run build
+node scripts/e2e-build-provenance.mjs
+```
+
+Run only in an isolated Git checkout, not the checkout of a running service:
+the harness rebuilds `dist` three times. It uses the bundled Node HTTP server
+on an ephemeral loopback port with temporary home state. No model calls or
+service restarts are needed. It verifies the bundled observation worker,
+`current`, three successful counter increments, `3 builds behind`, unchanged
+runtime identity and 30 concurrent cached status requests. Unit tests cover
+dirty/source state, failed certification, rollback, independent worktrees,
+unavailable metadata and safe provenance links. Browser fixture QA covers
+the shared header at 375, 768 and 1280 pixels and npm unchanged behavior.
+
+**Verified 2026-09-26:** Linux, Node bundled server: runtime build #8 remained
+immutable while actual builds #9, #10 and #11 completed. `/build-status` reported
+`behind` with `buildsBehind: 3`; all 30 concurrent requests returned 200.
+Typecheck and build passed. Full `npm test` timed out in session-lifecycle
+tests; an untouched upstream worktree also timed out, and targeted upstream
+retry tests reproduced four idle/busy/extra-usage timing failures. This is not
+a green full-suite claim. Deployment and browser verification on meridian-dev
+remain gated on its owner's source-versus-bundled runtime decision.
+
 ## Antigravity subscription CLI backend
 
 ```sh
@@ -7015,3 +7041,14 @@ Use the live companion with the same client/CLI and installed Pi scrub entry:
 `E2E_MERIDIAN_ROOT=<built checkout> E2E_PI_CLI=<cli.js> E2E_CLAUDE_BIN=<2.1.283> E2E_PLUGIN_PATH=<entrypoint> node scripts/e2e-pi-live-idle-control.mjs`.
 The controlled upstream is not a live model; the companion uses actual Opus 5.5
 and proves a real read receipt and Pi session continuation.
+
+For synthetic build-header state inspection, run
+`bun scripts/e2e-build-header-fixture.ts` and open loopback port 42213 with
+`?state=current`, `behind`, `rollback`, `source-changed`, `invalid`, `unknown`,
+`failure` or `npm`. Inspect identity, drift, health, safe links and focus after
+a repeated poll. `/fixture-observations` counts drift requests; the npm state
+must stay at zero. This fixture uses the actual shared header but supplies
+synthetic API states; it does not prove real artifact certification, which
+requires `node scripts/e2e-build-provenance.mjs` separately. It uses no model or
+credentials. [Incorporation evidence](docs/maintenance/evidence/1171-build-provenance.md)
+records the platform and measured preview viewport.
