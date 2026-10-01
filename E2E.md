@@ -6979,3 +6979,12 @@ overflow, final page bounds, keyboard details, sort focus and rename at seven
 widths. No credentials or model calls are needed for static page layout.
 After building, `node scripts/e2e-packaged-favicon.mjs` verifies real HTTP asset
 resolution and all six page links through the bundled Node entrypoint.
+
+### Opt-in error reporting process policy
+
+After building, run `bun scripts/e2e-error-reporting-policy.mjs`. This headless
+gate compares real Node/Bun processes with reporting off/on, preserves all five
+Node rejection policies (CLI and NODE_OPTIONS), checks actual Meridian recovery
+handlers, exact-once scrubbed envelopes, and compiled `test-error-report`
+wiring. It uses an isolated local collector and synthetic errors, not a model
+or third-party ingestion account. See the retained evidence for its limits.

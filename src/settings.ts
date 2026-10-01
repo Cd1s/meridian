@@ -60,6 +60,13 @@ export interface MeridianSettings {
   telemetrySize?: number
   /** Entries the in-memory diagnostic log ring holds. MERIDIAN_DIAGNOSTIC_LOG_SIZE wins. */
   diagnosticLogSize?: number
+
+  /**
+   * Sentry-protocol DSN (GlitchTip, Sentry) that Meridian's own uncaught
+   * exceptions and unhandled rejections are reported to. Unset means off.
+   * MERIDIAN_ERROR_REPORTING_DSN wins. Read once at startup.
+   */
+  errorReportingDsn?: string
 }
 
 /**

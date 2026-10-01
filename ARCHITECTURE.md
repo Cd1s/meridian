@@ -220,6 +220,10 @@ src/
 ├── fileChanges.ts             ← PostToolUse hook: tracks write/edit ops, formats summary
 ├── mcpTools.ts                ← MCP tool definitions (read, write, edit, bash, glob, grep)
 ├── logger.ts                  ← Logging with AsyncLocalStorage context
+├── errorReporting/            ← Opt-in crash reporting to a GlitchTip/Sentry DSN (off without one)
+│   ├── event.ts               ← Thrown value → scrubbed Sentry event/envelope (PURE)
+│   ├── deliver.ts             ← Spool → collector; self-contained so a dying process can run it detached
+│   └── index.ts               ← Process hooks, spool writes, delivery scheduling
 ├── utils/
 │   └── lruMap.ts              ← Generic LRU map with eviction callbacks
 ├── telemetry/

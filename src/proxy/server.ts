@@ -23,6 +23,7 @@ import type { Context } from "hono"
 import { DEFAULT_PROXY_CONFIG, resolveBackendConfig } from "./types"
 import { createAntigravityServer } from "./backends/antigravity"
 import { env, envBool, envInt } from "../env"
+import { installErrorReporter } from "../errorReporting"
 import type { ProxyConfig, ProxyInstance, ProxyServer } from "./types"
 export type { ProxyConfig, ProxyInstance, ProxyServer }
 // Public plugin-authoring types. Plugins import these to type their
@@ -9392,7 +9393,10 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
   if (selectedConfig.backend === "antigravity") {
     const backend = createAntigravityServer(selectedConfig)
     await backend.initPlugins?.()
-    if (selectedConfig.installProcessErrorHandlers) installProxyProcessErrorHandlers()
+    if (selectedConfig.installProcessErrorHandlers) {
+      installErrorReporter({ version: selectedConfig.version })
+      installProxyProcessErrorHandlers()
+    }
     const server = serve({ fetch: backend.app.fetch, port: selectedConfig.port, hostname: selectedConfig.host, overrideGlobalObjects: false }, info => {
       if (!selectedConfig.silent) console.log(`Meridian Antigravity backend: http://${selectedConfig.host}:${info.port}`)
     }) as Server
@@ -9493,6 +9497,10 @@ export async function startProxyServer(config: Partial<ProxyConfig> = {}): Promi
   })
 
   if (finalConfig.installProcessErrorHandlers) {
+    // Opt-in (a configured DSN) and idempotent: the CLI installs it earlier so
+    // a startup failure is reported too; an embedder that asks Meridian to own
+    // the process error handlers gets it here.
+    installErrorReporter({ version: finalConfig.version })
     installProxyProcessErrorHandlers()
   }
 

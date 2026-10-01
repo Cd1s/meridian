@@ -33,19 +33,51 @@ Merge `98c48c03ff65f0b8ce428c8b60718655c49f85dd`, tree
 `40110cc03377380c1a9ef4568ef28a4079880e89`, identical to validated head
 `96aaac51`. Nowaker co-author trailer verified; source unchanged at closure.
 
-**#1186 accepted direction, blocking nested immutability correction underway.**
-Source `9d33e45f` initially cherry-picked as `f855702a`, rebased onto merged
-#1203 as `25defa35` (Author/AuthorDate preserved), in
-`/private/tmp/meridian-backlog-store-1186`. Two maintainer regression tests fail
-on the authored change: modifying caller-owned arrays changes cached history,
-and nested lookup edits bypass the shallow freeze. The serialization memo then
-retains different disk bytes. Own and deeply freeze new entries; preserve memo
-identity for unchanged entries. Correction `d5dc2a43` owns changed arrays and
-freezes nested parsed data at lookup/snapshot exposure. Focused corrected
-tests/typecheck/build pass. All four final rebased Opus E41 modes pass; actual
-two-client OpenCode large-store read/continuation proof passes and is being
-strengthened to require each client's distinct receipt. Final full suite/CI
-remain gates. [Durable findings and process proof](evidence/1186-store-mutation.md).
+**#1186 corrected and incorporated in #1204, merged.** Source `9d33e45f` maps
+to authored cherry `3849868f`; ownership/immutability correction `1ec6f47e`,
+proof `e74eb796`, process-isolated timing gate `1cefadb3`.
+Merge `2404eae1eafbc530e472a0bf28b775f2b7956689`, tree
+`167c4031cb95ca8e6113c2279909d322bc0b3936` equals validated tree.
+4967 tests, all ten executed CI checks, typecheck/build and two real OpenCode
+1.18.33 / Opus 5.5 clients with independent tool-result receipts/continuations
+pass on final rebased tree. Four-mode E41 passes on the identical store blob.
+Nowaker credit verified; source unchanged at closure.
+[Evidence](evidence/1186-store-mutation.md) records failing shallow-freeze tests,
+lazy exposure, benchmark noise and initial full-suite isolation failure.
+
+**#1198/#1199 incorporated with correction in #1205, merged.** Source SHAs
+`959dc6c5`/`b6cb22e0` map to authored cherries `01d37638`/`503ba3c0`.
+Maintainer sort-control correction and probes `5851f8d1`. Merge
+`dedb55564aedccb9e207167f4ae148aeac112e0d`, tree
+`eb04d210092729c37e2e52ea44f8a765772a6729` equals validated tree. 4958 tests,
+all six executed CI checks, 28 real browser baseline/final cases and compiled
+Node asset HTTP gate pass. Nowaker credit verified; both sources unchanged at
+closure. [Evidence](evidence/1198-1199-mobile-layout.md); local media captured,
+no durable GitHub media upload claimed because no uploader was available.
+
+**#1189 accepted with correction, final integration under verification.**
+Source `c2f4b67f` maps to authored cherry `6baaf143`; correction `632445c4`.
+Real Node processes confirm authored reporter makes warn/none fatal and aborts
+warn-with-error-code before its timer. Error.name leaks a synthetic Bearer value.
+Corrected policy preserves all five modes, CLI-over-NODE_OPTIONS precedence
+and strict-mode exact-once reporting; names scrubbed/bounded before spool.
+Retained headless gate: 22 Node/Bun paired configurations and four actual
+compiled test-error-report CLI cases pass against local collector.
+[Evidence](evidence/1189-error-reporting.md). Current main is `2404eae1`;
+final local suite and exact-head CI remain gates. No third-party collector claimed.
+
+**Pi scrub issue #13 implementation and affected-client proof verified locally.**
+Exact Pi 0.87.1 found under renamed package @earendil-works/pi-coding-agent.
+Published scrub 0.2.2 and current scrub main `23c98fac` reproduce two test
+failures. Complete header-scoped <docs> removal corrects both (17 pass/0 fail),
+preserving adjacent foreign documentation and project context.
+Actual headless Pi 0.87.1 / Opus 5.5 / SDK 0.2.141 macOS flow through an
+independently installed fixed tarball removes all docs, retains project
+instructions and completes a read with random client-only tool-result receipt
+and a continuation. Both turns have zero errors. Pi arrives as adapter=opencode
+in this real custom-provider flow; content-scoped scrubbing correctly applies.
+Baseline also observed billing_error, which is not claimed as universal billing
+causation or a guaranteed billing remedy. PR and CI pending; no publication authorized.
 
 **#1201 pending actual-client proof.** Source `30e01969`. Public implicated
 client is `XInTheDark/meowbert-ai-agent`. Its own commit `08e771a9` (2026-10-01
@@ -58,7 +90,7 @@ Meowbert E2E. Continue independent work while that gate is open.
 Remaining PRs/issues are still queued; the dated September 29 plan supplies
 review leads, not current approvals. Refresh each live head/discussion before
 acting, and inventory again after merges. #1192 is now GitHub-ready, but its
-explicit three-day observation criterion must be checked in the current body.
+current body no longer requests a draft hold; live affected-client proof remains a gate.
 
 ## Historical PR review and plan (2026-09-29)
 

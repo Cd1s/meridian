@@ -66,6 +66,7 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_UPDATE_CHECK_PATH` | — | `~/.cache/meridian/update-check.json` | Where the update check caches its result. |
 | `MERIDIAN_BUILD_SOURCE` | — | *(derived from the install path)* | Overrides the `build.source` reported by `/health`: `npm`, `local`, or `dev`. Normally set by [`bin/meridian-launchd.sh`](#running-as-a-service-without-drift), not by hand. |
 | `MERIDIAN_BUILD_SHA`, `MERIDIAN_BUILD_BRANCH`, `MERIDIAN_BUILD_DIRTY` | — | unset | Optional commit stamps surfaced in `/health` `build`. Absent unless something sets them at launch. |
+| `MERIDIAN_ERROR_REPORTING_DSN` | — | unset | GlitchTip/Sentry DSN to report Meridian's own crashes to; `errorReportingDsn` in `settings.json` is the alternative, and the environment wins. Off when neither is set. See [Error reporting](#error-reporting). |
 | `MERIDIAN_DEBUG` | `CLAUDE_PROXY_DEBUG` | unset | Set to `1` for verbose request/session logging |
 | `MERIDIAN_SILENT` | `CLAUDE_PROXY_SILENT` | unset | Set to `1` to suppress startup output (used by embedding plugins) |
 | `MERIDIAN_ENFORCE_MAX_TOKENS` | `CLAUDE_PROXY_ENFORCE_MAX_TOKENS` | unset | Set to `1` to apply the client output budget; see [output limits](#known-limitations). |
@@ -308,6 +309,41 @@ Illustrative health response excerpt (versions and status vary by installation):
 ```
 
 `plugin.opencode` is `"configured"` when `meridian setup` has been run, `"not-configured"` otherwise.
+
+## Error reporting
+
+Meridian can report its own uncaught exceptions and unhandled promise
+rejections to a self-hosted [GlitchTip](https://glitchtip.com) or a Sentry
+project. It is off unless you give it a DSN:
+
+```bash
+MERIDIAN_ERROR_REPORTING_DSN=https://<key>@glitchtip.example.com/<project-id> meridian
+```
+
+or `"errorReportingDsn": "https://<key>@glitchtip.example.com/<project-id>"` in
+`~/.config/meridian/settings.json` (the environment variable wins). The value is
+read once at startup.
+
+- **Errors only.** An event carries the exception, its `cause` chain, stack
+  frames, the Meridian release and the runtime name and version. No request
+  or response content, headers, session ids, environment variables, argv,
+  hostname, breadcrumbs, tracing or profiling. Token-shaped strings
+  (JWTs, `sk-…` keys, `Bearer` values, Google OAuth tokens, URL credentials
+  and query strings, `access_token=`-style pairs) are replaced with
+  `<redacted>` before anything is written.
+- **It never changes whether Meridian crashes.** A crash still exits exactly
+  as it would without reporting; an error Meridian recovers from is still
+  recovered from.
+- **A collector outage costs nothing but the events.** Each event is written
+  first to `<config dir>/error-reports/` (`0600` files, at most 500, dropped
+  after 7 days) and posted afterwards: at once by a process that survives the
+  error, by a short-lived detached child when the error ends the process, and
+  otherwise on the next start. Nothing blocks and nothing throws when the
+  collector is unreachable.
+
+To check the wiring, run `meridian test-error-report` with the same
+configuration. It crashes on purpose with a test error that shows up in the
+project within seconds.
 
 ## Build provenance and staying current
 
@@ -767,6 +803,7 @@ ANTHROPIC_API_KEY=your-secret-key ANTHROPIC_BASE_URL=http://meridian-host:3456 o
 | `meridian profile login <name> [--headless]` | Re-authenticate an expired profile, adding it first if that name has no profile yet (browser-login profiles only); `--headless` uses the URL/code flow |
 | `meridian profile remove <name>` | Remove a profile and its credentials |
 | `meridian refresh-token` | Manually refresh the Claude OAuth token (exits 0/1) |
+| `meridian test-error-report` | Crash on purpose so the configured [error-reporting](#error-reporting) collector receives a test issue. Always exits 1; when reporting is off it only prints how to turn it on |
 
 ## SDK Feature Toggles (Experimental)
 
