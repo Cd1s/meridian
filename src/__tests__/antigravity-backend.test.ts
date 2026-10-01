@@ -32,7 +32,9 @@ afterEach(async () => { for (const close of closing.splice(0)) await close() })
 describe("Antigravity request contract", () => {
   it("rejects images and unsupported controls before creating a process", () => {
     expect(() => parseAgRequest({ ...initial(), messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })).toThrow("text")
-    expect(() => parseAgRequest({ ...initial(), temperature: 0 })).toThrow("temperature")
+    const sampled = parseAgRequest({ ...initial(), temperature: 0, top_p: 0.9, top_k: 40 })
+    expect([sampled.temperature, sampled.top_p, sampled.top_k]).toEqual([undefined, undefined, undefined])
+    expect(() => parseAgRequest({ ...initial(), betas: ["x"] })).toThrow("betas")
     expect(() => parseAgRequest({ ...initial(), thinking: { type: "enabled", budget_tokens: 100 } })).toThrow()
     expect(() => parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "unknown" } })).toThrow()
   })

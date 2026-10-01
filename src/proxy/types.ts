@@ -25,6 +25,8 @@ export interface AntigravityOptions {
   browserMcpExecutable?: string
   allowNativeSubagents?: boolean
   pendingToolTimeoutMs?: number
+  /** Fork patch: reuse a successful `agy -p /config` account check for this long. 0 (default) checks every request like upstream. */
+  accountCheckTtlMs?: number
 }
 
 export interface ProxyConfig {
@@ -82,6 +84,7 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
       maxConcurrent: process.env.MERIDIAN_AGY_MAX_CONCURRENT === undefined ? undefined : Number(process.env.MERIDIAN_AGY_MAX_CONCURRENT),
       turnTimeoutMs: process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS),
       pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
+      accountCheckTtlMs: process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS),
       ...config.antigravity,
     } } : {}),
   }
