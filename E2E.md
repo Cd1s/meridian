@@ -7114,3 +7114,14 @@ unrelated aged session retention and a client-tool receipt surviving the final
 return. Both aliases deliberately share a grant, so this is lifecycle proof.
 Run all four E41 modes for affected session/history/cache continuity as well.
 Production pruning is opt-in through `MERIDIAN_SESSION_PROFILE_COPY_PRUNE=1`.
+
+### Asynchronous SDK launch gate (#1221)
+
+After build, run `scripts/e2e-sdk-gate-client.mjs` with
+`E2E_PROFILE_CLAUDE_DIR`, `E2E_PLUGIN_PATH` and optional `E2E_CLAUDE_BIN` as
+documented in [the evidence record](docs/maintenance/evidence/1221-async-sdk-gate.md).
+Actual gate file-handle fsyncs are held while the real OpenCode/SDK/model path
+runs. Require liveness answers during those holds, a random tool receipt and
+same-session recall, actual served-model confirmation and zero client exits.
+The direct gate regression additionally requires bounded join and eventual
+sensitive-file cleanup if disk publication remains stuck after child exit.
