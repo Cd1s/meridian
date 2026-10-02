@@ -290,7 +290,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
   const fetch = async (request: Request): Promise<Response> => {
     try {
       const path = new URL(request.url).pathname
-      if (!["/health", "/readyz", "/livez"].includes(path) && !hasValidApiKey(request.headers)) throw new AntigravityError("Invalid or missing API key", 401, "authentication_error")
+      if (!["/health", "/readyz", "/livez"].includes(path) && !hasValidApiKey(request.headers, config.apiKey)) throw new AntigravityError("Invalid or missing API key", 401, "authentication_error")
       if (request.method === 'GET' && ['/', '/providers'].includes(path)) return new Response(providerPageHtml, { headers: { 'content-type': 'text/html; charset=utf-8' } })
       if (request.method === 'GET' && path === ICON_PATH) { const icon = iconResponse(); if (icon) return icon }
       if (request.method === 'GET' && ['/providers/status', '/providers/view'].includes(path)) {

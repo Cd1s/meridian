@@ -372,6 +372,23 @@ export class AntigravityRun {
   }
 }
 
+/** Fork patch: one live-process budget shared by every account runtime in a multi-account process. */
+export class AgProcessPool {
+  readonly runtimes = new Set<AntigravityRuntime>()
+  constructor(readonly maxProcesses: number) {
+    if (!Number.isSafeInteger(maxProcesses) || maxProcesses <= 0) throw new Error("Antigravity process pool size must be a positive integer")
+  }
+  get used(): number {
+    let count = 0
+    for (const runtime of this.runtimes) count += runtime.runs.size + runtime.preparing
+    return count
+  }
+  idleRun(): AntigravityRun | undefined {
+    for (const runtime of this.runtimes) for (const run of runtime.runs.values()) if (run.reclaimable) return run
+    return undefined
+  }
+}
+
 export class AntigravityRuntime {
   // Exited processes leave admission maps before asynchronous workspace cleanup.
   // Keep joining them before the backend closes the shared state database.
@@ -475,8 +492,9 @@ export class AntigravityRuntime {
     for (const json of this.state?.list('exchanges').reverse() ?? []) this.record(exchangeSchema.parse(JSON.parse(json)), false)
     for (const json of this.state?.list('native') ?? []) this.nativeActivity.push(nativeSchema.parse(JSON.parse(json)))
     } catch (error) { this.state?.close(); throw error }
-    this.childEnv = { ...process.env }
+    this.childEnv = { ...process.env, ...options.env }
     for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
+    options.pool?.runtimes.add(this)
   }
   record(exchange: AgExchange, persist = true): void {
     if (persist) try { this.state?.put('exchanges', exchange.requestId, '', JSON.stringify(exchange), Date.now() + 30 * 86400000, 10000, 8 * 1024 * 1024) } catch (error) { this.stateError = String(error) }
@@ -607,9 +625,12 @@ export class AntigravityRuntime {
     if (((request.tools.length && request.tool_choice?.type !== "none") || hasAgImages(request.messages)) && !this.options.allowToolBridge) throw new AntigravityError("Client tools and images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
     const reusable = [...this.runs.values()].find(run => run.matches(request))
     if (reusable) { await reusable.resume(request, signal); return reusable }
-    const reclaim = this.runs.size + this.preparing >= this.maxConcurrent
-      ? [...this.runs.values()].find(run => run.reclaimable) : undefined
-    if (this.runs.size + this.preparing >= this.maxConcurrent && !reclaim) throw new AntigravityError("Antigravity process capacity is full with active requests", 429, "rate_limit_error", 5)
+    const localFull = this.runs.size + this.preparing >= this.maxConcurrent
+    const poolFull = !!this.options.pool && this.options.pool.used >= this.options.pool.maxProcesses
+    let reclaim = localFull || poolFull ? [...this.runs.values()].find(run => run.reclaimable) : undefined
+    // Fork patch: a full shared pool may take another account's idle process; the per-account cap still binds.
+    if (!reclaim && poolFull && !localFull) reclaim = this.options.pool!.idleRun()
+    if ((localFull || poolFull) && !reclaim) throw new AntigravityError("Antigravity process capacity is full with active requests", 429, "rate_limit_error", 5)
     // Reserve admission and claim the idle process synchronously, before waiting
     // for exit. Concurrent admissions cannot reclaim the same process or exceed capacity.
     this.preparing++
@@ -692,6 +713,7 @@ export class AntigravityRuntime {
   }
   private async closeOnce(): Promise<void> {
     this.draining = true
+    this.options.pool?.runtimes.delete(this)
     this.shutdown.abort()
     // Initialization can be awaiting account checks while close is called.
     await Promise.allSettled([this.initialization, this.statusRefresh, this.quotaCheck, this.verifying, this.checking])
