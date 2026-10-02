@@ -624,6 +624,27 @@ This verifies actual SDK refusal handling and live recovery, not two separate
 paid accounts. Run the full priority-routing suite and all four E41 modes to
 retain the barrier against failover after real content, tools or structured output.
 
+### Late idle deadlines after a proxy freeze (#1222)
+
+Run `scripts/e2e-late-idle-sockets.mjs` with Bun and Node (Node 22 requires
+`--experimental-strip-types`). Its separate writer continues while the guarded
+consumer freezes; active, silent, ping-only and on-time controls are asserted.
+Set `E2E_IDLE_GUARD_MODULE` to an unchanged baseline guard and pass
+`--expect-baseline` to reproduce rejection of queued progress.
+
+After build, run `scripts/e2e-late-idle-client.mjs` with
+`E2E_PROFILE_CLAUDE_DIR` naming an owned native credential directory,
+`E2E_PLUGIN_PATH` naming independently installed scrub, and
+`E2E_OPENCODE_BIN` selecting actual OpenCode. It uses Opus 5.5 by default and
+freezes only the proxy during a sustained actual SDK answer after tool-result
+resume. The native Claude subprocess remains running. The fixed flow must
+observe a production late-deadline resumed verdict, zero stalls, tool receipt,
+continuation, served-model confirmation and consistent credential affinity.
+Use `E2E_PROXY_MODULE` for a built unchanged baseline with `--expect-baseline`;
+it must record an actual late false stall. Run on the implicated Linux runtime
+and include all four E41 modes. Retain sanitized assertions rather than raw
+client transcripts or OAuth values. See the [evidence record](docs/maintenance/evidence/1222-late-idle-deadline.md).
+
 ### Consecutive idle stalls (#868)
 
 ```bash

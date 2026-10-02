@@ -1,5 +1,21 @@
 # Upstream review handoff
 
+## Additional Nowaker work (2026-10-02)
+
+Owner authorized continuing more Nowaker work. #1222 source `1bffa43fe` is
+cherry-picked on fresh main `f443faee0` as `66d6d2cc`, with separate ping-report
+and independent-process probe corrections. [Evidence](evidence/1222-late-idle-deadline.md).
+Actual macOS/Linux OpenCode/Opus baseline false stalls and corrected
+receipts/resume pass, as do independent Node/Bun socket controls, all four E41
+modes and final local tests/typecheck/build. Integration is [#1241](https://github.com/rynfar/meridian/pull/1241); its live
+state and final-head check links are the authority for CI/merge disposition.
+Required final-head CI remains a merge gate. #792 existing-account re-authentication now completed and its native
+grant changed with the same profile mapping. The preview blanked at its
+localhost callback; replaying that original callback privately to the same
+server via 127.0.0.1 completed exchange. This is assisted callback evidence,
+not automatic loopback proof. Draft #1217 remains unfinished. Other public
+contract/deferred gates remain in the takeover record.
+
 ## Takeover checkpoint (2026-10-02)
 
 [Current dispositions and proof](BACKLOG_TAKEOVER_2026-10-02.md) supersede the

@@ -12,7 +12,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { query } from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
-import { guardUpstreamIdle, UpstreamIdleError } from "./streamIdleGuard"
+import { guardUpstreamIdle, UpstreamIdleError, type LateIdleDeadline } from "./streamIdleGuard"
 import { IdleStallCeilingError, IdleStallTracker, idleStallRequestKey } from "./idleStallCeiling"
 import { linkRequestAbort, type RequestAbortLink } from "./requestAbort"
 import { processSessionTree, truncateSessionKey, type SessionTreeRegistration } from "./sessionTree"
@@ -551,6 +551,13 @@ function plog(message: string): void {
   if (!proxyLogSilent) console.error(message)
 }
 
+function logLateIdleDeadline(mode: string): (late: LateIdleDeadline) => void {
+  return ({ lateMs, sinceLastMs, resumed }) => {
+    plog(`[PROXY] upstream idle deadline fired ${lateMs}ms late (sinceLastMs=${sinceLastMs}, limit=${UPSTREAM_IDLE_MS}ms): ${resumed ? "upstream progress or completion was waiting" : "no model progress observed after yielding"}`)
+    claudeLog("upstream.idle_deadline_late", { mode, lateMs, sinceLastMs, resumed })
+  }
+}
+
 function logUsage(requestId: string, usage: TokenUsage): void {
   plog(`[PROXY] ${requestId} usage: ${formatUsageSummary(usage)}`)
 }
@@ -1002,7 +1009,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       signal.throwIfAborted()
       sdkQuery = query(params)
       yield* guardUpstreamIdle(sdkQuery, UPSTREAM_IDLE_MS, (sinceLastMs) =>
-        claudeLog("upstream.stalled", { mode, sinceLastMs }))
+        claudeLog("upstream.stalled", { mode, sinceLastMs }), undefined, logLateIdleDeadline(mode))
     } finally {
       try {
         // Production Query objects expose close(); test doubles and older SDK
@@ -5407,6 +5414,8 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   streamEventsSeen,
                   firstChunkAt: firstChunkAt ?? null,
                 }),
+                undefined,
+                logLateIdleDeadline("stream"),
               )
               try {
                 for await (const message of guardedResponse) {
