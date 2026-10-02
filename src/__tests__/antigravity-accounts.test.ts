@@ -22,6 +22,13 @@ function account(options: Record<string, unknown> = {}, config: Partial<ProxyCon
   const send = (body: unknown, headers: Record<string, string> = {}) => server.app.fetch(new Request("http://local/v1/messages", { method: "POST", body: JSON.stringify(body), headers }))
   return { runtime, send }
 }
+async function until(done: () => boolean) {
+  const deadline = Date.now() + 5000
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error("Condition not reached")
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
 function accountsDir(files: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "meridian-accounts-"))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
@@ -62,6 +69,7 @@ describe("Antigravity multi-account process", () => {
     writeFileSync(join(dir, "acc2", "env"), "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k2b\n")
     mkdirSync(join(dir, "acc3")); writeFileSync(join(dir, "acc3", "env"), "MERIDIAN_PORT=3453\nMERIDIAN_API_KEY=k3\n")
     expect(await set.sync()).toEqual({ started: ["acc2", "acc3"], stopped: ["acc2"], failed: [] })
+    expect(set.failures.size).toBe(0)
     rmSync(join(dir, "acc1"), { recursive: true })
     expect(await set.sync()).toEqual({ started: [], stopped: ["acc1"], failed: [] })
     writeFileSync(join(dir, "acc3", "env"), "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k3\n")
@@ -69,6 +77,22 @@ describe("Antigravity multi-account process", () => {
     expect(set.names).toEqual(["acc2", "acc3"])
     await set.close()
     expect(closed).toEqual([3452, 3451, 3452, 3453])
+  })
+  it("records accounts that fail to start and recovers them on a later sync", async () => {
+    const dir = accountsDir({ acc1: "MERIDIAN_PORT=3451\nMERIDIAN_API_KEY=k1\n", acc2: "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k2\n" })
+    let broken = true
+    const start = async (config: Partial<ProxyConfig>) => {
+      if (config.port === 3452 && broken) throw new Error("401 UNAUTHENTICATED")
+      const server = Object.assign(new EventEmitter(), { listening: true })
+      return { server, config: { ...DEFAULT_PROXY_CONFIG, ...config }, close: async () => {} } as unknown as ProxyInstance
+    }
+    const set = new AgAccountSet(dir, {}, start)
+    expect(await set.sync()).toEqual({ started: ["acc1"], stopped: [], failed: ["acc2"] })
+    expect([...set.failures]).toEqual([["acc2", "401 UNAUTHENTICATED"]])
+    broken = false
+    expect(await set.sync()).toEqual({ started: ["acc2"], stopped: [], failed: [] })
+    expect(set.failures.size).toBe(0)
+    await set.close()
   })
   it("gives each account its own agy environment and API key", async () => {
     const { runtime, send } = account({ env: { HOME: "/accounts/a", ALL_PROXY: "socks5h://a:1", MERIDIAN_API_KEY: "leak" } }, { apiKey: "key-a" })
@@ -98,6 +122,69 @@ describe("Antigravity multi-account process", () => {
     await a.runtime.close()
     expect(pool.runtimes.size).toBe(1)
     expect([502, 503]).toContain((await active).status)
+  })
+  it("adopts a pre-started agy for the next new conversation of the same shape", async () => {
+    const { runtime, send } = account({ prewarmIdleMs: 60_000 })
+    expect((await send({ ...initial("first"), tools: [] })).status).toBe(200)
+    await until(() => runtime.spareReady)
+    const reply = await send({ ...initial("second"), tools: [] })
+    expect(reply.status).toBe(200)
+    expect(runtime.prewarmed).toBe(1)
+    expect(((await reply.json()) as { content: Array<{ text?: string }> }).content[0]!.text).toBeTruthy()
+    await until(() => runtime.spareReady)
+    expect(runtime.mcpAliases.size).toBe(0)
+  })
+  it("binds client tools to an adopted process through its MCP alias", async () => {
+    const { runtime, send } = account({ prewarmIdleMs: 60_000 })
+    expect((await send(initial("tools one"))).status).toBe(200)
+    await until(() => runtime.spareReady)
+    const reply = await send(initial("tools two"))
+    expect(reply.status).toBe(200)
+    expect(((await reply.json()) as { content: Array<{ type: string; name?: string }> }).content).toContainEqual(expect.objectContaining({ type: "tool_use", name: "lookup" }))
+    expect(runtime.prewarmed).toBe(1)
+  })
+  it("never adopts a process started for another model or with prewarm disabled", async () => {
+    const { runtime, send } = account({ prewarmIdleMs: 60_000 })
+    expect((await send({ ...initial(), tools: [] })).status).toBe(200)
+    await until(() => runtime.spareReady)
+    expect((await send({ ...initial(), model: "fixture-model-high", tools: [] })).status).toBe(200)
+    expect(runtime.prewarmed).toBe(0)
+    await until(() => runtime.spareReady)
+    expect((await send({ ...initial("again"), model: "fixture-model-high", tools: [] })).status).toBe(200)
+    expect(runtime.prewarmed).toBe(1)
+    const off = account()
+    expect((await off.send({ ...initial(), tools: [] })).status).toBe(200)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect([off.runtime.spareReady, off.runtime.spareCount]).toEqual([false, 0])
+  })
+  it("retires the pre-started process after the idle window and on close", async () => {
+    const { runtime, send } = account({ prewarmIdleMs: 400 })
+    expect((await send({ ...initial(), tools: [] })).status).toBe(200)
+    await until(() => runtime.spareReady)
+    const spare = (runtime as any).spare
+    await new Promise(resolve => setTimeout(resolve, 450))
+    await runtime.refillSpare()
+    await spare.done
+    expect([runtime.spareReady, spare.child.exitCode !== null || spare.child.signalCode !== null]).toEqual([false, true])
+    const other = account({ prewarmIdleMs: 60_000 })
+    expect((await other.send({ ...initial(), tools: [] })).status).toBe(200)
+    await until(() => other.runtime.spareReady)
+    const kept = (other.runtime as any).spare
+    await other.runtime.close()
+    await kept.done
+    expect(kept.closed).toBeDefined()
+  })
+  it("gives a pre-started process up when the shared pool is needed for a request", async () => {
+    const pool = new AgProcessPool(1)
+    const a = account({ pool, prewarmIdleMs: 60_000 }), b = account({ pool })
+    expect((await a.send({ ...initial(), tools: [] })).status).toBe(200)
+    await until(() => a.runtime.spareReady)
+    expect(pool.used).toBe(1)
+    expect((await b.send({ ...initial(), tools: [] })).status).toBe(200)
+    expect(a.runtime.prewarmed).toBe(0)
+  })
+  it("rejects invalid prewarm times", () => {
+    for (const prewarmIdleMs of [-1, 1.5]) expect(() => new AntigravityRuntime({ prewarmIdleMs })).toThrow("prewarm")
   })
   it("rejects invalid pool sizes", () => {
     for (const size of [0, -1, 1.5]) expect(() => new AgProcessPool(size)).toThrow("pool size")

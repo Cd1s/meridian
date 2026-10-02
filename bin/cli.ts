@@ -418,6 +418,11 @@ export async function runAccountsCli(dir: string, start = startProxyServer) {
     process.exit(1)
   }
   console.log(`[accounts] ${first.started.length} accounts serving${first.failed.length ? `, failed: ${first.failed.join(", ")}` : ""}${poolSize ? `; shared agy pool ${poolSize}` : ""}`)
+  // An account whose login or proxy failed at startup keeps being retried without touching the others.
+  setInterval(() => {
+    if (!accounts.failures.size) return
+    accounts.sync().then(result => { if (result.started.length) console.log(`[accounts] recovered: ${result.started}`) }, () => {})
+  }, 60_000).unref()
   process.on("SIGHUP", () => {
     accounts.sync()
       .then(result => console.log(`[accounts] reload: started=[${result.started}] stopped=[${result.stopped}] failed=[${result.failed}]`))

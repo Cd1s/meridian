@@ -15,6 +15,8 @@
 | 账号级 agy 环境 `antigravity.env` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 叠加到 agy 子进程环境（HOME、代理）；`MERIDIAN_API_KEY` 等敏感变量照旧剔除 |
 | 每个服务独立 API key `apiKey` | `src/proxy/types.ts`、`src/proxy/auth.ts`、`antigravity.ts` | 未设置时仍读 `MERIDIAN_API_KEY`，与上游一致 |
 | 共享 agy 进程池 `MERIDIAN_AGY_POOL_MAX` | `antigravityRuntime.ts`（`AgProcessPool`） | 所有账号合计的 agy 进程上限。满了时新请求可以回收任意账号的**空闲**热进程（上游原本只在本账号内回收）；都在忙就 429。单账号上限 `MAX_CONCURRENT` 照旧生效 |
+| 待命 agy（预启动）`MERIDIAN_AGY_PREWARM_IDLE_MS` | `antigravityRuntime.ts`（`AgSpare`、`refillSpare`） | 每个账号最近 IDLE_MS 内有请求时，按最近一次新对话的形态（模型、思考等级、是否放开工具权限）提前启动 1 个官方 agy 等待输入；下一个同形态的新对话直接接管，省掉 4–5s 冷启动。依据实测：agy 不等输入就自己完成启动，`--print-timeout` 从收到消息才开始算，MCP `tools/list` 在收到消息后才调用，所以工具和放行规则可以在接管时再绑定（通过 MCP 别名）。不接管的情况：模型/等级/权限不同、带图片/文档/音视频、要求 JSON schema、续接已有对话、开了 `STATE_PATH`。待命进程超过 `PREWARM_MAX_AGE_MS`（默认 10 分钟）换新、账号空闲超时就退掉；它算进共享进程池，请求需要容量时最先让出。默认关闭 |
+| 账号级临时目录 | `antigravityAccounts.ts`、`antigravityRuntime.ts` | 多账号模式下每个账号的 agy 用 `<账号>/.tmp` 当 `TMPDIR`，XDG 目录也指到账号内；Meridian 给 agy 建的工作目录也放在该 `TMPDIR` 下。之前所有账号共用 `/tmp`，agy 的功能开关缓存 `/tmp/unleash-repo-schema-v1-codeium-language-server.json` 是共享的 |
 | 探测结果后台刷新（同一开关） | `antigravityRuntime.ts` | 设了 TTL 时：授权检查和模型列表（`agy models`，上游固定 60s 缓存，此时取 max(60s, TTL)）过期后，若距上次成功不到 6×TTL，请求直接用旧结果，后台跑一次刷新；刷新失败立即清掉缓存，之后请求同步检查/被拦。超过 6×TTL 回到同步检查 |
 
 ## 线上配置（<生产机>）
@@ -26,6 +28,7 @@
 ```
 Environment="MERIDIAN_AGY_ACCOUNTS_DIR=/var/lib/meridian/instances"   # fork：单进程多账号
 Environment="MERIDIAN_AGY_POOL_MAX=40"                    # fork：全部账号合计最多 40 个 agy（Sub2API 每号并发 5，共 50）
+Environment="MERIDIAN_AGY_PREWARM_IDLE_MS=600000"         # fork：账号 10 分钟内有请求就保持 1 个待命 agy（约 225MB/个）
 Environment="MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1"
 Environment="MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS=300000"   # fork 补丁：授权检查成功后 5 分钟内不重查
 Environment="MERIDIAN_AGY_TOOL_TIMEOUT_MS=300000"        # 上游选项：已完成对话的热进程保留 5 分钟，续轮免冷启动

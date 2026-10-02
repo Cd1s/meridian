@@ -32,6 +32,10 @@ export interface AntigravityOptions {
   env?: Record<string, string>
   /** Fork patch: process budget shared with other account runtimes in the same Meridian process. */
   pool?: AgProcessPool
+  /** Fork patch: keep one pre-started agy while the account had a request within this window. 0 (default) disables. */
+  prewarmIdleMs?: number
+  /** Fork patch: replace an unused pre-started agy after this age (default 600000). */
+  prewarmMaxAgeMs?: number
 }
 
 export interface ProxyConfig {
@@ -92,6 +96,8 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
       turnTimeoutMs: process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS),
       pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
       accountCheckTtlMs: process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS),
+      prewarmIdleMs: process.env.MERIDIAN_AGY_PREWARM_IDLE_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_PREWARM_IDLE_MS),
+      prewarmMaxAgeMs: process.env.MERIDIAN_AGY_PREWARM_MAX_AGE_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_PREWARM_MAX_AGE_MS),
       ...config.antigravity,
     } } : {}),
   }
