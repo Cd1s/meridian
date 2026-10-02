@@ -1,6 +1,7 @@
 import type { AntigravityPlugin } from "./backends/antigravityPlugins"
 import type { Server } from "node:http"
 import type { ProfileConfig } from "./profiles"
+import type { AgProcessPool } from "./backends/antigravityRuntime"
 
 export interface AntigravityOptions {
   executable?: string
@@ -27,12 +28,18 @@ export interface AntigravityOptions {
   pendingToolTimeoutMs?: number
   /** Fork patch: reuse a successful `agy -p /config` account check for this long. 0 (default) checks every request like upstream. */
   accountCheckTtlMs?: number
+  /** Fork patch: overlay for spawned agy processes (per-account HOME and proxies when several accounts share one process). */
+  env?: Record<string, string>
+  /** Fork patch: process budget shared with other account runtimes in the same Meridian process. */
+  pool?: AgProcessPool
 }
 
 export interface ProxyConfig {
   /** Defaults to Claude. Antigravity is an opt-in, subscription-account CLI backend. */
   backend?: "claude" | "antigravity" | "combined"
   antigravity?: AntigravityOptions
+  /** Fork patch: API key for this server only; unset falls back to MERIDIAN_API_KEY. */
+  apiKey?: string
   port: number
   host: string
   debug: boolean

@@ -34,8 +34,7 @@ function safeCompare(a: string, b: string): boolean {
 }
 
 /** Shared by the Hono default backend and standard-Request runtime backends. */
-export function hasValidApiKey(headers: Headers): boolean {
-  const key = getConfiguredKey()
+export function hasValidApiKey(headers: Headers, key = getConfiguredKey()): boolean {
   if (!key) return true
   const authorization = headers.get("authorization")
   const provided = headers.get("x-api-key") || (authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined)

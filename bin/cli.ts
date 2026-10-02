@@ -401,7 +401,45 @@ export async function runCli(
   process.on("SIGINT", handleShutdownSignal)
 }
 
-if (import.meta.main) {
+/**
+ * Fork patch: serve every account under `dir` (`<dir>/<name>/env`) from this one
+ * process. SIGHUP re-reads the directory: added accounts start, removed ones stop,
+ * changed ones restart, the rest keep serving.
+ */
+export async function runAccountsCli(dir: string, start = startProxyServer) {
+  const { installErrorReporter } = await import("../src/errorReporting")
+  installErrorReporter({ version })
+  const { AgAccountSet } = await import("../src/proxy/backends/antigravityAccounts")
+  const poolSize = process.env.MERIDIAN_AGY_POOL_MAX ? Number(process.env.MERIDIAN_AGY_POOL_MAX) : undefined
+  const accounts = new AgAccountSet(dir, { host, idleTimeoutSeconds, version, installProcessErrorHandlers: true }, start, poolSize)
+  const first = await accounts.sync()
+  if (!accounts.names.length) {
+    console.error(`[accounts] No account could start from ${dir}`)
+    process.exit(1)
+  }
+  console.log(`[accounts] ${first.started.length} accounts serving${first.failed.length ? `, failed: ${first.failed.join(", ")}` : ""}${poolSize ? `; shared agy pool ${poolSize}` : ""}`)
+  process.on("SIGHUP", () => {
+    accounts.sync()
+      .then(result => console.log(`[accounts] reload: started=[${result.started}] stopped=[${result.stopped}] failed=[${result.failed}]`))
+      .catch(error => console.error(`[accounts] reload rejected, running accounts unchanged: ${error instanceof Error ? error.message : error}`))
+  })
+  let shuttingDown = false
+  const shutdown = (signal: NodeJS.Signals) => {
+    if (shuttingDown) process.exit(130)
+    shuttingDown = true
+    console.log(`\n[meridian] Received ${signal}, shutting down ${accounts.names.length} accounts...`)
+    accounts.close().then(() => process.exit(0), error => {
+      console.error(`[meridian] Error during shutdown: ${error instanceof Error ? error.message : error}`)
+      process.exit(1)
+    })
+  }
+  process.on("SIGTERM", shutdown)
+  process.on("SIGINT", shutdown)
+}
+
+if (import.meta.main && process.env.MERIDIAN_AGY_ACCOUNTS_DIR) {
+  await runAccountsCli(process.env.MERIDIAN_AGY_ACCOUNTS_DIR)
+} else if (import.meta.main) {
   // Ask before starting, because the answer changes what "port in use" means.
   // The port that Meridian wants is usually held by Meridian, and being told
   // so is not an error — it is the question `meridian status` answers, asked
