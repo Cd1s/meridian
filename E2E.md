@@ -7102,3 +7102,15 @@ forwarding refusal, and resumes one client's conversation. The snapshot contains
 The proxy uses a read-only isolated OAuth-token profile. The endpoint describes
 `scope: client-http`; zero cannot establish background-job, pending-continuation
 or post-probe restart safety. See the durable [evidence](docs/maintenance/evidence/1190-request-activity.md).
+
+### Profile-copy pruning (#1187)
+
+Run the maintained `scripts/e2e-profile-copy-prune-client.mjs` against an owned
+access-only grant and independently installed OpenCode scrub as documented in
+[the evidence record](docs/maintenance/evidence/1187-profile-copy-pruning.md).
+Run once with `E2E_PRUNE_ENABLED=1` and once with `0`: verify actual SDK deletion
+versus retained native resume, immutable fork source, unchanged newest history,
+unrelated aged session retention and a client-tool receipt surviving the final
+return. Both aliases deliberately share a grant, so this is lifecycle proof.
+Run all four E41 modes for affected session/history/cache continuity as well.
+Production pruning is opt-in through `MERIDIAN_SESSION_PROFILE_COPY_PRUNE=1`.
