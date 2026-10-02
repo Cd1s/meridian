@@ -428,11 +428,29 @@ export async function runAccountsCli(dir: string, start = startProxyServer) {
       .then(result => console.log(`[accounts] reload: started=[${result.started}] stopped=[${result.stopped}] failed=[${result.failed}]`))
       .catch(error => console.error(`[accounts] reload rejected, running accounts unchanged: ${error instanceof Error ? error.message : error}`))
   })
+  let admin: { close(): unknown } | undefined
+  if (process.env.MERIDIAN_ADMIN_PORT) {
+    const token = process.env.MERIDIAN_ADMIN_TOKEN ?? ""
+    if (token.length < 16) console.error("[admin] MERIDIAN_ADMIN_TOKEN (min 16 chars) is required, admin disabled")
+    else {
+      const { createAgAdmin } = await import("../src/proxy/backends/antigravityAdmin")
+      const { serve } = await import("@hono/node-server")
+      const { readFileSync } = await import("node:fs")
+      const env = process.env
+      const sub2api = env.MERIDIAN_SUB2API_BASE && env.MERIDIAN_SUB2API_KEY_FILE
+        ? { base: env.MERIDIAN_SUB2API_BASE.replace(/\/+$/, ""), key: readFileSync(env.MERIDIAN_SUB2API_KEY_FILE, "utf8").trim(), templateId: Number(env.MERIDIAN_SUB2API_TEMPLATE_ID ?? 2255) }
+        : undefined
+      const app = createAgAdmin(accounts, { token, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api })
+      admin = serve({ fetch: app.fetch, port: Number(env.MERIDIAN_ADMIN_PORT), hostname: "127.0.0.1" })
+      console.log(`[admin] http://127.0.0.1:${env.MERIDIAN_ADMIN_PORT}`)
+    }
+  }
   let shuttingDown = false
   const shutdown = (signal: NodeJS.Signals) => {
     if (shuttingDown) process.exit(130)
     shuttingDown = true
     console.log(`\n[meridian] Received ${signal}, shutting down ${accounts.names.length} accounts...`)
+    admin?.close()
     accounts.close().then(() => process.exit(0), error => {
       console.error(`[meridian] Error during shutdown: ${error instanceof Error ? error.message : error}`)
       process.exit(1)

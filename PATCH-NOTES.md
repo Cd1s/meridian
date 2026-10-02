@@ -17,6 +17,7 @@
 | 共享 agy 进程池 `MERIDIAN_AGY_POOL_MAX` | `antigravityRuntime.ts`（`AgProcessPool`） | 所有账号合计的 agy 进程上限。满了时新请求可以回收任意账号的**空闲**热进程（上游原本只在本账号内回收）；都在忙就 429。单账号上限 `MAX_CONCURRENT` 照旧生效 |
 | 待命 agy（预启动）`MERIDIAN_AGY_PREWARM_IDLE_MS` | `antigravityRuntime.ts`（`AgSpare`、`refillSpare`） | 每个账号最近 IDLE_MS 内有请求时，按最近一次新对话的形态（模型、思考等级、是否放开工具权限）提前启动 1 个官方 agy 等待输入；下一个同形态的新对话直接接管，省掉 4–5s 冷启动。依据实测：agy 不等输入就自己完成启动，`--print-timeout` 从收到消息才开始算，MCP `tools/list` 在收到消息后才调用，所以工具和放行规则可以在接管时再绑定（通过 MCP 别名）。不接管的情况：模型/等级/权限不同、带图片/文档/音视频、要求 JSON schema、续接已有对话、开了 `STATE_PATH`。待命进程超过 `PREWARM_MAX_AGE_MS`（默认 10 分钟）换新、账号空闲超时就退掉；它算进共享进程池，请求需要容量时最先让出。默认关闭 |
 | 账号级临时目录 | `antigravityAccounts.ts`、`antigravityRuntime.ts` | 多账号模式下每个账号的 agy 用 `<账号>/.tmp` 当 `TMPDIR`，XDG 目录也指到账号内；Meridian 给 agy 建的工作目录也放在该 `TMPDIR` 下。之前所有账号共用 `/tmp`，agy 的功能开关缓存 `/tmp/unleash-repo-schema-v1-codeium-language-server.json` 是共享的 |
+| 多账号管理面板 `MERIDIAN_ADMIN_PORT` | `antigravityAdmin.ts`、`antigravityAdminPage.ts`、`bin/cli.ts`、`scripts/agy-login.py` | 同进程内的管理接口 + 单页面（只绑 127.0.0.1，口令 `MERIDIAN_ADMIN_TOKEN` ≥16 位）。功能：账号列表（邮箱、端口、代理（密码打码）、状态/失败原因、请求统计、官方额度分组与重置时间、Sub2API 编号）、添加账号（校验代理并拒绝重复出口 IP → 分配名字/端口/key → 官方 agy 登录 → 自动启动 → 按模板账号自动在 Sub2API 建号）、重新登录、停用/启用（同步 Sub2API 状态）、测出口 IP、重载。额度结果缓存 5 分钟（每次读取都会让账号跑一次 `agy -p /usage`）。登录脚本给 agy 与运行时相同的隔离环境 |
 | 探测结果后台刷新（同一开关） | `antigravityRuntime.ts` | 设了 TTL 时：授权检查和模型列表（`agy models`，上游固定 60s 缓存，此时取 max(60s, TTL)）过期后，若距上次成功不到 6×TTL，请求直接用旧结果，后台跑一次刷新；刷新失败立即清掉缓存，之后请求同步检查/被拦。超过 6×TTL 回到同步检查 |
 
 ## 线上配置（<生产机>）
@@ -29,6 +30,12 @@
 Environment="MERIDIAN_AGY_ACCOUNTS_DIR=/var/lib/meridian/instances"   # fork：单进程多账号
 Environment="MERIDIAN_AGY_POOL_MAX=40"                    # fork：全部账号合计最多 40 个 agy（Sub2API 每号并发 5，共 50）
 Environment="MERIDIAN_AGY_PREWARM_IDLE_MS=600000"         # fork：账号 10 分钟内有请求就保持 1 个待命 agy（约 225MB/个）
+Environment="MERIDIAN_ADMIN_PORT=3450"                   # fork：管理面板，nginx <域名> → 127.0.0.1:3450（CF 代理 + <域名> 源站证书）
+EnvironmentFile=/etc/meridian/admin.env                   # MERIDIAN_ADMIN_TOKEN（root 600）
+Environment="MERIDIAN_SUB2API_BASE=http://127.0.0.1:8080/api/v1"
+Environment="MERIDIAN_SUB2API_KEY_FILE=/etc/meridian/sub2api-admin-key"   # root:meridian 640
+Environment="MERIDIAN_SUB2API_TEMPLATE_ID=<id>"            # 新账号照抄它的 model_mapping/分组/并发
+Environment="MERIDIAN_AGY_LOGIN_SCRIPT=/usr/local/bin/agy-login.py"   # 仓库 scripts/agy-login.py
 Environment="MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1"
 Environment="MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS=300000"   # fork 补丁：授权检查成功后 5 分钟内不重查
 Environment="MERIDIAN_AGY_TOOL_TIMEOUT_MS=300000"        # 上游选项：已完成对话的热进程保留 5 分钟，续轮免冷启动
@@ -36,7 +43,7 @@ Environment="MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1"      # 上游选项：budget
 Environment="MERIDIAN_AGY_MAX_CONCURRENT=8"              # 上游选项（默认 4）：热进程多了不必互相回收；每进程约 225MB
 ```
 
-加账号：建 `/var/lib/meridian/instances/accN/env`（`MERIDIAN_PORT`、`MERIDIAN_API_KEY`、`ALL_PROXY`/`HTTP_PROXY`/`HTTPS_PROXY`，属主 meridian），
+加账号：首选面板 https://<域名> （添加账号 → 填代理 → 登录 → 粘贴授权码，自动进 Sub2API）。手工方式：建 `/var/lib/meridian/instances/accN/env`（`MERIDIAN_PORT`、`MERIDIAN_API_KEY`、`ALL_PROXY`/`HTTP_PROXY`/`HTTPS_PROXY`，属主 meridian），
 `python3 /usr/local/bin/login-acc.py accN` 登录（脚本以 meridian 身份跑 agy，登录后自动结束 agy），然后 `systemctl reload meridian-accounts`，其他账号不受影响。
 
 Sub2API 账号 <id>/<id>/<id>/<id> 的 `model_mapping`：纯名 → `-low`（如 `gemini-3.8-flash → gemini-3.8-flash-low`），带后缀的原样。
@@ -65,6 +72,14 @@ Sub2API 账号 <id>/<id>/<id>/<id> 的 `model_mapping`：纯名 → `-low`（如
 - 效果：Node 常驻内存约 950MB → 90MB；agy 总数有了全局上限（原来最坏 10×8=80 个，约 18GB → 40 个，约 9GB）。
 - 第一次切换失败自动回滚（账号依次启动，每个 10s，30s 内只起了 2 个），改为并行启动后 13s 全部就绪。两次切换合计不可用约 50s。
 - 回滚：`systemctl disable --now meridian-accounts && systemctl enable --now meridian@acc{1..10}`（旧单元与 `dist/` 未改）。
+
+### 2026-10-03 待命 agy、账号临时目录隔离、管理面板
+- 实测（acc1/acc5，官方 agy 1.2.14）：冷启动首字 6.4–7.3s；先启动、12s/35s/10min 后再发消息，首字 2.1–2.6s。agy 不等输入即完成启动（约 4.5s 输出 init），`--print-timeout` 从收到消息开始计时，MCP `tools/list` 在收到消息后才调用。
+- 发现：所有账号的 agy 共用 `/tmp/unleash-repo-schema-v1-codeium-language-server.json`（功能开关定义缓存，无账号标识）。改为每账号 `TMPDIR`，旧共享文件已删。
+- 第一次部署（02:49）自动回滚：acc9（<账号邮箱>）凭证失效，`agy -p /config` 返回 401 UNAUTHENTICATED（不是 ToS 封禁），检查脚本把它当成新版本故障。启动器随后加了失败账号记录与 60s 自动重试，检查改为排除已知失败账号。
+- 验证：远端 antigravity + auth 测试 211 pass / 0 fail，`tsc` 0 错误，构建成功。线上：9 个账号服务（acc9 待重新登录）；acc6 连续 3 个新对话 9.9s → 2.4s → 1.9s（`prewarmed=2`）；Sub2API 测试 <id>/<id>/<id> success（有待命进程的 <id> 为 3.5s）；agy 子进程 `TMPDIR` 均在各自账号目录；面板公网 `/` 200，`/api/*` 无口令或错口令 401，接口返回不含 API key 与代理密码，额度显示官方分组（gemini-weekly / gemini-5h / 3p-weekly / 3p-5h）。
+- 基础设施：Cloudflare `<域名>` A <源站IP>（已代理）；nginx `/etc/nginx/sites-available/<域名>.conf`；口令 `/etc/meridian/admin.env`。
+- 回滚点：`/opt/meridian/backups/dist-accounts-20261003-025913`、`meridian-accounts.service-20261003-025913`（面板前）；`dist-accounts-20261003-024911`、`meridian-accounts.service-20261003-024911`（待命进程前）。服务重启 2 次，每次约 14s 不可用。
 
 ## 同步上游
 
