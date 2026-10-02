@@ -2,7 +2,7 @@
 // Layout matches the one-service-per-account setup: <dir>/<name>/env holds MERIDIAN_PORT,
 // MERIDIAN_API_KEY and the account's proxy variables; agy keeps its login in <dir>/<name>/.gemini.
 import { createHash } from "node:crypto"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { ProxyConfig, ProxyInstance } from "../types"
 import { AgProcessPool } from "./antigravityRuntime"
@@ -12,7 +12,7 @@ export interface AgAccount {
   home: string
   port: number
   apiKey: string
-  /** Variables for this account's agy processes: HOME plus every non-MERIDIAN_ entry of its env file. */
+  /** Variables for this account's agy processes: HOME and private temp/XDG dirs, then every non-MERIDIAN_ entry of its env file. */
   env: Record<string, string>
   statePath?: string
   digest: string
@@ -43,7 +43,11 @@ export function readAgAccounts(dir: string): AgAccount[] {
     if (!Number.isSafeInteger(port) || port <= 0 || port > 65535) throw new Error(`${entry.name}: MERIDIAN_PORT must be a TCP port`)
     // Each account answers on its own port, so an empty key would expose it unauthenticated.
     if (!vars.MERIDIAN_API_KEY) throw new Error(`${entry.name}: MERIDIAN_API_KEY is required`)
-    const env: Record<string, string> = { HOME: home }
+    // Temp and XDG dirs live in the account too: agy keeps caches in os.TempDir(), which would otherwise be shared.
+    const env: Record<string, string> = {
+      HOME: home, TMPDIR: join(home, ".tmp"),
+      XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
+    }
     for (const [key, value] of Object.entries(vars)) if (!key.startsWith("MERIDIAN_")) env[key] = value
     accounts.push({ name: entry.name, home, port, apiKey: vars.MERIDIAN_API_KEY, env, statePath: vars.MERIDIAN_AGY_STATE_PATH || undefined, digest: createHash("sha256").update(text).digest("hex") })
   }
@@ -65,6 +69,8 @@ export class AgAccountSet {
   constructor(readonly dir: string, readonly base: Partial<ProxyConfig>, readonly start: Start, poolSize?: number) {
     this.pool = poolSize === undefined ? undefined : new AgProcessPool(poolSize)
   }
+  /** Last start error per account that is not serving; retried on the next sync. */
+  readonly failures = new Map<string, string>()
   get names(): string[] { return [...this.running.keys()] }
   /** Start added accounts, stop removed ones and restart changed ones; unchanged accounts keep serving. */
   sync(): Promise<{ started: string[]; stopped: string[]; failed: string[] }> {
@@ -75,6 +81,7 @@ export class AgAccountSet {
   private async syncOnce() {
     // An invalid directory throws before anything is stopped.
     const wanted = new Map(readAgAccounts(this.dir).map(account => [account.name, account]))
+    for (const name of this.failures.keys()) if (!wanted.has(name)) this.failures.delete(name)
     const stale = [...this.running].filter(([name, { account }]) => wanted.get(name)?.digest !== account.digest)
     for (const [name] of stale) this.running.delete(name)
     await Promise.all(stale.map(([, { proxy }]) => proxy.close()))
@@ -86,15 +93,19 @@ export class AgAccountSet {
       const account = pending[index]!
       if (result.status === "fulfilled") {
         this.running.set(account.name, { account, proxy: result.value })
+        this.failures.delete(account.name)
         started.push(account.name)
       } else {
-        console.error(`[accounts] ${account.name}: ${result.reason instanceof Error ? result.reason.message : result.reason}`)
+        const message = result.reason instanceof Error ? result.reason.message : String(result.reason)
+        if (this.failures.get(account.name) !== message) console.error(`[accounts] ${account.name}: ${message}`)
+        this.failures.set(account.name, message)
         failed.push(account.name)
       }
     })
     return { started, stopped: stale.map(([name]) => name), failed }
   }
   private async startOne(account: AgAccount): Promise<ProxyInstance> {
+    mkdirSync(account.env.TMPDIR!, { recursive: true, mode: 0o700 })
     const proxy = await this.start({
       ...this.base, backend: "antigravity", port: account.port, apiKey: account.apiKey, silent: true,
       // statePath is set explicitly so a process-wide MERIDIAN_AGY_STATE_PATH is never shared between accounts.

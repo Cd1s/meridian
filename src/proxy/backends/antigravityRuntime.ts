@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, realpath, writeFile, readFile, rm } from "node:fs/promi
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
-import { createInterface } from "node:readline"
+import { createInterface, type Interface } from "node:readline"
 import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPrompt, agEffortFallback, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
@@ -46,6 +46,82 @@ function reply(res: ServerResponse, status: number, value: unknown) {
 }
 
 
+function agRunArgs(runtime: AntigravityRuntime, workspace: string, model: string, effort: string | undefined, skipPermissions: boolean, conversationId?: string, schemaPath?: string): string[] {
+  const args = [...(conversationId ? ["--conversation", conversationId] : ["--new-project"]), "--add-dir", workspace, "--input-format", "stream-json", "--model", model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(runtime.turnTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
+  if (schemaPath) args.push("--json-schema", schemaPath)
+  if (effort) args.push("--effort", effort)
+  if (skipPermissions) args.push("--dangerously-skip-permissions")
+  return args
+}
+async function agWriteBridgeConfig(runtime: AntigravityRuntime, workspace: string, mcpId: string): Promise<void> {
+  await writeFile(join(workspace, ".agents/hooks.json"), JSON.stringify({ meridian_policy: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: agHookCommand(process.execPath, join(workspace, "policy.cjs")), timeout: 5 }] }] } }))
+  await writeFile(join(workspace, ".agents/mcp_config.json"), JSON.stringify({ mcpServers: {
+    meridian_client: { serverUrl: `${runtime.mcpUrl}/${mcpId}` },
+    ...(runtime.options.allowNativeBrowser ? { chrome_devtools: {
+      command: runtime.options.browserMcpExecutable ?? "chrome-devtools-mcp",
+      args: ["--headless", "--isolated", "--no-usage-statistics", "--no-performance-crux", "--filesystem-root", workspace],
+    } } : {}),
+  } }))
+}
+function agTextOnly(messages: AgMessage[]): boolean {
+  return messages.every(message => typeof message.content === "string" || message.content.every(block =>
+    block.type === "text" || block.type === "tool_use" || (block.type === "tool_result" && (block.content === undefined || typeof block.content === "string" || block.content.every(part => part.type === "text")))))
+}
+/** Fork patch: the spawn shape of a new text conversation, or undefined when a pre-started agy cannot serve it. */
+export function agSpareKey(runtime: AntigravityRuntime, request: AgRequest): string | undefined {
+  if (request.output_config?.format || !agTextOnly(request.messages)) return undefined
+  const skipPermissions = agNativeTools(runtime.options).length > 0 || (request.tools.length > 0 && !!runtime.options.allowToolBridge)
+  return JSON.stringify([request.model, request.output_config?.effort ?? null, skipPermissions])
+}
+
+/**
+ * Fork patch: an official agy started before its request. The CLI finishes its own startup
+ * (auth, configuration, language server) while it waits for the first stdin message, and only
+ * lists MCP tools after that message, so the request can be bound when it arrives.
+ */
+export class AgSpare {
+  readonly createdAt = Date.now()
+  readonly lines: Interface
+  readonly done: Promise<void>
+  closed?: [number | null, NodeJS.Signals | null]
+  private adopted = false
+  private buffered: string[] = []
+  private stderr = ""
+  private readonly onLine = (line: string) => { if (this.buffered.length < 256) this.buffered.push(line) }
+  private readonly onStderr = (chunk: Buffer) => { this.stderr = (this.stderr + String(chunk)).slice(-8192) }
+  constructor(readonly id: string, readonly key: string, readonly workspace: string, readonly child: ChildProcessWithoutNullStreams, onClosed: (spare: AgSpare) => void) {
+    this.lines = createInterface({ input: child.stdout })
+    this.lines.on("line", this.onLine)
+    child.stderr.on("data", this.onStderr)
+    child.stdin.on("error", () => {})
+    this.done = new Promise(resolve => {
+      const closed = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (this.closed) return
+        this.closed = [code, signal]
+        onClosed(this)
+        if (this.adopted) return resolve()
+        void rm(this.workspace, { recursive: true, force: true }).finally(resolve)
+      }
+      child.once("close", closed)
+      child.once("error", () => closed(null, null))
+    })
+  }
+  /** Hands the process to a run: returns output seen before adoption; the workspace now belongs to the run. */
+  adopt(): { lines: string[]; stderr: string } {
+    this.adopted = true
+    this.lines.off("line", this.onLine)
+    this.child.stderr.off("data", this.onStderr)
+    const lines = this.buffered
+    this.buffered = []
+    return { lines, stderr: this.stderr }
+  }
+  retire(): void {
+    if (this.closed) return
+    signalAgProcess(this.child, "SIGTERM")
+    setTimeout(() => { if (!this.closed) signalAgProcess(this.child, "SIGKILL") }, 1000).unref()
+  }
+}
+
 export class AntigravityRun {
   readonly id = randomUUID()
   readonly queue = new AgEventQueue()
@@ -56,6 +132,7 @@ export class AntigravityRun {
   delivered: AgCall[] = []
   child?: ChildProcessWithoutNullStreams
   private workspace?: string
+  private spareId?: string
   conversationId?: string
   continuation = "new"
   private completedSnapshot = false
@@ -99,7 +176,9 @@ export class AntigravityRun {
       this.timer.unref()
     try {
       await this.grammars.prepare()
-      this.workspace = this.restored?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(tmpdir(), "meridian-agy-")))
+      const spareKey = this.restored ? undefined : agSpareKey(this.runtime, this.request)
+      let spare = spareKey ? this.runtime.takeSpare(spareKey) : undefined
+      this.workspace = spare?.workspace ?? this.restored?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(this.runtime.childEnv.TMPDIR || tmpdir(), "meridian-agy-")))
       this.runtime.nativeSessions?.register(this.workspace)
       await mkdir(join(this.workspace, ".agents"), { recursive: true })
       const tools = [...this.request.tools, ...[parallelAgTool({ ...this.request, tool_choice: { type: "auto" } })].filter(tool => tool !== undefined)]
@@ -110,37 +189,40 @@ export class AntigravityRun {
       // Workspace contains bridge configuration and supplied attachment bytes only.
       // Permit client MCP dispatch, exact supplied image reads, or schema submission.
       await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const allowed=(${agNativeAllowed.toString()})(t?.name,a,${JSON.stringify(agNativeTools(this.runtime.options))},${!!this.runtime.options.allowNativeBrowser},${!!this.runtime.options.allowNativeSubagents})||(t?.name==='call_mcp_tool'&&a?.ServerName==='meridian_client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||(t?.name==='view_file'&&JSON.parse(require('node:fs').readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(a?.AbsolutePath));const fs=require('node:fs');const audit=${JSON.stringify(join(this.workspace, 'policy-audit.jsonl'))};if(!fs.existsSync(audit)||fs.statSync(audit).size<65536)fs.appendFileSync(audit,JSON.stringify({name:t?.name,allowed,conversationId:p.conversationId})+'\\n',{mode:384});console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'Meridian restricts tools to client dispatch, supplied attachments, schema submission and operator-enabled native capabilities'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid Meridian hook payload'}));}});`)
-      await writeFile(join(this.workspace, ".agents/hooks.json"), JSON.stringify({ meridian_policy: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: agHookCommand(process.execPath, hookPath), timeout: 5 }] }] } }))
-      await writeFile(join(this.workspace, ".agents/mcp_config.json"), JSON.stringify({ mcpServers: {
-        meridian_client: { serverUrl: `${this.runtime.mcpUrl}/${this.id}` },
-        ...(this.runtime.options.allowNativeBrowser ? { chrome_devtools: {
-          command: this.runtime.options.browserMcpExecutable ?? "chrome-devtools-mcp",
-          args: ["--headless", "--isolated", "--no-usage-statistics", "--no-performance-crux", "--filesystem-root", this.workspace],
-        } } : {}),
-      } }))
-      if (this.stopped) { await this.cleanup(); return }
-      const args = [...(this.restored ? ["--conversation", this.restored.conversationId] : ["--new-project"]), "--add-dir", this.workspace, "--input-format", "stream-json", "--model", this.request.model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(this.runtime.turnTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
+      if (!spare) await agWriteBridgeConfig(this.runtime, this.workspace, this.id)
+      let schemaPath: string | undefined
       if (this.request.output_config?.format) {
-        const schemaPath = join(this.workspace, "output-schema.json")
+        schemaPath = join(this.workspace, "output-schema.json")
         await writeFile(schemaPath, JSON.stringify(agUpstreamSchema(this.request.output_config.format.schema)))
-        args.push("--json-schema", schemaPath)
       }
-      if (this.request.output_config?.effort) args.push("--effort", this.request.output_config.effort)
-      if (agNativeTools(this.runtime.options).length || (this.request.tools.length && this.runtime.options.allowToolBridge) || this.attachments.present) args.push("--dangerously-skip-permissions")
-      if (this.stopped) { await this.cleanup(); return }
-      const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+      const skipPermissions = !!(agNativeTools(this.runtime.options).length || (this.request.tools.length && this.runtime.options.allowToolBridge) || this.attachments.present)
+      // A pre-started process that died, or whose permission flag no longer fits, is replaced by a normal spawn in its workspace.
+      if (spare && (spare.closed || this.attachments.present)) {
+        spare.adopt()
+        spare.retire()
+        spare = undefined
+        await agWriteBridgeConfig(this.runtime, this.workspace, this.id)
+      }
+      if (this.stopped) { if (spare) { spare.adopt(); spare.retire() } await this.cleanup(); return }
+      const handoff = spare?.adopt()
+      const child = this.child = spare?.child ?? spawn(this.runtime.executable, agRunArgs(this.runtime, this.workspace, this.request.model, this.request.output_config?.effort, skipPermissions, this.restored?.conversationId, schemaPath), { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+      if (spare) {
+        this.spareId = spare.id
+        this.runtime.mcpAliases.set(spare.id, this.id)
+        this.runtime.prewarmed++
+      }
       if (child.pid) this.runtime.nativeSessions?.register(this.workspace, child.pid)
       child.stdin.on("error", error => this.abort(new AntigravityError(`Antigravity input failed: ${error.message}`, 502, "api_error")))
       child.stdin.write(JSON.stringify({ event: "user", message: { content: this.prompt({ ...this.request, messages }) } }) + "\n")
       if (!this.reusable) child.stdin.end()
-      let stderr = ""
+      let stderr = handoff?.stderr ?? ""
       child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-8192) })
       child.stdout.on("data", chunk => {
         this.outputBytes += chunk.length
         if (this.outputBytes > 16 * 1024 * 1024) this.abort(new AntigravityError("Antigravity output exceeded 16 MiB", 502, "api_error"))
       })
-      const lines = createInterface({ input: child.stdout })
-      lines.on("line", line => {
+      const lines = spare?.lines ?? createInterface({ input: child.stdout })
+      const onLine = (line: string) => {
         if (this.stopped) return
         try {
           if (this.terminal) throw new Error("CLI emitted data after its terminal result")
@@ -172,7 +254,10 @@ export class AntigravityRun {
             }
           }
         } catch (error) { this.abort(new AntigravityError(`Invalid Antigravity stream: ${String(error)}`, 502, "api_error")) }
-      })
+      }
+      // A pre-started process already printed its init event (conversation id) before adoption.
+      for (const line of handoff?.lines ?? []) onLine(line)
+      lines.on("line", onLine)
       child.once("error", error => this.abort(new AntigravityError(`Cannot start agy: ${error.message}`, 503, "api_error")))
       child.once("close", (code, signal) => {
         this.exited = true
@@ -350,6 +435,9 @@ export class AntigravityRun {
     clearTimeout(this.timer); clearTimeout(this.pendingTimer); clearTimeout(this.killTimer)
     this.runtime.settling.add(this.settled)
     this.runtime.runs.delete(this.id)
+    if (this.spareId) this.runtime.mcpAliases.delete(this.spareId)
+    // Freed capacity may now fit the account's pre-started process.
+    this.runtime.scheduleSpare()
     if (this.workspace) {
       try {
         const lines = (await readFile(join(this.workspace, 'policy-audit.jsonl'), 'utf8')).split('\n').filter(Boolean)
@@ -380,8 +468,14 @@ export class AgProcessPool {
   }
   get used(): number {
     let count = 0
-    for (const runtime of this.runtimes) count += runtime.runs.size + runtime.preparing
+    for (const runtime of this.runtimes) count += runtime.runs.size + runtime.preparing + runtime.spareCount
     return count
+  }
+  /** Spares only use free capacity: a request that finds the pool full retires one first. */
+  dropSpare(prefer?: AntigravityRuntime): boolean {
+    if (prefer?.dropSpare()) return true
+    for (const runtime of this.runtimes) if (runtime.dropSpare()) return true
+    return false
   }
   idleRun(): AntigravityRun | undefined {
     for (const runtime of this.runtimes) for (const run of runtime.runs.values()) if (run.reclaimable) return run
@@ -397,6 +491,8 @@ export class AntigravityRuntime {
   readonly turnTimeoutMs: number
   readonly pendingToolTimeoutMs: number
   readonly accountCheckTtlMs: number
+  readonly prewarmIdleMs: number
+  readonly prewarmMaxAgeMs: number
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
   // Warm live conversations; expired or restarted processes replay client history.
@@ -486,6 +582,10 @@ export class AntigravityRuntime {
     for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
     this.accountCheckTtlMs = options.accountCheckTtlMs ?? 0
     if (!Number.isSafeInteger(this.accountCheckTtlMs) || this.accountCheckTtlMs < 0 || this.accountCheckTtlMs > 600_000) throw new Error("Antigravity account check TTL must be an integer from 0 to 600000 ms")
+    // Fork patch: pre-started agy processes; off unless prewarmIdleMs is set.
+    this.prewarmIdleMs = options.prewarmIdleMs ?? 0
+    this.prewarmMaxAgeMs = options.prewarmMaxAgeMs ?? 600_000
+    for (const value of [this.prewarmIdleMs, this.prewarmMaxAgeMs]) if (!Number.isSafeInteger(value) || value < 0 || value > 86_400_000) throw new Error("Antigravity prewarm times must be integers from 0 to 86400000 ms")
     this.state = options.statePath ? new AgState(options.statePath) : undefined
     try {
     this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
@@ -495,6 +595,63 @@ export class AntigravityRuntime {
     this.childEnv = { ...process.env, ...options.env }
     for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
     options.pool?.runtimes.add(this)
+    // Native session restore keeps workspaces in its own directory; pre-started processes are not used with it.
+    if (this.prewarmIdleMs && !this.nativeSessions) {
+      this.spareTimer = setInterval(() => void this.refillSpare(), 15_000)
+      this.spareTimer.unref()
+    }
+  }
+  prewarmed = 0
+  readonly mcpAliases = new Map<string, string>()
+  private spare?: AgSpare
+  private spareShape?: string
+  private spareSpawning = false
+  private lastRequestAt = 0
+  private spareTimer?: ReturnType<typeof setInterval>
+  get spareCount(): number { return (this.spare ? 1 : 0) + (this.spareSpawning ? 1 : 0) }
+  get spareReady(): boolean { return !!this.spare && !this.spare.closed }
+  takeSpare(key: string): AgSpare | undefined {
+    if (!this.spareTimer) return undefined
+    this.spareShape = key
+    const spare = this.spare
+    if (!spare || spare.key !== key || spare.closed) return undefined
+    this.spare = undefined
+    return spare
+  }
+  dropSpare(): boolean {
+    const spare = this.spare
+    if (!spare) return false
+    this.spare = undefined
+    spare.retire()
+    return true
+  }
+  scheduleSpare(): void {
+    if (this.spareTimer) setTimeout(() => void this.refillSpare(), 0).unref()
+  }
+  /** Keeps one pre-started agy shaped like the last new conversation while the account is in use. */
+  async refillSpare(): Promise<void> {
+    if (!this.spareTimer || this.draining || this.spareSpawning) return
+    const shape = this.spareShape
+    const active = shape !== undefined && Date.now() - this.lastRequestAt < this.prewarmIdleMs
+    const spare = this.spare
+    if (spare && (!active || spare.key !== shape || spare.closed || Date.now() - spare.createdAt > this.prewarmMaxAgeMs)) this.dropSpare()
+    if (!active || shape === undefined || this.spare || !this.mcpUrl || !this.models.length) return
+    if (this.runs.size + this.preparing >= this.maxConcurrent) return
+    if (this.options.pool && this.options.pool.used >= this.options.pool.maxProcesses) return
+    this.spareSpawning = true
+    try {
+      const [model, effort, skipPermissions] = JSON.parse(shape) as [string, string | null, boolean]
+      const id = randomUUID()
+      const workspace = await realpath(await mkdtemp(join(this.childEnv.TMPDIR || tmpdir(), "meridian-agy-")))
+      await mkdir(join(workspace, ".agents"), { recursive: true })
+      await writeFile(join(workspace, "policy.cjs"), "process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({decision:'deny',reason:'No Meridian request is bound to this process yet'})))")
+      await agWriteBridgeConfig(this, workspace, id)
+      if (this.draining) { await rm(workspace, { recursive: true, force: true }); return }
+      const child = spawn(this.executable, agRunArgs(this, workspace, model, effort ?? undefined, skipPermissions), { cwd: workspace, env: this.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+      this.spare = new AgSpare(id, shape, workspace, child, closed => { if (this.spare === closed) this.spare = undefined })
+    } catch (error) {
+      console.warn("[antigravity] Could not pre-start agy:", error instanceof Error ? error.message : String(error))
+    } finally { this.spareSpawning = false }
   }
   record(exchange: AgExchange, persist = true): void {
     if (persist) try { this.state?.put('exchanges', exchange.requestId, '', JSON.stringify(exchange), Date.now() + 30 * 86400000, 10000, 8 * 1024 * 1024) } catch (error) { this.stateError = String(error) }
@@ -622,10 +779,12 @@ export class AntigravityRuntime {
   }
   async create(request: AgRequest, signal?: AbortSignal): Promise<AntigravityRun> {
     if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
+    this.lastRequestAt = Date.now()
     if (((request.tools.length && request.tool_choice?.type !== "none") || hasAgImages(request.messages)) && !this.options.allowToolBridge) throw new AntigravityError("Client tools and images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
     const reusable = [...this.runs.values()].find(run => run.matches(request))
     if (reusable) { await reusable.resume(request, signal); return reusable }
     const localFull = this.runs.size + this.preparing >= this.maxConcurrent
+    if (this.options.pool && this.options.pool.used >= this.options.pool.maxProcesses) this.options.pool.dropSpare(this)
     const poolFull = !!this.options.pool && this.options.pool.used >= this.options.pool.maxProcesses
     let reclaim = localFull || poolFull ? [...this.runs.values()].find(run => run.reclaimable) : undefined
     // Fork patch: a full shared pool may take another account's idle process; the per-account cap still binds.
@@ -659,13 +818,15 @@ export class AntigravityRuntime {
       const cancel = () => run.abort(new AntigravityError("Request cancelled", 499, "api_error"))
       signal?.addEventListener("abort", cancel, { once: true })
       try { await run.start() } finally { signal?.removeEventListener("abort", cancel) }
+      this.scheduleSpare()
       return run
     } finally { this.preparing-- }
   }
   private async handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let rpcId: string | number | undefined
     try {
-      const run = this.runs.get((req.url ?? "").slice(1))
+      const target = (req.url ?? "").slice(1)
+      const run = this.runs.get(this.mcpAliases.get(target) ?? target)
       if (!run) return reply(res, 404, { error: "Unknown turn" })
       if (req.method !== "POST") return reply(res, 405, {})
       // Decode only after joining bytes: a UTF-8 character may span HTTP chunks.
@@ -714,12 +875,15 @@ export class AntigravityRuntime {
   private async closeOnce(): Promise<void> {
     this.draining = true
     this.options.pool?.runtimes.delete(this)
+    clearInterval(this.spareTimer)
+    const spare = this.spare
+    this.dropSpare()
     this.shutdown.abort()
     // Initialization can be awaiting account checks while close is called.
     await Promise.allSettled([this.initialization, this.statusRefresh, this.quotaCheck, this.verifying, this.checking])
     const runs = [...this.runs.values()]
     for (const run of runs) run.abort(new AntigravityError("Antigravity backend stopped", 503, "api_error"), run.active ? "failed" : "retired")
-    await Promise.all([...runs.map(run => run.settled), ...this.settling])
+    await Promise.all([...runs.map(run => run.settled), ...this.settling, spare?.done])
     if (this.server) {
       const stopped = new Promise<void>((resolve, reject) => this.server!.close(error => error && "code" in error && error.code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()))
       this.server.closeAllConnections()
