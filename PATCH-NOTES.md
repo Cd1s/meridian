@@ -147,6 +147,12 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 修复：SIGTERM/SIGINT/SIGHUP 转为退出，`finally` 中结束 agy 进程组并只删除本次创建的 FIFO（按 inode 判断，不误删同账号新一次登录的 FIFO）；agy 子进程设置 `PR_SET_PDEATHSIG`，脚本被 SIGKILL 时由内核结束 agy。
 - 验证：一次性测试账号（不可用代理，不联网）下，SIGTERM、SIGKILL、提交错误授权码三种情况均无 agy 残留；同条件下旧脚本收到 SIGTERM 后 agy 残留且父进程为 1。
 
+### 2026-10-03 agy 对话数据保留期 `scripts/agy-retention.py`
+- 原因：agy 会把每次对话永久保存在账号的 `.gemini/antigravity-cli/` 下：`brain/<id>/`（完整对话记录）、`conversations/<id>.db*`、`annotations/<id>.pbtxt`、`presence/<id>.lock`，另有 `implicit/`、`log/`、`crashes/`。
+- 脚本：一条对话的所有文件在 N 天（默认 7）内都没有更新时才整体删除；`implicit/`、`log/`、`crashes/` 按修改时间删除；不动 agy 自己的索引（`conversation_summaries.db`、`jetbox_summaries_proto.pb`）和登录 token。支持 `--dry-run`，`--days` 最小为 1。
+- 部署方式：以服务用户运行的 systemd oneshot，加每日 timer（`Persistent=true`）。
+- 验证：在一份账号数据副本上 `--days 1` 实测，删后剩余的对话都在窗口内有更新，索引与 token 保留。
+
 ## 同步上游
 
 
