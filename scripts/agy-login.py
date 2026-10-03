@@ -76,10 +76,15 @@ else:
     if os.path.exists(fifo_path):
         os.remove(fifo_path)
     os.mkfifo(fifo_path)
-    os.chmod(fifo_path, 0o666)
+    # Only the account's service user (or root running this script) may hand in a code.
+    os.chmod(fifo_path, 0o600)
     print("READY_FOR_CODE", flush=True)
+    token = os.path.join(home_dir, ".gemini/antigravity-cli/antigravity-oauth-token")
+    # A re-login only succeeds if agy writes a new token; an old file must not count.
+    before = os.stat(token).st_mtime_ns if os.path.exists(token) else None
     with open(fifo_path, "r") as fifo:
         code = fifo.read().strip()
+    os.remove(fifo_path)
     
     os.write(master, (code + "\r").encode("utf-8"))
     time.sleep(4)
@@ -97,6 +102,5 @@ else:
         time.sleep(2)
     try: os.waitpid(pid, 0)
     except ChildProcessError: pass
-    if os.path.exists(fifo_path): os.remove(fifo_path)
-    token = os.path.join(home_dir, ".gemini/antigravity-cli/antigravity-oauth-token")
-    print("TOKEN_SAVED=" + ("yes" if os.path.exists(token) else "no"), flush=True)
+    saved = os.path.exists(token) and os.stat(token).st_mtime_ns != before
+    print("TOKEN_SAVED=" + ("yes" if saved else "no"), flush=True)

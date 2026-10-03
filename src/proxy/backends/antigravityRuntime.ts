@@ -68,11 +68,13 @@ function agTextOnly(messages: AgMessage[]): boolean {
     block.type === "text" || block.type === "tool_use" || (block.type === "tool_result" && (block.content === undefined || typeof block.content === "string" || block.content.every(part => part.type === "text")))))
 }
 /** Fork patch: the spawn shape of a new text conversation, or undefined when a pre-started agy cannot serve it. */
-export function agSpareKey(runtime: AntigravityRuntime, request: AgRequest): string | undefined {
+export function agSpareKey(runtime: AntigravityRuntime, request: AgRequest, launch: AgLaunch): string | undefined {
   if (request.output_config?.format || !agTextOnly(request.messages)) return undefined
   const skipPermissions = agNativeTools(runtime.options).length > 0 || (request.tools.length > 0 && !!runtime.options.allowToolBridge)
-  return JSON.stringify([request.model, request.output_config?.effort ?? null, skipPermissions])
+  return JSON.stringify([launch.model, launch.effort ?? null, skipPermissions])
 }
+/** The model and effort agy is started with; differs from the request only after an effort fallback. */
+export interface AgLaunch { model: string; effort?: string }
 
 /**
  * Fork patch: an official agy started before its request. The CLI finishes its own startup
@@ -157,7 +159,10 @@ export class AntigravityRun {
   private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
   private settledResolve!: () => void
   readonly settled = new Promise<void>(resolve => { this.settledResolve = resolve })
-  constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest, private readonly restored?: AgNativeSnapshot) {
+  readonly launch: AgLaunch
+  constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest, private readonly restored?: AgNativeSnapshot, launch?: AgLaunch) {
+    // Fork patch: the request (and so the conversation contract) keeps the client's model; only the spawn uses a fallback.
+    this.launch = launch ?? { model: request.model, effort: request.output_config?.effort }
     this.grammars = new AgGrammars(request, this.attachmentAbort.signal)
     this.continuation = restored ? "restored" : "new"
     this.reusable = runtime.options.reuseConversations !== false && !request.output_config?.format && !request.stop_sequences?.length
@@ -174,10 +179,11 @@ export class AntigravityRun {
   async start(): Promise<void> {
       this.timer = setTimeout(() => this.abort(new AntigravityError("Antigravity turn timed out", 504, "api_error")), this.runtime.turnTimeoutMs)
       this.timer.unref()
+    let spare: AgSpare | undefined
     try {
       await this.grammars.prepare()
-      const spareKey = this.restored ? undefined : agSpareKey(this.runtime, this.request)
-      let spare = spareKey ? this.runtime.takeSpare(spareKey) : undefined
+      const spareKey = this.restored ? undefined : agSpareKey(this.runtime, this.request, this.launch)
+      spare = spareKey ? this.runtime.takeSpare(spareKey) : undefined
       this.workspace = spare?.workspace ?? this.restored?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(this.runtime.childEnv.TMPDIR || tmpdir(), "meridian-agy-")))
       this.runtime.nativeSessions?.register(this.workspace)
       await mkdir(join(this.workspace, ".agents"), { recursive: true })
@@ -205,7 +211,7 @@ export class AntigravityRun {
       }
       if (this.stopped) { if (spare) { spare.adopt(); spare.retire() } await this.cleanup(); return }
       const handoff = spare?.adopt()
-      const child = this.child = spare?.child ?? spawn(this.runtime.executable, agRunArgs(this.runtime, this.workspace, this.request.model, this.request.output_config?.effort, skipPermissions, this.restored?.conversationId, schemaPath), { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+      const child = this.child = spare?.child ?? spawn(this.runtime.executable, agRunArgs(this.runtime, this.workspace, this.launch.model, this.launch.effort, skipPermissions, this.restored?.conversationId, schemaPath), { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
       if (spare) {
         this.spareId = spare.id
         this.runtime.mcpAliases.set(spare.id, this.id)
@@ -275,6 +281,8 @@ export class AntigravityRun {
       })
 
     } catch (error) {
+      // A pre-started process taken for this run but never handed its stdin would otherwise idle forever.
+      if (spare && !this.child) { spare.adopt(); spare.retire() }
       this.abort(error instanceof Error ? error : new Error(String(error)))
       await this.cleanup()
       throw error
@@ -593,7 +601,7 @@ export class AntigravityRuntime {
     for (const json of this.state?.list('native') ?? []) this.nativeActivity.push(nativeSchema.parse(JSON.parse(json)))
     } catch (error) { this.state?.close(); throw error }
     this.childEnv = { ...process.env, ...options.env }
-    for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
+    for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY|MERIDIAN_ADMIN_TOKEN|MERIDIAN_SUB2API_.*)$/.test(key)) delete this.childEnv[key]
     options.pool?.runtimes.add(this)
     // Native session restore keeps workspaces in its own directory; pre-started processes are not used with it.
     if (this.prewarmIdleMs && !this.nativeSessions) {
@@ -632,7 +640,9 @@ export class AntigravityRuntime {
   async refillSpare(): Promise<void> {
     if (!this.spareTimer || this.draining || this.spareSpawning) return
     const shape = this.spareShape
-    const active = shape !== undefined && Date.now() - this.lastRequestAt < this.prewarmIdleMs
+    // A failing account (cooldown, or its cached check cleared) gets no new process until a request succeeds again.
+    const healthy = Date.now() >= this.accountRetryAt && (!this.accountCheckTtlMs || this.accountVerifiedAt > 0)
+    const active = healthy && shape !== undefined && Date.now() - this.lastRequestAt < this.prewarmIdleMs
     const spare = this.spare
     if (spare && (!active || spare.key !== shape || spare.closed || Date.now() - spare.createdAt > this.prewarmMaxAgeMs)) this.dropSpare()
     if (!active || shape === undefined || this.spare || !this.mcpUrl || !this.models.length) return
@@ -804,15 +814,12 @@ export class AntigravityRuntime {
       await this.verifyAccount()
       const models = await this.availableModels()
       const fallback = !models.includes(request.model) && request.output_config?.effort ? agEffortFallback(request.model, models) : undefined
-      if (fallback) {
-        request.model = fallback.model
-        request.output_config = { ...request.output_config, effort: fallback.effort }
-      }
-      if (!models.includes(request.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
+      const launch = fallback ?? { model: request.model, effort: request.output_config?.effort }
+      if (!models.includes(launch.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
       if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
       if (signal?.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
       const restored = this.nativeSessions?.claim(request)
-      const run = new AntigravityRun(this, request, restored)
+      const run = new AntigravityRun(this, request, restored, launch)
       if (restored) this.restored++
       this.runs.set(run.id, run)
       const cancel = () => run.abort(new AntigravityError("Request cancelled", 499, "api_error"))

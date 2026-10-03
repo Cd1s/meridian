@@ -1,8 +1,7 @@
 // Fork patch: admin API for multi-account mode (list, add, log in, disable accounts; mirror them into Sub2API).
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { writeFile } from "node:fs/promises"
+import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { hasValidApiKey } from "../auth"
@@ -34,7 +33,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   const http = options.fetch ?? fetch
   const exec = options.exec ?? (async (file, args) => (await run(file, args, { timeout: 20_000 })).stdout)
   const fifo = options.fifoPath ?? (name => `/tmp/agy_${name}.fifo`)
-  const logins = new Map<string, { child: ChildProcess; out: string }>()
+  const logins = new Map<string, { child: ChildProcess; out: string; codeSent?: boolean }>()
   // Each quota read makes the account run `agy -p /usage`; the panel polls every 15s, so keep results for 5 minutes.
   const quotas = new Map<string, { at: number; value: Json | null }>()
 
@@ -136,8 +135,12 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   async function submitCode(name: string, code: unknown) {
     if (typeof code !== "string" || !/^\S{1,512}$/.test(code)) fail(400, "Invalid code")
     const entry = logins.get(name) ?? fail(409, "No login in progress")
-    if (!existsSync(fifo(name))) fail(409, "Login is not ready for a code")
-    await writeFile(fifo(name), `${code}\n`)
+    if (entry.codeSent) fail(409, "A code was already submitted for this login; start a new login to retry")
+    // Non-blocking open: a blocking write to a FIFO nobody reads would pin a libuv thread forever.
+    let fd: number
+    try { fd = openSync(fifo(name), constants.O_WRONLY | constants.O_NONBLOCK) } catch { return fail(409, "Login is not ready for a code") }
+    try { writeSync(fd, `${code}\n`) } finally { closeSync(fd) }
+    entry.codeSent = true
     const saved = await until(entry, /TOKEN_SAVED=(yes|no)/, 40_000)
     if (saved?.[1] !== "yes") fail(400, `Login failed: ${strip(/LOGIN_RESULT=([\s\S]*?)(?:TOKEN_SAVED=|$)/.exec(entry.out)?.[1] ?? entry.out).trim().slice(-400)}`)
     logins.delete(name)

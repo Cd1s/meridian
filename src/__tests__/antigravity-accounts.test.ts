@@ -45,16 +45,18 @@ describe("Antigravity multi-account process", () => {
       acc1: `MERIDIAN_PORT=3451\nMERIDIAN_API_KEY=${K1}\nHTTPS_PROXY=socks5h://p1:1\nMERIDIAN_AGY_STATE_PATH=/s1\n`,
     })
     mkdirSync(join(dir, "empty"))
-    const [first, second] = readAgAccounts(dir)
-    expect(readAgAccounts(dir).map(a => a.name)).toEqual(["acc1", "acc2"])
+    const [first, second] = readAgAccounts(dir).accounts
+    expect(readAgAccounts(dir).accounts.map(a => a.name)).toEqual(["acc1", "acc2"])
     expect(first).toMatchObject({ apiKey: K1, statePath: "/s1", env: { HOME: join(dir, "acc1"), TMPDIR: join(dir, "acc1", ".tmp"), HTTPS_PROXY: "socks5h://p1:1" } })
     expect(Object.keys(first!.env).some(key => key.startsWith("MERIDIAN_"))).toBe(false)
     expect(second).toMatchObject({ env: { HOME: join(dir, "acc2"), ALL_PROXY: "socks5h://p2:1" } })
   })
-  it("rejects accounts without a long enough key or sharing a key", () => {
-    expect(() => readAgAccounts(accountsDir({ a: "ALL_PROXY=x\n" }))).toThrow("MERIDIAN_API_KEY")
-    expect(() => readAgAccounts(accountsDir({ a: "MERIDIAN_API_KEY=short\n" }))).toThrow("16 characters")
-    expect(() => readAgAccounts(accountsDir({ a: `MERIDIAN_API_KEY=${K1}\n`, b: `MERIDIAN_API_KEY=${K1}\n` }))).toThrow("a and b use the same MERIDIAN_API_KEY")
+  it("skips only the accounts without a long enough key or sharing a key", () => {
+    const result = readAgAccounts(accountsDir({ a: "ALL_PROXY=x\n", b: "MERIDIAN_API_KEY=short\n", c: `MERIDIAN_API_KEY=${K1}\n`, d: `MERIDIAN_API_KEY=${K1}\n`, e: `MERIDIAN_API_KEY=${K2}\n` }))
+    expect(result.accounts.map(a => a.name)).toEqual(["e"])
+    expect([...result.invalid.keys()]).toEqual(["a", "b", "c", "d"])
+    expect(result.invalid.get("b")).toContain("16 characters")
+    expect(result.invalid.get("c")).toBe("c and d use the same MERIDIAN_API_KEY")
   })
   it("starts, restarts and stops only the accounts whose files changed", async () => {
     const dir = accountsDir({ acc1: `MERIDIAN_API_KEY=${K1}\n`, acc2: `MERIDIAN_API_KEY=${K2}\n` })
@@ -70,11 +72,16 @@ describe("Antigravity multi-account process", () => {
     expect(set.failures.size).toBe(0)
     rmSync(join(dir, "acc1"), { recursive: true })
     expect(await set.sync()).toEqual({ started: [], stopped: ["acc1"], failed: [] })
-    writeFileSync(join(dir, "acc3", "env"), `MERIDIAN_API_KEY=${K2}b\n`)
-    await expect(set.sync()).rejects.toThrow("same MERIDIAN_API_KEY")
-    expect(set.names).toEqual(["acc2", "acc3"])
+    mkdirSync(join(dir, "acc4")); writeFileSync(join(dir, "acc4", "env"), `MERIDIAN_API_KEY=${K2}b\n`)
+    // acc2 and acc4 now share a key: both stop and are reported, acc3 keeps serving.
+    expect(await set.sync()).toEqual({ started: [], stopped: ["acc2"], failed: ["acc2", "acc4"] })
+    expect(set.names).toEqual(["acc3"])
+    expect(set.failures.get("acc4")).toBe("acc2 and acc4 use the same MERIDIAN_API_KEY")
+    rmSync(join(dir, "acc4"), { recursive: true })
+    expect(await set.sync()).toEqual({ started: ["acc2"], stopped: [], failed: [] })
+    expect(set.failures.size).toBe(0)
     await set.close()
-    expect(closed).toEqual([K2, K1, K2 + "b", K3])
+    expect(closed).toEqual([K2, K1, K2 + "b", K3, K2 + "b"])
   })
   it("records accounts that fail to start and recovers them on a later sync", async () => {
     const dir = accountsDir({ acc1: `MERIDIAN_API_KEY=${K1}\n`, acc2: `MERIDIAN_API_KEY=${K2}\n` })
@@ -89,6 +96,15 @@ describe("Antigravity multi-account process", () => {
     broken = false
     expect(await set.sync()).toEqual({ started: ["acc2"], stopped: [], failed: [] })
     expect(set.failures.size).toBe(0)
+    await set.close()
+  })
+  it("keeps syncing when a stale backend fails to close", async () => {
+    const dir = accountsDir({ acc1: `MERIDIAN_API_KEY=${K1}\n`, acc2: `MERIDIAN_API_KEY=${K2}\n` })
+    const set = new AgAccountSet(dir, {}, async config => ({ fetch: async () => new Response(config.apiKey), close: async () => { if (config.apiKey === K1) throw new Error("stuck") } }))
+    await set.sync()
+    writeFileSync(join(dir, "acc1", "env"), `MERIDIAN_API_KEY=${K3}\n`)
+    expect(await set.sync()).toEqual({ started: ["acc1"], stopped: ["acc1"], failed: [] })
+    expect(await (await set.route(new Request("http://local/", { headers: { "x-api-key": K3 } }))).text()).toBe(K3)
     await set.close()
   })
   it("routes each request to the account whose API key it carries", async () => {
@@ -208,6 +224,21 @@ describe("Antigravity multi-account process", () => {
     expect(pool.used).toBe(1)
     expect((await b.send({ ...initial(), tools: [] })).status).toBe(200)
     expect(a.runtime.prewarmed).toBe(0)
+  })
+  it("starts the fallback level without changing the conversation's model, so it can continue", async () => {
+    const runtime = new AntigravityRuntime({ executable, allowToolBridge: true, turnTimeoutMs: 10000 })
+    const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: "antigravity" }, runtime)
+    cleanup.push(server.closeBackend)
+    runtime.availableModels = async () => ["gemini-fixture-low", "gemini-fixture-high"]
+    const send = (body: unknown) => server.app.fetch(new Request("http://local/v1/messages", { method: "POST", body: JSON.stringify(body) }))
+    const first = { model: "gemini-fixture-medium", max_tokens: 100, output_config: { effort: "medium" }, messages: [{ role: "user", content: "one" }] }
+    const reply = await send(first)
+    expect(reply.status).toBe(200)
+    const run = [...runtime.runs.values()][0]!
+    expect([run.request.model, run.launch.model, run.launch.effort]).toEqual(["gemini-fixture-medium", "gemini-fixture-high", "high"])
+    const content = ((await reply.json()) as { content: unknown }).content
+    expect((await send({ ...first, messages: [...first.messages, { role: "assistant", content }, { role: "user", content: "two" }] })).status).toBe(200)
+    expect(runtime.reused).toBe(1)
   })
   it("rejects invalid prewarm times", () => {
     for (const prewarmIdleMs of [-1, 1.5]) expect(() => new AntigravityRuntime({ prewarmIdleMs })).toThrow("prewarm")

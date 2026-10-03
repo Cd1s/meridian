@@ -151,5 +151,7 @@ describe("Antigravity admin API", () => {
     const response = await post("/api/accounts/acc1/code", { code: "bad" })
     expect(response.status).toBe(400)
     expect(((await response.json()) as any).error).toBe("Login failed: ok")
+    // One code per login: a retry must start a new login instead of writing into a FIFO nobody reads.
+    expect((await post("/api/accounts/acc1/code", { code: "again" })).status).toBe(409)
   })
 })
