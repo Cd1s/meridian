@@ -36,15 +36,16 @@ export function parseAgEnvFile(text: string): Record<string, string> {
   return vars
 }
 
-export function readAgAccounts(dir: string): AgAccount[] {
-  const accounts: AgAccount[] = []
+/** Valid accounts plus the reason each invalid one was skipped; one bad file never blocks the others. */
+export function readAgAccounts(dir: string): { accounts: AgAccount[]; invalid: Map<string, string> } {
+  const accounts: AgAccount[] = [], invalid = new Map<string, string>()
   for (const entry of readdirSync(dir, { withFileTypes: true }).filter(entry => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
     const home = join(dir, entry.name), file = join(home, "env")
     if (!existsSync(file)) continue
     const text = readFileSync(file, "utf8")
     const vars = parseAgEnvFile(text)
     // The key is what selects the account, so it must exist and be unique.
-    if (!vars.MERIDIAN_API_KEY || vars.MERIDIAN_API_KEY.length < 16) throw new Error(`${entry.name}: MERIDIAN_API_KEY of at least 16 characters is required`)
+    if (!vars.MERIDIAN_API_KEY || vars.MERIDIAN_API_KEY.length < 16) { invalid.set(entry.name, "MERIDIAN_API_KEY of at least 16 characters is required"); continue }
     // Temp and XDG dirs live in the account too: agy keeps caches in os.TempDir(), which would otherwise be shared.
     const env: Record<string, string> = {
       HOME: home, TMPDIR: join(home, ".tmp"),
@@ -53,13 +54,11 @@ export function readAgAccounts(dir: string): AgAccount[] {
     for (const [key, value] of Object.entries(vars)) if (!key.startsWith("MERIDIAN_")) env[key] = value
     accounts.push({ name: entry.name, home, apiKey: vars.MERIDIAN_API_KEY, env, statePath: vars.MERIDIAN_AGY_STATE_PATH || undefined, digest: createHash("sha256").update(text).digest("hex") })
   }
-  const keys = new Map<string, string>()
-  for (const account of accounts) {
-    const other = keys.get(account.apiKey)
-    if (other) throw new Error(`${other} and ${account.name} use the same MERIDIAN_API_KEY`)
-    keys.set(account.apiKey, account.name)
-  }
-  return accounts
+  const owners = new Map<string, string[]>()
+  for (const account of accounts) owners.set(account.apiKey, [...owners.get(account.apiKey) ?? [], account.name])
+  // A shared key cannot pick one account, so every account using it is skipped.
+  for (const names of owners.values()) if (names.length > 1) for (const name of names) invalid.set(name, `${names.join(" and ")} use the same MERIDIAN_API_KEY`)
+  return { accounts: accounts.filter(account => !invalid.has(account.name)), invalid }
 }
 
 type Start = (config: Partial<ProxyConfig>) => Promise<AgBackend>
@@ -89,12 +88,18 @@ export class AgAccountSet {
     return next
   }
   private async syncOnce() {
-    // An invalid directory throws before anything is stopped.
-    const wanted = new Map(readAgAccounts(this.dir).map(account => [account.name, account]))
-    for (const name of this.failures.keys()) if (!wanted.has(name)) this.failures.delete(name)
+    const { accounts, invalid } = readAgAccounts(this.dir)
+    const wanted = new Map(accounts.map(account => [account.name, account]))
+    for (const name of this.failures.keys()) if (!wanted.has(name) && !invalid.has(name)) this.failures.delete(name)
+    for (const [name, message] of invalid) {
+      if (this.failures.get(name) !== message) console.error(`[accounts] ${name}: ${message}`)
+      this.failures.set(name, message)
+    }
     const stale = [...this.running].filter(([name, { account }]) => wanted.get(name)?.digest !== account.digest)
     for (const [name, { account }] of stale) { this.running.delete(name); this.byKey.delete(digest(account.apiKey)) }
-    await Promise.all(stale.map(([, { backend }]) => backend.close()))
+    // A backend that fails to close must not stop the rest of the sync; its account restarts below if still wanted.
+    for (const [index, result] of (await Promise.allSettled(stale.map(([, { backend }]) => backend.close()))).entries())
+      if (result.status === "rejected") console.error(`[accounts] ${stale[index]![0]}: close failed: ${result.reason instanceof Error ? result.reason.message : result.reason}`)
     // Each account runs its startup probes (~10s through a proxy), so start them together.
     const pending = [...wanted.values()].filter(account => !this.running.has(account.name))
     const results = await Promise.allSettled(pending.map(account => this.startOne(account)))
@@ -113,7 +118,7 @@ export class AgAccountSet {
         failed.push(account.name)
       }
     })
-    return { started, stopped: stale.map(([name]) => name), failed }
+    return { started, stopped: stale.map(([name]) => name), failed: [...invalid.keys(), ...failed] }
   }
   private async startOne(account: AgAccount): Promise<AgBackend> {
     mkdirSync(account.env.TMPDIR!, { recursive: true, mode: 0o700 })
