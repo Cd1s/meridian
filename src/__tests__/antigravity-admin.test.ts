@@ -37,7 +37,7 @@ function setup(files: Record<string, string>, options: { sub2: boolean } = { sub
     const url = String(input), method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined
     calls.push({ url, method, body })
     if (url.startsWith("http://s2/admin/accounts?")) return sub2({ items: sub2Items })
-    if (url === "http://s2/admin/accounts/2255") return sub2({ concurrency: 4, priority: 3, group_ids: [9], credentials: { model_mapping: { a: "b" } } })
+    if (url === "http://s2/admin/accounts/1001") return sub2({ concurrency: 4, priority: 3, group_ids: [9], credentials: { model_mapping: { a: "b" } } })
     if (url === "http://s2/admin/accounts" && method === "POST") return sub2({ id: 99 })
     if (url.startsWith("http://s2/admin/accounts/") && method === "PUT") return sub2({})
     return new Response("?", { status: 500 })
@@ -53,7 +53,7 @@ const d=dir+"/"+name+"/.gemini/antigravity-cli";fs.mkdirSync(d,{recursive:true})
 console.log("LOGIN_RESULT=\\x1b[1mok\\x1b[0m");console.log("TOKEN_SAVED="+(fs.readFileSync(fifo,"utf8").startsWith("bad")?"no":"yes"))},50)`)
   const admin = createAgAdmin(set, {
     token: TOKEN, baseUrl: "http://127.0.0.1:3451", loginScript: script, exec, fetch: fakeFetch, fifoPath: () => fifo,
-    sub2api: options.sub2 ? { base: "http://s2", key: "s2key", templateId: 2255 } : undefined,
+    sub2api: options.sub2 ? { base: "http://s2", key: "s2key", templateId: 1001 } : undefined,
     spawn: name => spawn(process.execPath, [script, name], { env: { ...process.env, D: dir, F: fifo } }),
   })
   const req = (path: string, init: RequestInit = {}, headers: Record<string, string> = auth) =>

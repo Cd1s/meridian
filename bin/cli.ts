@@ -442,8 +442,9 @@ export async function runAccountsCli(dir: string, start?: (config: Partial<impor
       const { createAgAdmin } = await import("../src/proxy/backends/antigravityAdmin")
       const { readFileSync } = await import("node:fs")
       const env = process.env
-      const sub2api = env.MERIDIAN_SUB2API_BASE && env.MERIDIAN_SUB2API_KEY_FILE
-        ? { base: env.MERIDIAN_SUB2API_BASE.replace(/\/+$/, ""), key: readFileSync(env.MERIDIAN_SUB2API_KEY_FILE, "utf8").trim(), templateId: Number(env.MERIDIAN_SUB2API_TEMPLATE_ID ?? 2255) }
+      // New Sub2API accounts copy model mapping, groups and limits from MERIDIAN_SUB2API_TEMPLATE_ID; without it nothing is mirrored.
+      const sub2api = env.MERIDIAN_SUB2API_BASE && env.MERIDIAN_SUB2API_KEY_FILE && Number(env.MERIDIAN_SUB2API_TEMPLATE_ID) > 0
+        ? { base: env.MERIDIAN_SUB2API_BASE.replace(/\/+$/, ""), key: readFileSync(env.MERIDIAN_SUB2API_KEY_FILE, "utf8").trim(), templateId: Number(env.MERIDIAN_SUB2API_TEMPLATE_ID) }
         : undefined
       const baseUrl = env.MERIDIAN_SUB2API_ACCOUNT_BASE ?? `http://${host}:${port}`
       const app = createAgAdmin(accounts, { token, baseUrl, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api })

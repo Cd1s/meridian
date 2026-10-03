@@ -3,6 +3,8 @@
 本仓库是上游 [rynfar/meridian](https://github.com/rynfar/meridian) 的自定义分支，主分支为 `ours/antigravity-gateway-patch`，基准上游分支为 `main`。
 原则：不改官方 agy 的生成行为（模型名、思考等级、提示词都原样透传），只改分发层的兼容性和速度。
 
+> **本仓库是公开的。** 这里只写代码和通用配置说明。账号邮箱、代理与出口 IP、服务器地址和别名、域名、Sub2API 账号编号、每个账号的增删记录等运营信息，一律记在私有运营仓库，不要提交到这里。
+
 ## 补丁清单
 
 | 补丁 | 涉及文件 | 说明 |
@@ -35,7 +37,7 @@ Environment="MERIDIAN_ADMIN_PORT=3450"                   # fork：管理面板�
 EnvironmentFile=/etc/meridian/admin.env                   # MERIDIAN_ADMIN_TOKEN（root 600）
 Environment="MERIDIAN_SUB2API_BASE=http://127.0.0.1:8080/api/v1"
 Environment="MERIDIAN_SUB2API_KEY_FILE=/etc/meridian/sub2api-admin-key"   # root:meridian 640
-Environment="MERIDIAN_SUB2API_TEMPLATE_ID=<id>"            # 新账号照抄它的 model_mapping/分组/并发
+Environment="MERIDIAN_SUB2API_TEMPLATE_ID=<模板账号编号>"   # 必填：新账号照抄它的 model_mapping/分组/并发；不设则不同步 Sub2API
 Environment="MERIDIAN_AGY_LOGIN_SCRIPT=/usr/local/bin/agy-login.py"   # 仓库 scripts/agy-login.py
 Environment="MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1"
 Environment="MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS=300000"   # fork 补丁：授权检查成功后 5 分钟内不重查
@@ -75,7 +77,7 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 2. 建 `/var/lib/meridian/instances/accN/env`（目录 700、文件 600，属主 meridian）：`ALL_PROXY=$P`、`HTTP_PROXY=$P`、`HTTPS_PROXY=$P`、`MERIDIAN_API_KEY=cheek-meridian-accN-$(openssl rand -hex 12)`。不需要端口。
 3. 登录：`nohup python3 /usr/local/bin/agy-login.py accN > /tmp/login_accN.log 2>&1 &`，从日志取 `AUTH_URL=` 发给用户；收到授权码后 `echo "4/0..." > /tmp/agy_accN.fifo`，日志出现 `TOKEN_SAVED=yes` 即成功。
 4. `systemctl reload meridian-accounts`，日志出现 `reload: started=[accN]`。
-5. Sub2API 新建账号：照抄 <id> 的 `model_mapping`、`group_ids`、`concurrency`、`priority`；`platform: anthropic`、`type: apikey`、`name: 登录邮箱`、`notes: Antigravity Meridian accN`、`credentials: {base_url: http://127.0.0.1:3451, api_key: <accN 的 key>, model_mapping}`。建好后测试。
+5. Sub2API 新建账号：照抄模板账号的 `model_mapping`、`group_ids`、`concurrency`、`priority`；`platform: anthropic`、`type: apikey`、`name: 登录邮箱`、`notes: Antigravity Meridian accN`、`credentials: {base_url: http://127.0.0.1:3451, api_key: <accN 的 key>, model_mapping}`。建好后测试。
 
 ## 变更记录
 
