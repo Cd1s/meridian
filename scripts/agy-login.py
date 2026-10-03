@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import pty, os, time, select, fcntl, termios, struct, sys, re, signal, pwd
+import pty, os, time, select, fcntl, termios, struct, sys, re, signal, pwd, ctypes
 
 if len(sys.argv) < 2:
     print("Usage: agy-login.py <accN>")
@@ -49,58 +49,79 @@ if pid == 0:
     if os.getuid() != user.pw_uid:
         os.setgid(user.pw_gid)
         os.setuid(user.pw_uid)
+    # Set after setuid, which clears it: if this script is SIGKILLed, the kernel still stops agy.
+    try: ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    except Exception: pass
     os.environ.update(agy_env)
     os.environ["TERM"] = "xterm-256color"
     os.execvp("/usr/local/bin/agy", ["agy"])
 else:
     os.close(slave)
-    time.sleep(2)
-    os.write(master, b"\r")
-    time.sleep(2)
-    raw = b""
-    while True:
-        r, _, _ = select.select([master], [], [], 0.5)
-        if not r: break
-        raw += os.read(master, 4096)
-    
-    text = raw.decode("utf-8", errors="ignore")
-    urls = re.findall(r"https://accounts\.google\.com/o/oauth2/auth[^\s\x1b\]]+", text)
-    if urls:
-        # The TUI redraw can glue a second copy of the URL onto the first one.
-        url = "https://" + urls[0][len("https://"):].split("https://")[0]
-        print("AUTH_URL=" + url, flush=True)
-    else:
-        print("RAW_OUTPUT=" + text, flush=True)
-
     fifo_path = f"/tmp/agy_{acc}.fifo"
-    if os.path.exists(fifo_path):
-        os.remove(fifo_path)
-    os.mkfifo(fifo_path)
-    # Only the account's service user (or root running this script) may hand in a code.
-    os.chmod(fifo_path, 0o600)
-    print("READY_FOR_CODE", flush=True)
-    token = os.path.join(home_dir, ".gemini/antigravity-cli/antigravity-oauth-token")
-    # A re-login only succeeds if agy writes a new token; an old file must not count.
-    before = os.stat(token).st_mtime_ns if os.path.exists(token) else None
-    with open(fifo_path, "r") as fifo:
-        code = fifo.read().strip()
-    os.remove(fifo_path)
-    
-    os.write(master, (code + "\r").encode("utf-8"))
-    time.sleep(4)
-    out = b""
-    while True:
-        r, _, _ = select.select([master], [], [], 1.0)
-        if not r: break
-        out += os.read(master, 4096)
-    print("LOGIN_RESULT=" + out.decode("utf-8", errors="ignore"), flush=True)
-    # The TUI keeps running after login; stop it so it does not linger as an orphan (~225 MB each).
-    time.sleep(6)
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try: os.killpg(pid, sig)
-        except ProcessLookupError: break
+    fifo_ino = None
+
+    # The admin panel ends an abandoned login (timeout, new login, disable) with SIGTERM to this
+    # script. agy runs in its own session, so it has to be stopped here or it lingers (~225 MB).
+    def stop(signum, frame):
+        raise SystemExit(128 + signum)
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(s, stop)
+
+    try:
         time.sleep(2)
-    try: os.waitpid(pid, 0)
-    except ChildProcessError: pass
+        os.write(master, b"\r")
+        time.sleep(2)
+        raw = b""
+        while True:
+            r, _, _ = select.select([master], [], [], 0.5)
+            if not r: break
+            raw += os.read(master, 4096)
+    
+        text = raw.decode("utf-8", errors="ignore")
+        urls = re.findall(r"https://accounts\.google\.com/o/oauth2/auth[^\s\x1b\]]+", text)
+        if urls:
+            # The TUI redraw can glue a second copy of the URL onto the first one.
+            url = "https://" + urls[0][len("https://"):].split("https://")[0]
+            print("AUTH_URL=" + url, flush=True)
+        else:
+            print("RAW_OUTPUT=" + text, flush=True)
+
+        if os.path.exists(fifo_path):
+            os.remove(fifo_path)
+        os.mkfifo(fifo_path)
+        # Only the account's service user (or root running this script) may hand in a code.
+        os.chmod(fifo_path, 0o600)
+        fifo_ino = os.stat(fifo_path).st_ino
+        print("READY_FOR_CODE", flush=True)
+        token = os.path.join(home_dir, ".gemini/antigravity-cli/antigravity-oauth-token")
+        # A re-login only succeeds if agy writes a new token; an old file must not count.
+        before = os.stat(token).st_mtime_ns if os.path.exists(token) else None
+        with open(fifo_path, "r") as fifo:
+            code = fifo.read().strip()
+        os.remove(fifo_path)
+        fifo_ino = None
+        os.write(master, (code + "\r").encode("utf-8"))
+        time.sleep(4)
+        out = b""
+        while True:
+            r, _, _ = select.select([master], [], [], 1.0)
+            if not r: break
+            out += os.read(master, 4096)
+        print("LOGIN_RESULT=" + out.decode("utf-8", errors="ignore"), flush=True)
+        time.sleep(6)
+    finally:
+        for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(s, signal.SIG_IGN)
+        # The TUI keeps running after login too.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try: os.killpg(pid, sig)
+            except ProcessLookupError: break
+            time.sleep(2)
+        try: os.waitpid(pid, 0)
+        except ChildProcessError: pass
+        # A newer login for the same account may already own the path; remove only our FIFO.
+        try:
+            if fifo_ino is not None and os.stat(fifo_path).st_ino == fifo_ino: os.remove(fifo_path)
+        except FileNotFoundError: pass
     saved = os.path.exists(token) and os.stat(token).st_mtime_ns != before
     print("TOKEN_SAVED=" + ("yes" if saved else "no"), flush=True)

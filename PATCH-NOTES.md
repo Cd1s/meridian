@@ -142,6 +142,11 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 测试：原 `antigravity-bridge.test.ts` 在测试里复制了一份逻辑再断言自己，没有覆盖桥接代码。改为真实测试：逐字节分包的 SOCKS5（带认证、域名型应答）、HTTP CONNECT（含 407）、握手超时、gzip `loadCodeAssist` 改写、错误透传、流式透传与连接复用、上游不可达 502；另加“屏蔽模型不回收其他账号空闲进程”。
 - 验证：远端 tsc 0 错误；antigravity + auth 227 pass / 0 fail；Node 下单独验证 SOCKS 分包握手、改写与流式透传；构建成功。
 
+### 2026-10-03 登录脚本被终止时清理 agy
+- 原因：面板在登录超时（10 分钟）、重复发起登录、停用账号时对 `agy-login.py` 发 SIGTERM。脚本没有处理信号就直接退出，而 agy TUI 在自己的会话里（`setsid`），于是成为孤儿（约 200MB/个），FIFO 也留在 `/tmp`。之前只在收到授权码后才结束 agy。
+- 修复：SIGTERM/SIGINT/SIGHUP 转为退出，`finally` 中结束 agy 进程组并只删除本次创建的 FIFO（按 inode 判断，不误删同账号新一次登录的 FIFO）；agy 子进程设置 `PR_SET_PDEATHSIG`，脚本被 SIGKILL 时由内核结束 agy。
+- 验证：一次性测试账号（不可用代理，不联网）下，SIGTERM、SIGKILL、提交错误授权码三种情况均无 agy 残留；同条件下旧脚本收到 SIGTERM 后 agy 残留且父进程为 1。
+
 ## 同步上游
 
 
