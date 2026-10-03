@@ -171,10 +171,10 @@ export function createCloudCodeAgent(env: NodeJS.ProcessEnv): https.Agent {
 export async function handleCloudCodeRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  _env: NodeJS.ProcessEnv,
+  env: NodeJS.ProcessEnv,
   agent: https.Agent,
 ): Promise<void> {
-  const upstreamHost = process.env.CLOUD_CODE_UPSTREAM_HOST || "cloudcode-pa.googleapis.com"
+  const upstreamHost = env.CLOUD_CODE_UPSTREAM_HOST || process.env.CLOUD_CODE_UPSTREAM_HOST || "daily-cloudcode-pa.googleapis.com"
   const isLoadCodeAssist = req.url?.includes("loadCodeAssist")
   const headers = { ...req.headers }
   delete headers.host

@@ -69,6 +69,20 @@ function agTextOnly(messages: AgMessage[]): boolean {
   return messages.every(message => typeof message.content === "string" || message.content.every(block =>
     block.type === "text" || block.type === "tool_use" || (block.type === "tool_result" && (block.content === undefined || typeof block.content === "string" || block.content.every(part => part.type === "text")))))
 }
+/**
+ * Fork patch: filters out blocked models (Claude models on Antigravity runtime, or custom blocked list).
+ */
+export function isAgModelBlocked(model: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const blockClaude = env.MERIDIAN_AGY_BLOCK_CLAUDE !== "0" && env.MERIDIAN_AGY_BLOCK_CLAUDE !== "false"
+  if (blockClaude && model.toLowerCase().startsWith("claude")) {
+    return true
+  }
+  const customBlocked = (env.MERIDIAN_AGY_BLOCKED_MODELS || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean)
+  if (customBlocked.some(b => model.toLowerCase().includes(b))) {
+    return true
+  }
+  return false
+}
 /** Fork patch: the spawn shape of a new text conversation, or undefined when a pre-started agy cannot serve it. */
 export function agSpareKey(runtime: AntigravityRuntime, request: AgRequest, launch: AgLaunch): string | undefined {
   if (request.output_config?.format || !agTextOnly(request.messages)) return undefined
@@ -766,7 +780,8 @@ export class AntigravityRuntime {
       await this.ensureServer()
       await this.verifyAccount()
       const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal }).catch(error => this.probeFailed(error))
-      const models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
+      let models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
+      models = models.filter(m => !isAgModelBlocked(m, this.childEnv))
       if (!models.length) throw new Error("No account models available; sign in using agy")
       this.models = models; this.checkedAt = Date.now(); return models
     })().catch(error => { this.checkedAt = 0; throw error }).finally(() => { this.checking = undefined })
@@ -843,6 +858,9 @@ export class AntigravityRuntime {
       await this.initialize()
       // Model discovery may be cached, subscription/provider authorization cannot be.
       await this.verifyAccount()
+      if (isAgModelBlocked(request.model, this.childEnv)) {
+        throw new AntigravityError(`Model ${request.model} is blocked on Antigravity runtime`, 400, "invalid_request_error")
+      }
       const models = await this.availableModels()
       const fallback = !models.includes(request.model) && request.output_config?.effort ? agEffortFallback(request.model, models) : undefined
       const launch = fallback ?? { model: request.model, effort: request.output_config?.effort }

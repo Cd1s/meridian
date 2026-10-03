@@ -100,3 +100,20 @@ describe("Antigravity CloudCode request interception", () => {
     else delete process.env.CLOUD_CODE_UPSTREAM_HOST
   })
 })
+
+describe("Antigravity model blocking", () => {
+  it("blocks claude models by default and honors allowlist/override", async () => {
+    const { isAgModelBlocked } = await import("../proxy/backends/antigravityRuntime")
+    expect(isAgModelBlocked("claude-sonnet-4-6", {})).toBe(true)
+    expect(isAgModelBlocked("claude-opus-4-6-thinking", {})).toBe(true)
+    expect(isAgModelBlocked("gemini-3.1-pro-low", {})).toBe(false)
+    expect(isAgModelBlocked("gemini-3.6-flash-low", {})).toBe(false)
+
+    // When explicitly unblocked via MERIDIAN_AGY_BLOCK_CLAUDE=0
+    expect(isAgModelBlocked("claude-sonnet-4-6", { MERIDIAN_AGY_BLOCK_CLAUDE: "0" })).toBe(false)
+
+    // Custom blocked list
+    expect(isAgModelBlocked("gemini-3.1-pro-low", { MERIDIAN_AGY_BLOCKED_MODELS: "pro-low,gpt" })).toBe(true)
+    expect(isAgModelBlocked("gemini-3.6-flash-low", { MERIDIAN_AGY_BLOCKED_MODELS: "pro-low,gpt" })).toBe(false)
+  })
+})
