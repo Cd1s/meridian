@@ -1,21 +1,25 @@
-// Fork patch: serve several Antigravity accounts from one Meridian process.
-// Layout matches the one-service-per-account setup: <dir>/<name>/env holds MERIDIAN_PORT,
-// MERIDIAN_API_KEY and the account's proxy variables; agy keeps its login in <dir>/<name>/.gemini.
+// Fork patch: serve several Antigravity accounts from one Meridian process on one port.
+// Each account is <dir>/<name>/env (MERIDIAN_API_KEY plus the account's proxy variables) with its agy
+// login in <dir>/<name>/.gemini; requests are routed to an account by their API key.
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import type { ProxyConfig, ProxyInstance } from "../types"
+import type { ProxyConfig } from "../types"
 import { AgProcessPool } from "./antigravityRuntime"
 
 export interface AgAccount {
   name: string
   home: string
-  port: number
   apiKey: string
   /** Variables for this account's agy processes: HOME and private temp/XDG dirs, then every non-MERIDIAN_ entry of its env file. */
   env: Record<string, string>
   statePath?: string
   digest: string
+}
+/** One account's Antigravity backend, served in-process without its own listener. */
+export interface AgBackend {
+  fetch(request: Request): Promise<Response>
+  close(): Promise<void>
 }
 
 export function parseAgEnvFile(text: string): Record<string, string> {
@@ -39,32 +43,38 @@ export function readAgAccounts(dir: string): AgAccount[] {
     if (!existsSync(file)) continue
     const text = readFileSync(file, "utf8")
     const vars = parseAgEnvFile(text)
-    const port = Number(vars.MERIDIAN_PORT)
-    if (!Number.isSafeInteger(port) || port <= 0 || port > 65535) throw new Error(`${entry.name}: MERIDIAN_PORT must be a TCP port`)
-    // Each account answers on its own port, so an empty key would expose it unauthenticated.
-    if (!vars.MERIDIAN_API_KEY) throw new Error(`${entry.name}: MERIDIAN_API_KEY is required`)
+    // The key is what selects the account, so it must exist and be unique.
+    if (!vars.MERIDIAN_API_KEY || vars.MERIDIAN_API_KEY.length < 16) throw new Error(`${entry.name}: MERIDIAN_API_KEY of at least 16 characters is required`)
     // Temp and XDG dirs live in the account too: agy keeps caches in os.TempDir(), which would otherwise be shared.
     const env: Record<string, string> = {
       HOME: home, TMPDIR: join(home, ".tmp"),
       XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
     }
     for (const [key, value] of Object.entries(vars)) if (!key.startsWith("MERIDIAN_")) env[key] = value
-    accounts.push({ name: entry.name, home, port, apiKey: vars.MERIDIAN_API_KEY, env, statePath: vars.MERIDIAN_AGY_STATE_PATH || undefined, digest: createHash("sha256").update(text).digest("hex") })
+    accounts.push({ name: entry.name, home, apiKey: vars.MERIDIAN_API_KEY, env, statePath: vars.MERIDIAN_AGY_STATE_PATH || undefined, digest: createHash("sha256").update(text).digest("hex") })
   }
-  const ports = new Map<number, string>()
+  const keys = new Map<string, string>()
   for (const account of accounts) {
-    const other = ports.get(account.port)
-    if (other) throw new Error(`${other} and ${account.name} both use port ${account.port}`)
-    ports.set(account.port, account.name)
+    const other = keys.get(account.apiKey)
+    if (other) throw new Error(`${other} and ${account.name} use the same MERIDIAN_API_KEY`)
+    keys.set(account.apiKey, account.name)
   }
   return accounts
 }
 
-type Start = (config: Partial<ProxyConfig>) => Promise<ProxyInstance>
+type Start = (config: Partial<ProxyConfig>) => Promise<AgBackend>
+const digest = (key: string) => createHash("sha256").update(key).digest("hex")
+export function agRequestKey(headers: Headers): string | undefined {
+  const authorization = headers.get("authorization")
+  return headers.get("x-api-key") || (authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined) || undefined
+}
+const denied = () => Response.json({ type: "error", error: { type: "authentication_error", message: "Invalid or missing API key" } }, { status: 401 })
 
 export class AgAccountSet {
   readonly pool?: AgProcessPool
-  private readonly running = new Map<string, { account: AgAccount; proxy: ProxyInstance }>()
+  private readonly running = new Map<string, { account: AgAccount; backend: AgBackend }>()
+  // Keyed by key digest so the routing table never holds raw keys as map keys.
+  private readonly byKey = new Map<string, string>()
   private syncing: Promise<unknown> = Promise.resolve()
   constructor(readonly dir: string, readonly base: Partial<ProxyConfig>, readonly start: Start, poolSize?: number) {
     this.pool = poolSize === undefined ? undefined : new AgProcessPool(poolSize)
@@ -83,8 +93,8 @@ export class AgAccountSet {
     const wanted = new Map(readAgAccounts(this.dir).map(account => [account.name, account]))
     for (const name of this.failures.keys()) if (!wanted.has(name)) this.failures.delete(name)
     const stale = [...this.running].filter(([name, { account }]) => wanted.get(name)?.digest !== account.digest)
-    for (const [name] of stale) this.running.delete(name)
-    await Promise.all(stale.map(([, { proxy }]) => proxy.close()))
+    for (const [name, { account }] of stale) { this.running.delete(name); this.byKey.delete(digest(account.apiKey)) }
+    await Promise.all(stale.map(([, { backend }]) => backend.close()))
     // Each account runs its startup probes (~10s through a proxy), so start them together.
     const pending = [...wanted.values()].filter(account => !this.running.has(account.name))
     const results = await Promise.allSettled(pending.map(account => this.startOne(account)))
@@ -92,7 +102,8 @@ export class AgAccountSet {
     results.forEach((result, index) => {
       const account = pending[index]!
       if (result.status === "fulfilled") {
-        this.running.set(account.name, { account, proxy: result.value })
+        this.running.set(account.name, { account, backend: result.value })
+        this.byKey.set(digest(account.apiKey), account.name)
         this.failures.delete(account.name)
         started.push(account.name)
       } else {
@@ -104,24 +115,42 @@ export class AgAccountSet {
     })
     return { started, stopped: stale.map(([name]) => name), failed }
   }
-  private async startOne(account: AgAccount): Promise<ProxyInstance> {
+  private async startOne(account: AgAccount): Promise<AgBackend> {
     mkdirSync(account.env.TMPDIR!, { recursive: true, mode: 0o700 })
-    const proxy = await this.start({
-      ...this.base, backend: "antigravity", port: account.port, apiKey: account.apiKey, silent: true,
+    return this.start({
+      ...this.base, backend: "antigravity", apiKey: account.apiKey, silent: true,
       // statePath is set explicitly so a process-wide MERIDIAN_AGY_STATE_PATH is never shared between accounts.
       antigravity: { ...this.base.antigravity, env: account.env, statePath: account.statePath, pool: this.pool },
     })
-    if (!proxy.server.listening) await new Promise<void>((resolve, reject) => {
-      proxy.server.once("listening", resolve)
-      proxy.server.once("error", error => { void proxy.close().catch(() => {}); reject(error) })
-    })
-    console.log(`[accounts] ${account.name}: http://${proxy.config.host}:${account.port}`)
-    return proxy
+  }
+  /** The shared listener: the request's API key picks the account. */
+  route(request: Request): Promise<Response> {
+    const key = agRequestKey(request.headers)
+    const name = key ? this.byKey.get(digest(key)) : undefined
+    const entry = name ? this.running.get(name) : undefined
+    if (entry) return entry.backend.fetch(request)
+    if (!key && ["/health", "/readyz", "/livez"].includes(new URL(request.url).pathname)) return Promise.resolve(Response.json({ status: "healthy", backend: "antigravity", accounts: this.running.size, failed: this.failures.size }))
+    return Promise.resolve(denied())
+  }
+  /** Calls one account's backend in-process with its own key (admin panel). */
+  async request(name: string, path: string): Promise<Response | undefined> {
+    const entry = this.running.get(name)
+    return entry?.backend.fetch(new Request(`http://accounts.local${path}`, { headers: { "x-api-key": entry.account.apiKey } }))
   }
   async close(): Promise<void> {
     await this.syncing
-    const proxies = [...this.running.values()].map(entry => entry.proxy)
+    const backends = [...this.running.values()].map(entry => entry.backend)
     this.running.clear()
-    await Promise.all(proxies.map(proxy => proxy.close()))
+    this.byKey.clear()
+    await Promise.all(backends.map(backend => backend.close()))
   }
+}
+
+/** In-process backend for one account: same construction as startProxyServer's antigravity branch, minus the listener. */
+export async function startAgBackend(config: Partial<ProxyConfig>): Promise<AgBackend> {
+  const { resolveBackendConfig } = await import("../types")
+  const { createAntigravityServer } = await import("./antigravity")
+  const backend = createAntigravityServer(resolveBackendConfig(config))
+  try { await backend.initPlugins?.() } catch (error) { await backend.closeBackend(); throw error }
+  return { fetch: request => Promise.resolve(backend.app.fetch(request)), close: async () => { backend.beginDrain?.(); await backend.closeBackend() } }
 }

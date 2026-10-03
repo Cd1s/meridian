@@ -11,7 +11,7 @@
 | 丢弃 `temperature` / `top_p` / `top_k` | `src/proxy/backends/antigravityProtocol.ts` | agy 没有采样参数；上游直接 400，Sub2API 的账号测试固定带 `temperature`，会全部失败。`betas` 仍按上游拒绝 |
 | 思考等级选择同系列官方 slug | `src/proxy/backends/antigravityProtocol.ts`、`antigravityRuntime.ts` | Sub2API 把纯名（如 `gemini-3.8-flash`）映射到 `-low`；客户端带 `effort` / `reasoning_effort` 时换成同系列 `-<effort>`（上游 budget 适配也是这样换后缀）。账号没有该档（3.1 Pro 无 medium）时取最近档，优先更高。非 `gemini-*-low/medium/high` 模型仍按上游报错 |
 | 授权检查可选缓存 `MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 上游每个请求都冷启动一次 `agy -p /config`（经代理约 5s）。设 TTL 后，成功结果在 TTL 内复用；失败不缓存。默认 0 = 上游行为，上限 600000 |
-| 单进程多账号 `MERIDIAN_AGY_ACCOUNTS_DIR` | `bin/cli.ts`（`runAccountsCli`）、`src/proxy/backends/antigravityAccounts.ts` | 一个 Node 进程服务目录下所有账号：`<dir>/<名>/env` 给端口、key、代理，agy 登录在 `<dir>/<名>/.gemini`（与原来一账号一服务的目录完全相同）。每个账号仍是独立端口、独立 key、独立 HOME、独立代理。SIGHUP（`systemctl reload`）重读目录：新增的启动、删除的停止、env 改过的重启，其余不动；目录有错误时整次拒绝，正在跑的不受影响。账号没有 key 或端口冲突时拒绝启动 |
+| 单进程多账号、单端口 `MERIDIAN_AGY_ACCOUNTS_DIR` | `bin/cli.ts`（`runAccountsCli`）、`src/proxy/backends/antigravityAccounts.ts` | 一个 Node 进程、一个端口（`MERIDIAN_PORT`）服务目录下所有账号，**按请求的 API key（`x-api-key` 或 `Authorization: Bearer`）选账号**；未知 key 返回 401，不带 key 的 `/health` 返回汇总。每个账号 `<dir>/<名>/env` 只需 `MERIDIAN_API_KEY`（≥16 位、不可重复）和代理变量，agy 登录在 `<dir>/<名>/.gemini`；每个账号仍是独立的后端实例、独立 HOME/代理/临时目录，官方 agy 的启动参数与工具调度（每账号一个 127.0.0.1 随机端口的 MCP 工具桥）不变。SIGHUP（`systemctl reload`）重读目录：新增的启动、删除的停止、env 改过的重启，其余不动；目录有错误时整次拒绝。启动失败的账号记录原因、每 60s 重试 |
 | 账号级 agy 环境 `antigravity.env` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 叠加到 agy 子进程环境（HOME、代理）；`MERIDIAN_API_KEY` 等敏感变量照旧剔除 |
 | 每个服务独立 API key `apiKey` | `src/proxy/types.ts`、`src/proxy/auth.ts`、`antigravity.ts` | 未设置时仍读 `MERIDIAN_API_KEY`，与上游一致 |
 | 共享 agy 进程池 `MERIDIAN_AGY_POOL_MAX` | `antigravityRuntime.ts`（`AgProcessPool`） | 所有账号合计的 agy 进程上限。满了时新请求可以回收任意账号的**空闲**热进程（上游原本只在本账号内回收）；都在忙就 429。单账号上限 `MAX_CONCURRENT` 照旧生效 |
@@ -28,6 +28,7 @@
 
 ```
 Environment="MERIDIAN_AGY_ACCOUNTS_DIR=/var/lib/meridian/instances"   # fork：单进程多账号
+Environment="MERIDIAN_PORT=3451"                          # fork：全部账号共用这一个端口，API key 选账号（nginx <域名> 也指向它）
 Environment="MERIDIAN_AGY_POOL_MAX=40"                    # fork：全部账号合计最多 40 个 agy（Sub2API 每号并发 5，共 50）
 Environment="MERIDIAN_AGY_PREWARM_IDLE_MS=600000"         # fork：账号 10 分钟内有请求就保持 1 个待命 agy（约 225MB/个）
 Environment="MERIDIAN_ADMIN_PORT=3450"                   # fork：管理面板，nginx <域名> → 127.0.0.1:3450（CF 代理 + <域名> 源站证书）
@@ -43,10 +44,38 @@ Environment="MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1"      # 上游选项：budget
 Environment="MERIDIAN_AGY_MAX_CONCURRENT=8"              # 上游选项（默认 4）：热进程多了不必互相回收；每进程约 225MB
 ```
 
-加账号：首选面板 https://<域名> （添加账号 → 填代理 → 登录 → 粘贴授权码，自动进 Sub2API）。手工方式：建 `/var/lib/meridian/instances/accN/env`（`MERIDIAN_PORT`、`MERIDIAN_API_KEY`、`ALL_PROXY`/`HTTP_PROXY`/`HTTPS_PROXY`，属主 meridian），
-`python3 /usr/local/bin/login-acc.py accN` 登录（脚本以 meridian 身份跑 agy，登录后自动结束 agy），然后 `systemctl reload meridian-accounts`，其他账号不受影响。
+加账号：首选面板 https://<域名> （添加账号 → 填代理 → 登录 → 粘贴授权码；自动启动并在 Sub2API 建号，base_url `http://127.0.0.1:3451`，notes `Antigravity Meridian accN`）。手工方式见下方“手工添加账号”。
 
-Sub2API 账号 <id>/<id>/<id>/<id> 的 `model_mapping`：纯名 → `-low`（如 `gemini-3.8-flash → gemini-3.8-flash-low`），带后缀的原样。
+Sub2API：所有反重力账号 base_url 都是 `http://127.0.0.1:3451`，各自 api_key 不同；账号与目录的对应关系靠 notes `Antigravity Meridian accN`（Sub2API 不返回 api_key）。
+
+各账号 `model_mapping`：纯名 → `-low`（如 `gemini-3.8-flash → gemini-3.8-flash-low`），带后缀的原样。
+
+## 手工添加账号（给 agent 用）
+
+生产机 `<生产机>`（`sshctl run <生产机> '...'`）。所有账号在 `meridian-accounts.service` 里，共用 `127.0.0.1:3451`，API key 选账号。
+不要重启服务；不要输出 key 和代理密码；遇到出口 IP 重复、登录失败、403 Terms of Service、sshctl 连不上就停下报告。
+
+**方式一（推荐）：调用面板接口**，与在 https://<域名> 里点按钮完全相同。接口只监听服务器本机，口令在 `/etc/meridian/admin.env`：
+
+```bash
+sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; A="Authorization: Bearer $MERIDIAN_ADMIN_TOKEN"
+curl -s -X POST -H "$A" -H "content-type: application/json" http://127.0.0.1:3450/api/accounts -d "{\"proxy\":\"socks5h://用户:密码@主机:端口\"}"'
+# → {"name":"accN","exitIp":"..."}；出口 IP 与已有账号重复会返回 409
+sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X POST -H "Authorization: Bearer $MERIDIAN_ADMIN_TOKEN" http://127.0.0.1:3450/api/accounts/accN/login'
+# → {"url":"https://accounts.google.com/..."}：原样发给用户，让用户登录后把 4/0... 授权码发回来（链接 10 分钟内有效）
+sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X POST -H "Authorization: Bearer $MERIDIAN_ADMIN_TOKEN" -H "content-type: application/json" http://127.0.0.1:3450/api/accounts/accN/code -d "{\"code\":\"4/0...\"}"'
+# → {"email":"...","serving":true,"error":null,"sub2apiId":NNNN}：已自动启动，并在 Sub2API 建好账号
+```
+
+验证：`GET /api/accounts` 里该账号 `serving: true`；Sub2API `POST /admin/accounts/<sub2apiId>/test`，body `{"model_id":"gemini-3.8-flash"}`（必须带 model_id）返回 `test_complete` 且 success。
+停用/启用：`POST /api/accounts/accN/disable`、`/enable`（同时改 Sub2API 状态）。
+
+**方式二：纯手工**（面板不可用时）
+1. 校验代理出口 IP 不与已有账号重复：`curl -s -m 15 -x "$P" https://api.ipify.org`，与各账号 env 里的 `ALL_PROXY` 逐个对比。
+2. 建 `/var/lib/meridian/instances/accN/env`（目录 700、文件 600，属主 meridian）：`ALL_PROXY=$P`、`HTTP_PROXY=$P`、`HTTPS_PROXY=$P`、`MERIDIAN_API_KEY=cheek-meridian-accN-$(openssl rand -hex 12)`。不需要端口。
+3. 登录：`nohup python3 /usr/local/bin/agy-login.py accN > /tmp/login_accN.log 2>&1 &`，从日志取 `AUTH_URL=` 发给用户；收到授权码后 `echo "4/0..." > /tmp/agy_accN.fifo`，日志出现 `TOKEN_SAVED=yes` 即成功。
+4. `systemctl reload meridian-accounts`，日志出现 `reload: started=[accN]`。
+5. Sub2API 新建账号：照抄 <id> 的 `model_mapping`、`group_ids`、`concurrency`、`priority`；`platform: anthropic`、`type: apikey`、`name: 登录邮箱`、`notes: Antigravity Meridian accN`、`credentials: {base_url: http://127.0.0.1:3451, api_key: <accN 的 key>, model_mapping}`。建好后测试。
 
 ## 变更记录
 
@@ -80,6 +109,13 @@ Sub2API 账号 <id>/<id>/<id>/<id> 的 `model_mapping`：纯名 → `-low`（如
 - 验证：远端 antigravity + auth 测试 211 pass / 0 fail，`tsc` 0 错误，构建成功。线上：9 个账号服务（acc9 待重新登录）；acc6 连续 3 个新对话 9.9s → 2.4s → 1.9s（`prewarmed=2`）；Sub2API 测试 <id>/<id>/<id> success（有待命进程的 <id> 为 3.5s）；agy 子进程 `TMPDIR` 均在各自账号目录；面板公网 `/` 200，`/api/*` 无口令或错口令 401，接口返回不含 API key 与代理密码，额度显示官方分组（gemini-weekly / gemini-5h / 3p-weekly / 3p-5h）。
 - 基础设施：Cloudflare `<域名>` A <源站IP>（已代理）；nginx `/etc/nginx/sites-available/<域名>.conf`；口令 `/etc/meridian/admin.env`。
 - 回滚点：`/opt/meridian/backups/dist-accounts-20261003-025913`、`meridian-accounts.service-20261003-025913`（面板前）；`dist-accounts-20261003-024911`、`meridian-accounts.service-20261003-024911`（待命进程前）。服务重启 2 次，每次约 14s 不可用。
+
+### 2026-10-03 单端口、按 API key 分账号
+- 原因：每账号一个端口不便管理，Sub2API 要逐个配地址。改为一个端口、key 选账号；只改 Meridian 的 HTTP 入口，agy 的启动参数、环境、工具调度不变。
+- 验证：远端 antigravity + auth 测试 213 pass / 0 fail（含真实 fixture 下两个账号同一监听按 key 分流、未知 key 401），`tsc` 0 错误，构建成功。线上：12 个账号全部在 3451 上按 key 返回 200，每个 key 对应的 agy 日志登录邮箱与 Sub2API 账号名一致；未知 key 401；旧的 11 个账号端口全部关闭；Sub2API 12 个账号 base_url 改为 3451 并回读核对 model_mapping，测试全部 success；面板列表 12 个账号、不含端口和 key。
+- Sub2API 改动：PUT credentials {base_url, api_key（原 key 不变）, model_mapping（原值）} + notes。快照 `/opt/meridian/backups/sub2api-accounts-20261003-114342.jsonl`，迁移脚本 `/opt/meridian/backups/s2_migrate.py`。
+- 回滚：`dist-accounts-20261003-114357`、`meridian-accounts.service-20261003-114357` 还原后重启，再按快照把各账号 base_url 改回原端口（env 文件里的 `MERIDIAN_PORT` 未删除，旧版本仍可用）。
+- 线上影响：重启 19s；除 acc1 外其他账号在 Sub2API 更新前不可用，合计约 20s。
 
 ## 同步上游
 

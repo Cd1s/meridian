@@ -12,6 +12,7 @@ import { parseAgEnvFile, type AgAccountSet } from "./antigravityAccounts"
 type Json = Record<string, any>
 export interface AgAdminOptions {
   token: string
+  baseUrl: string
   loginScript: string
   sub2api?: { base: string; key: string; templateId: number }
   exec?: (file: string, args: string[]) => Promise<string>
@@ -58,10 +59,10 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       return JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString()).email ?? null
     } catch { return null }
   }
-  const probe = async (url: string, headers: Record<string, string> = {}) => {
+  const probe = async (name: string, path: string) => {
     try {
-      const response = await http(url, { headers, signal: AbortSignal.timeout(5000) })
-      return response.ok ? await response.json() as Json : null
+      const response = await set.request(name, path)
+      return response?.ok ? await response.json() as Json : null
     } catch { return null }
   }
 
@@ -72,24 +73,24 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     return body.data
   }
   const sub2Accounts = async (): Promise<Json[]> => sub2api ? (await s2("/admin/accounts?page=1&page_size=500")).items ?? [] : []
-  const baseUrl = (port: number) => `http://127.0.0.1:${port}`
-  const findSub2 = (items: Json[], port: number) => items.find(item => item.credentials?.base_url === baseUrl(port))
-  const setStatus = async (port: number, status: string) => {
-    const found = findSub2(await sub2Accounts(), port)
+  // All accounts share one base_url and Sub2API never returns api keys, so an account is identified by its notes.
+  const findSub2 = (items: Json[], name: string) => items.find(item => /^Antigravity Meridian (acc\d+)\b/.exec(item.notes ?? "")?.[1] === name)
+  const setStatus = async (name: string, status: string) => {
+    const found = findSub2(await sub2Accounts(), name)
     if (found && found.status !== status) await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { status } })
     return found?.id ?? null
   }
 
   async function describe(name: string, items: Json[] | null) {
-    const { vars, disabled } = readEnv(name)!, port = Number(vars.MERIDIAN_PORT)
+    const { vars, disabled } = readEnv(name)!
     const serving = set.names.includes(name), cached = quotas.get(name)
     const fresh = cached && Date.now() - cached.at < 300_000 && cached.value?.fetchedAt
-    const [health, status] = await Promise.all([probe(`${baseUrl(port)}/health`), serving && !fresh ? probe(`${baseUrl(port)}/providers/status`, { "x-api-key": vars.MERIDIAN_API_KEY ?? "" }) : null])
+    const [health, status] = await Promise.all([probe(name, "/health"), serving && !fresh ? probe(name, "/providers/status") : null])
     if (status) quotas.set(name, { at: Date.now(), value: status.providers?.find((p: Json) => p.id === "antigravity")?.accounts?.[0] ?? null })
     const quota = serving ? quotas.get(name)?.value : undefined
     return {
-      name, port, email: email(name), proxy: mask(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? ""), disabled, serving, error: set.failures.get(name) ?? null,
-      sub2apiId: items ? findSub2(items, port)?.id ?? null : null,
+      name, email: email(name), proxy: mask(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? ""), disabled, serving, error: set.failures.get(name) ?? null,
+      sub2apiId: items ? findSub2(items, name)?.id ?? null : null,
       health: health && Object.fromEntries(["completed", "failed", "reused", "prewarmed", "processes", "activeProcesses", "spareReady"].map(key => [key, health[key]])),
       quota: quota ? { fetchedAt: quota.fetchedAt ?? null, error: quota.error ?? null, windows: quota.windows ?? [] } : null,
     }
@@ -103,11 +104,10 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const [ip, ...used] = await Promise.all([exitIp(proxy), ...others.map(vars => exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "").catch(() => null))])
     if (used.includes(ip!)) fail(409, `Exit IP ${ip} is already used by another account`)
     const number = Math.max(0, ...names().map(name => Number(name.slice(3)))) + 1, name = `acc${number}`
-    const port = Math.max(34600, ...others.map(vars => Number(vars.MERIDIAN_PORT) || 0)) + 10
     mkdirSync(join(set.dir, name), { recursive: true, mode: 0o700 })
-    const lines = [`MERIDIAN_PORT=${port}`, `ALL_PROXY=${proxy}`, `HTTP_PROXY=${proxy}`, `HTTPS_PROXY=${proxy}`, `MERIDIAN_API_KEY=cheek-meridian-${name}-${randomBytes(12).toString("hex")}`]
+    const lines = [`ALL_PROXY=${proxy}`, `HTTP_PROXY=${proxy}`, `HTTPS_PROXY=${proxy}`, `MERIDIAN_API_KEY=cheek-meridian-${name}-${randomBytes(12).toString("hex")}`]
     writeFileSync(envPath(name), lines.join("\n") + "\n", { mode: 0o600 })
-    return { name, port, exitIp: ip }
+    return { name, exitIp: ip }
   }
   async function login(name: string) {
     logins.get(name)?.child.kill()
@@ -142,12 +142,12 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     if (saved?.[1] !== "yes") fail(400, `Login failed: ${strip(/LOGIN_RESULT=([\s\S]*?)(?:TOKEN_SAVED=|$)/.exec(entry.out)?.[1] ?? entry.out).trim().slice(-400)}`)
     logins.delete(name)
     await set.sync()
-    const { vars } = existing(name), port = Number(vars.MERIDIAN_PORT), address = email(name)
-    return { email: address, serving: set.names.includes(name), error: set.failures.get(name) ?? null, sub2apiId: await mirror(name, port, vars.MERIDIAN_API_KEY ?? "", address) }
+    const { vars } = existing(name), address = email(name)
+    return { email: address, serving: set.names.includes(name), error: set.failures.get(name) ?? null, sub2apiId: await mirror(name, vars.MERIDIAN_API_KEY ?? "", address) }
   }
-  async function mirror(name: string, port: number, apiKey: string, address: string | null) {
+  async function mirror(name: string, apiKey: string, address: string | null) {
     if (!sub2api) return null
-    const found = findSub2(await sub2Accounts(), port)
+    const found = findSub2(await sub2Accounts(), name)
     if (found) {
       if (found.status !== "active") await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { status: "active" } })
       return found.id
@@ -155,16 +155,16 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const template = await s2(`/admin/accounts/${sub2api.templateId}`)
     const created = await s2("/admin/accounts", { method: "POST", body: {
       name: address ?? name, platform: "anthropic", type: "apikey", concurrency: template.concurrency, priority: template.priority, group_ids: template.group_ids,
-      notes: `Antigravity Meridian ${name} (port ${port})`, credentials: { base_url: baseUrl(port), api_key: apiKey, model_mapping: template.credentials?.model_mapping },
+      notes: `Antigravity Meridian ${name}`, credentials: { base_url: options.baseUrl, api_key: apiKey, model_mapping: template.credentials?.model_mapping },
     } })
     return created.id
   }
   async function toggle(name: string, disable: boolean) {
-    const { vars, disabled } = existing(name)
+    const { disabled } = existing(name)
     if (disabled !== disable) renameSync(disable ? envPath(name) : `${envPath(name)}.disabled`, disable ? `${envPath(name)}.disabled` : envPath(name))
     await set.sync()
     if (disable) logins.get(name)?.child.kill()
-    await setStatus(Number(vars.MERIDIAN_PORT), disable ? "inactive" : "active")
+    await setStatus(name, disable ? "inactive" : "active")
     return { ok: true }
   }
 

@@ -96,7 +96,7 @@ function card(a) {
   var hl = a.health, hh = hl ? "完成 " + hl.completed + " · 失败 " + hl.failed + " · 复用 " + hl.reused + " · 预热命中 " + hl.prewarmed + " · 进程 " + hl.processes + " · 待命 " + (hl.spareReady ? "✓" : "–") : "健康信息未知";
   return '<div class="card" data-n="' + esc(a.name) + '"><div class="row"><div><span class="nm">' + esc(a.name) + "</span> " +
     esc(a.email || "未登录") + '</div><span class="badge ' + st[0] + '">' + st[1] + "</span></div>" +
-    '<div class="mut">端口 ' + a.port + (a.sub2apiId != null ? " · Sub2API #" + a.sub2apiId : "") + " · " + esc(a.proxy) + "</div>" +
+    '<div class="mut">' + (a.sub2apiId != null ? "Sub2API #" + a.sub2apiId + " · " : "") + esc(a.proxy) + "</div>" +
     (a.error ? '<div class="err">' + esc(a.error) + "</div>" : "") +
     '<div class="mut" style="margin-top:6px">' + esc(hh) + "</div>" + quotaHtml(a.quota) +
     '<div class="acts"><button data-a="ip">测出口IP</button><button data-a="login">重新登录</button><button data-a="toggle">' +
@@ -132,7 +132,7 @@ function openWizard(name) {
       var v = $("#px").value.trim(); if (!v) return toast("请输入代理地址");
       busy(e.target, "创建中…", async function () {
         var r = await api("POST", "/api/accounts", { proxy: v });
-        $("#r1").textContent = "账号名 " + r.name + " · 端口 " + r.port + " · 出口IP " + r.exitIp;
+        $("#r1").textContent = "账号名 " + r.name + " · 出口IP " + r.exitIp;
         $("#px").disabled = true; e.target.hidden = true; step2(r.name);
       });
     };
