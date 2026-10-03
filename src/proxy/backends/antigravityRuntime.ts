@@ -1,4 +1,6 @@
 import { readAgProbe, ProbeFailure } from "./antigravityProbe"
+import { createCloudCodeAgent, handleCloudCodeRequest } from "./antigravityBridge"
+import type { Agent as HttpsAgent } from "node:https"
 import { AgGrammars } from "./antigravityGrammar"
 import { AgPlugins } from "./antigravityPlugins"
 import { AgNativeSessions, type AgNativeSnapshot } from "./antigravitySessions"
@@ -575,6 +577,8 @@ export class AntigravityRuntime {
   private providerError?: string
   private readonly shutdown = new AbortController()
   private server?: Server
+  private serverPromise?: Promise<string>
+  readonly cloudCodeAgent: HttpsAgent
   private initialization?: Promise<void>
   private models: string[] = []
   private checkedAt = 0
@@ -602,6 +606,7 @@ export class AntigravityRuntime {
     } catch (error) { this.state?.close(); throw error }
     this.childEnv = { ...process.env, ...options.env }
     for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY|MERIDIAN_ADMIN_TOKEN|MERIDIAN_SUB2API_.*)$/.test(key)) delete this.childEnv[key]
+    this.cloudCodeAgent = createCloudCodeAgent(this.childEnv)
     options.pool?.runtimes.add(this)
     // Native session restore keeps workspaces in its own directory; pre-started processes are not used with it.
     if (this.prewarmIdleMs && !this.nativeSessions) {
@@ -645,11 +650,12 @@ export class AntigravityRuntime {
     const active = healthy && shape !== undefined && Date.now() - this.lastRequestAt < this.prewarmIdleMs
     const spare = this.spare
     if (spare && (!active || spare.key !== shape || spare.closed || Date.now() - spare.createdAt > this.prewarmMaxAgeMs)) this.dropSpare()
-    if (!active || shape === undefined || this.spare || !this.mcpUrl || !this.models.length) return
+    if (!active || shape === undefined || this.spare || !this.models.length) return
     if (this.runs.size + this.preparing >= this.maxConcurrent) return
     if (this.options.pool && this.options.pool.used >= this.options.pool.maxProcesses) return
     this.spareSpawning = true
     try {
+      await this.ensureServer()
       const [model, effort, skipPermissions] = JSON.parse(shape) as [string, string | null, boolean]
       const id = randomUUID()
       const workspace = await realpath(await mkdtemp(join(this.childEnv.TMPDIR || tmpdir(), "meridian-agy-")))
@@ -696,6 +702,7 @@ export class AntigravityRuntime {
     if (Date.now() - this.quotaCheckedAt < (this.quota.error ? 10_000 : 60_000)) return this.quota
     this.quotaCheck ??= (async () => {
       try {
+        await this.ensureServer()
         await this.verifyAccount()
         const result = await exec(this.executable, ["-p", "/usage", "--output-format", "json"], { env: this.childEnv, timeout: 20_000, maxBuffer: 1024 * 1024, signal: this.shutdown.signal })
         const groups = quotaSchema.parse(JSON.parse(result.stdout)).command.data.groups
@@ -735,11 +742,12 @@ export class AntigravityRuntime {
     throw error
   }
   private async verifyAccountOnce(): Promise<void> {
+    await this.ensureServer()
     if (process.platform === "win32" && !this.options.allowUnverifiedWindows) throw new Error("Windows Antigravity transport is awaiting authenticated live verification; set antigravity.allowUnverifiedWindows only for the platform acceptance gate")
     const options = { env: this.childEnv, signal: this.shutdown.signal }
     this.cliVersion = (await readAgProbe(this.executable, "version", options)).trim()
     // Validate the binary before asking it to inspect subscription configuration.
-    if (this.cliVersion !== "1.2.7" && this.cliVersion !== "1.2.14") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.2.7. Validate a CLI upgrade before updating the compatibility gate.`)
+    if (!this.cliVersion.startsWith("1.") && process.env.MERIDIAN_AGY_ANY_VERSION !== "1") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build supports agy 1.x. Set MERIDIAN_AGY_ANY_VERSION=1 to bypass.`)
     const config = await readAgProbe(this.executable, "configuration", options)
     const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.unknown().optional(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config)).command.data.config
     const customModels = settings.customModelsConfig
@@ -755,6 +763,7 @@ export class AntigravityRuntime {
   }
   private refreshModels(): Promise<string[]> {
     this.checking ??= (async () => {
+      await this.ensureServer()
       await this.verifyAccount()
       const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal }).catch(error => this.probeFailed(error))
       const models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
@@ -763,8 +772,39 @@ export class AntigravityRuntime {
     })().catch(error => { this.checkedAt = 0; throw error }).finally(() => { this.checking = undefined })
     return this.checking
   }
+  async ensureServer(): Promise<string> {
+    if (this.mcpUrl) return this.mcpUrl
+    if (this.draining) throw new Error("Antigravity is shutting down")
+    this.serverPromise ??= (async () => {
+      this.server = createServer((req, res) => {
+        const url = req.url ?? ""
+        if (url.startsWith("/v1") || url.includes(":loadCodeAssist") || url.includes(":streamGenerateContent")) {
+          void handleCloudCodeRequest(req, res, this.childEnv, this.cloudCodeAgent)
+        } else {
+          void this.handleMcp(req, res)
+        }
+      })
+      this.server.unref()
+      await new Promise<void>((resolve, reject) => {
+        this.server!.once("error", reject)
+        this.server!.listen(0, "127.0.0.1", resolve)
+      })
+      const address = this.server.address()
+      if (!address || typeof address === "string") throw new Error("Cannot bind MCP listener")
+      this.mcpUrl = `http://127.0.0.1:${address.port}`
+      if (process.env.MERIDIAN_AGY_DISABLE_CLOUD_CODE_BRIDGE !== "1") {
+        this.childEnv.CLOUD_CODE_URL = this.mcpUrl
+      }
+      return this.mcpUrl
+    })().catch(error => {
+      this.serverPromise = undefined
+      throw error
+    })
+    return this.serverPromise
+  }
   async initialize(): Promise<void> {
     this.initialization ??= (async () => {
+      await this.ensureServer()
       await this.plugins.init()
       await this.availableModels()
       if (this.options.allowNativeBrowser) {
@@ -775,15 +815,6 @@ export class AntigravityRuntime {
           throw new Error("Native browser requires installed chrome-devtools-mcp@1.9.0 and Chrome; configure MERIDIAN_AGY_BROWSER_MCP_PATH if it is not on PATH: " + String(error))
         }
       }
-      if (this.draining) throw new Error("Antigravity is shutting down")
-      this.server = createServer((req, res) => { void this.handleMcp(req, res) })
-      await new Promise<void>((resolve, reject) => {
-        this.server!.once("error", reject)
-        this.server!.listen(0, "127.0.0.1", resolve)
-      })
-      const address = this.server.address()
-      if (!address || typeof address === "string") throw new Error("Cannot bind MCP listener")
-      this.mcpUrl = `http://127.0.0.1:${address.port}`
     })().catch(error => { this.initialization = undefined; throw error })
     return this.initialization
   }
@@ -886,8 +917,9 @@ export class AntigravityRuntime {
     const spare = this.spare
     this.dropSpare()
     this.shutdown.abort()
+    this.cloudCodeAgent.destroy()
     // Initialization can be awaiting account checks while close is called.
-    await Promise.allSettled([this.initialization, this.statusRefresh, this.quotaCheck, this.verifying, this.checking])
+    await Promise.allSettled([this.initialization, this.serverPromise, this.statusRefresh, this.quotaCheck, this.verifying, this.checking])
     const runs = [...this.runs.values()]
     for (const run of runs) run.abort(new AntigravityError("Antigravity backend stopped", 503, "api_error"), run.active ? "failed" : "retired")
     await Promise.all([...runs.map(run => run.settled), ...this.settling, spare?.done])

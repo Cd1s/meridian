@@ -9,7 +9,8 @@
 
 | 补丁 | 涉及文件 | 说明 |
 | :--- | :--- | :--- |
-| 放宽 agy 1.2.14 版本门禁 | `src/proxy/backends/antigravityRuntime.ts` | 上游只认 `1.2.7`；Linux ARM64 官方最新是 `1.2.14` |
+| 放宽 agy 1.x 版本门禁 | `src/proxy/backends/antigravityRuntime.ts` | 兼容所有 `1.x` 官方 agy 版本（包含 `1.2.16` 及后续自动更新）；支持 `MERIDIAN_AGY_ANY_VERSION=1` 环境变量完全跳过版本检查 |
+| CloudCode 桥接与资格修复 | `src/proxy/backends/antigravityBridge.ts`、`antigravityRuntime.ts` | 利用官方 CLI 的 `CLOUD_CODE_URL` 环境变量，将内部 Google 请求重定向到 Meridian loopback（复用 MCP 端口）。拦截并修补 `/v1internal:loadCodeAssist` 响应，注入 `currentTier` 并剔除 `ineligibleTiers`，绕过官方客户端对部分地区/账号的 eligibility 拦截；通过原生 Node.js SOCKS5/HTTP 隧道按账号隔离代理，其余 endpoint（SSE、models、quota 等）原生流式透传 |
 | 丢弃 `temperature` / `top_p` / `top_k` | `src/proxy/backends/antigravityProtocol.ts` | agy 没有采样参数；上游直接 400，Sub2API 的账号测试固定带 `temperature`，会全部失败。`betas` 仍按上游拒绝 |
 | 思考等级选择同系列官方 slug | `src/proxy/backends/antigravityProtocol.ts`、`antigravityRuntime.ts` | Sub2API 把纯名（如 `gemini-3.8-flash`）映射到 `-low`；客户端带 `effort` / `reasoning_effort` 时换成同系列 `-<effort>`（上游 budget 适配也是这样换后缀）。账号没有该档（3.1 Pro 无 medium）时取最近档，优先更高。非 `gemini-*-low/medium/high` 模型仍按上游报错 |
 | 授权检查可选缓存 `MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 上游每个请求都冷启动一次 `agy -p /config`（经代理约 5s）。设 TTL 后，成功结果在 TTL 内复用；失败不缓存。默认 0 = 上游行为，上限 600000 |
