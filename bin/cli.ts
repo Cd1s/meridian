@@ -403,22 +403,28 @@ export async function runCli(
 
 /**
  * Fork patch: serve every account under `dir` (`<dir>/<name>/env`) from this one
- * process. SIGHUP re-reads the directory: added accounts start, removed ones stop,
- * changed ones restart, the rest keep serving.
+ * process on one port; the request's API key selects the account. SIGHUP re-reads
+ * the directory: added accounts start, removed ones stop, changed ones restart,
+ * the rest keep serving.
  */
-export async function runAccountsCli(dir: string, start = startProxyServer) {
+export async function runAccountsCli(dir: string, start?: (config: Partial<import("../src/proxy/types").ProxyConfig>) => Promise<import("../src/proxy/backends/antigravityAccounts").AgBackend>) {
   const { installErrorReporter } = await import("../src/errorReporting")
   installErrorReporter({ version })
-  const { AgAccountSet } = await import("../src/proxy/backends/antigravityAccounts")
+  const { installProxyProcessErrorHandlers } = await import("../src/proxy/server")
+  installProxyProcessErrorHandlers()
+  const { AgAccountSet, startAgBackend } = await import("../src/proxy/backends/antigravityAccounts")
+  const { serve } = await import("@hono/node-server")
   const poolSize = process.env.MERIDIAN_AGY_POOL_MAX ? Number(process.env.MERIDIAN_AGY_POOL_MAX) : undefined
-  const accounts = new AgAccountSet(dir, { host, idleTimeoutSeconds, version, installProcessErrorHandlers: true }, start, poolSize)
+  const accounts = new AgAccountSet(dir, { host, idleTimeoutSeconds, version }, start ?? startAgBackend, poolSize)
   const first = await accounts.sync()
-  if (!accounts.names.length) {
-    console.error(`[accounts] No account could start from ${dir}`)
-    process.exit(1)
-  }
   console.log(`[accounts] ${first.started.length} accounts serving${first.failed.length ? `, failed: ${first.failed.join(", ")}` : ""}${poolSize ? `; shared agy pool ${poolSize}` : ""}`)
-  // An account whose login or proxy failed at startup keeps being retried without touching the others.
+  const server = serve({ fetch: request => accounts.route(request), port, hostname: host, overrideGlobalObjects: false }, info => console.log(`[accounts] http://${host}:${info.port} (API key selects the account)`)) as import("node:http").Server
+  server.keepAliveTimeout = idleTimeoutSeconds * 1000
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    console.error(`[accounts] Cannot listen on ${host}:${port}: ${error.message}`)
+    process.exit(1)
+  })
+  // An account whose login or proxy failed keeps being retried without touching the others.
   setInterval(() => {
     if (!accounts.failures.size) return
     accounts.sync().then(result => { if (result.started.length) console.log(`[accounts] recovered: ${result.started}`) }, () => {})
@@ -434,13 +440,13 @@ export async function runAccountsCli(dir: string, start = startProxyServer) {
     if (token.length < 16) console.error("[admin] MERIDIAN_ADMIN_TOKEN (min 16 chars) is required, admin disabled")
     else {
       const { createAgAdmin } = await import("../src/proxy/backends/antigravityAdmin")
-      const { serve } = await import("@hono/node-server")
       const { readFileSync } = await import("node:fs")
       const env = process.env
       const sub2api = env.MERIDIAN_SUB2API_BASE && env.MERIDIAN_SUB2API_KEY_FILE
         ? { base: env.MERIDIAN_SUB2API_BASE.replace(/\/+$/, ""), key: readFileSync(env.MERIDIAN_SUB2API_KEY_FILE, "utf8").trim(), templateId: Number(env.MERIDIAN_SUB2API_TEMPLATE_ID ?? 2255) }
         : undefined
-      const app = createAgAdmin(accounts, { token, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api })
+      const baseUrl = env.MERIDIAN_SUB2API_ACCOUNT_BASE ?? `http://${host}:${port}`
+      const app = createAgAdmin(accounts, { token, baseUrl, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api })
       admin = serve({ fetch: app.fetch, port: Number(env.MERIDIAN_ADMIN_PORT), hostname: "127.0.0.1" })
       console.log(`[admin] http://127.0.0.1:${env.MERIDIAN_ADMIN_PORT}`)
     }
@@ -451,6 +457,7 @@ export async function runAccountsCli(dir: string, start = startProxyServer) {
     shuttingDown = true
     console.log(`\n[meridian] Received ${signal}, shutting down ${accounts.names.length} accounts...`)
     admin?.close()
+    server.close()
     accounts.close().then(() => process.exit(0), error => {
       console.error(`[meridian] Error during shutdown: ${error instanceof Error ? error.message : error}`)
       process.exit(1)

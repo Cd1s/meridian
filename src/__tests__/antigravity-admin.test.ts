@@ -1,4 +1,3 @@
-import { EventEmitter } from "node:events"
 import { spawn } from "node:child_process"
 import { afterEach, describe, expect, it } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
@@ -6,29 +5,37 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createAgAdmin } from "../proxy/backends/antigravityAdmin"
 import { AgAccountSet } from "../proxy/backends/antigravityAccounts"
-import { DEFAULT_PROXY_CONFIG, type ProxyConfig, type ProxyInstance } from "../proxy/types"
+import type { ProxyConfig } from "../proxy/types"
 
 const cleanup: Array<() => unknown> = []
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step() })
 const TOKEN = "admin-token-0123456789"
 const auth = { authorization: `Bearer ${TOKEN}` }
 const jwt = (email: string) => `h.${Buffer.from(JSON.stringify({ email })).toString("base64url")}.s`
+const K1 = "secret-key-acc1-0123456789", K2 = "secret-key-acc2-0123456789"
 const sub2 = (data: unknown) => Response.json({ code: 0, message: "ok", data })
 
 function setup(files: Record<string, string>, options: { sub2: boolean } = { sub2: false }) {
   const dir = mkdtempSync(join(tmpdir(), "meridian-admin-"))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   for (const [name, text] of Object.entries(files)) { mkdirSync(join(dir, name)); writeFileSync(join(dir, name, "env"), text) }
-  const start = async (config: Partial<ProxyConfig>) => ({ server: Object.assign(new EventEmitter(), { listening: true }), config: { ...DEFAULT_PROXY_CONFIG, ...config }, close: async () => {} }) as unknown as ProxyInstance
+  const backendCalls: Array<{ key: string | null; path: string }> = []
+  const start = async (config: Partial<ProxyConfig>) => ({
+    close: async () => {},
+    fetch: async (request: Request) => {
+      const path = new URL(request.url).pathname
+      backendCalls.push({ key: request.headers.get("x-api-key"), path })
+      if (config.apiKey !== K1) return new Response("down", { status: 503 })
+      if (path === "/health") return Response.json({ completed: 3, failed: 1, reused: 2, prewarmed: 0, processes: 1, activeProcesses: 0, spareReady: 1, secret: "no" })
+      return Response.json({ providers: [{ id: "antigravity", accounts: [{ fetchedAt: 5, windows: [{ type: "5h", group: "g", utilization: 0.25, resetsAt: 9 }] }] }] })
+    },
+  })
   const set = new AgAccountSet(dir, { host: "127.0.0.1" }, start, 3)
   const calls: Array<{ url: string; method: string; body?: any }> = []
-  const sub2Items: any[] = [{ id: 7, name: "x", status: "active", credentials: { base_url: "http://127.0.0.1:34610" } }]
+  const sub2Items: any[] = [{ id: 7, name: "x", status: "active", notes: "Antigravity Meridian acc1 (port 34610)" }, { id: 8, name: "y", status: "active", notes: "Antigravity Meridian acc10" }]
   const fakeFetch = (async (input: any, init: any = {}) => {
     const url = String(input), method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined
     calls.push({ url, method, body })
-    if (url.includes(":34610/health")) return Response.json({ completed: 3, failed: 1, reused: 2, prewarmed: 0, processes: 1, activeProcesses: 0, spareReady: 1, secret: "no" })
-    if (url.includes(":34610/providers/status")) return Response.json({ providers: [{ id: "antigravity", accounts: [{ fetchedAt: 5, windows: [{ type: "5h", group: "g", utilization: 0.25, resetsAt: 9 }] }] }] })
-    if (url.includes("/health") || url.includes("/providers/status")) throw new Error("down")
     if (url.startsWith("http://s2/admin/accounts?")) return sub2({ items: sub2Items })
     if (url === "http://s2/admin/accounts/2255") return sub2({ concurrency: 4, priority: 3, group_ids: [9], credentials: { model_mapping: { a: "b" } } })
     if (url === "http://s2/admin/accounts" && method === "POST") return sub2({ id: 99 })
@@ -45,16 +52,16 @@ const t=setInterval(()=>{if(!fs.readFileSync(fifo,"utf8").includes("\\n"))return
 const d=dir+"/"+name+"/.gemini/antigravity-cli";fs.mkdirSync(d,{recursive:true});fs.writeFileSync(d+"/antigravity-oauth-token",JSON.stringify({token:{id_token:"${jwt("new@x.com")}"}}))
 console.log("LOGIN_RESULT=\\x1b[1mok\\x1b[0m");console.log("TOKEN_SAVED="+(fs.readFileSync(fifo,"utf8").startsWith("bad")?"no":"yes"))},50)`)
   const admin = createAgAdmin(set, {
-    token: TOKEN, loginScript: script, exec, fetch: fakeFetch, fifoPath: () => fifo,
+    token: TOKEN, baseUrl: "http://127.0.0.1:3451", loginScript: script, exec, fetch: fakeFetch, fifoPath: () => fifo,
     sub2api: options.sub2 ? { base: "http://s2", key: "s2key", templateId: 2255 } : undefined,
     spawn: name => spawn(process.execPath, [script, name], { env: { ...process.env, D: dir, F: fifo } }),
   })
   const req = (path: string, init: RequestInit = {}, headers: Record<string, string> = auth) =>
     admin.fetch(new Request(`http://local${path}`, { ...init, headers: { ...headers, "content-type": "application/json" } }))
   const post = (path: string, body: unknown = {}) => req(path, { method: "POST", body: JSON.stringify(body) })
-  return { dir, set, calls, sub2Items, req, post, admin }
+  return { dir, set, calls, backendCalls, sub2Items, req, post, admin }
 }
-const base = { acc1: "MERIDIAN_PORT=34610\nMERIDIAN_API_KEY=secret-k1\nALL_PROXY=socks5h://u:pw@p1:1\n", acc2: "MERIDIAN_PORT=34620\nMERIDIAN_API_KEY=secret-k2\nALL_PROXY=socks5h://p2:1\n" }
+const base = { acc1: `MERIDIAN_PORT=34610\nMERIDIAN_API_KEY=${K1}\nALL_PROXY=socks5h://u:pw@p1:1\n`, acc2: `MERIDIAN_API_KEY=${K2}\nALL_PROXY=socks5h://p2:1\n` }
 
 describe("Antigravity admin API", () => {
   it("requires the token under /api but serves the page without it", async () => {
@@ -65,33 +72,38 @@ describe("Antigravity admin API", () => {
     expect(((await (await req("/api/accounts", {}, {})).json()) as any).error).toBeString()
   })
   it("lists accounts without secrets, with email, health, quota and Sub2API ids", async () => {
-    const { req, set, dir } = setup({ ...base, acc3: "MERIDIAN_PORT=34630\nMERIDIAN_API_KEY=secret-k3\n" }, { sub2: true })
+    const { req, set, dir, backendCalls } = setup({ ...base, acc3: "MERIDIAN_API_KEY=secret-key-acc3-0123456789\n" }, { sub2: true })
     renameSync(join(dir, "acc3", "env"), join(dir, "acc3", "env.disabled"))
     mkdirSync(join(dir, "acc1/.gemini/antigravity-cli"), { recursive: true })
     writeFileSync(join(dir, "acc1/.gemini/antigravity-cli/antigravity-oauth-token"), JSON.stringify({ id_token: jwt("a@b.com") }))
     await set.sync()
     const text = await (await req("/api/accounts")).text()
-    expect(text).not.toContain("secret-k")
+    expect(text).not.toContain("secret-key")
+    expect(text).not.toContain("port")
     expect(text).not.toContain("pw@")
     const { accounts, pool } = JSON.parse(text)
     expect(pool).toEqual({ max: 3 })
     expect(accounts.map((a: any) => a.name)).toEqual(["acc1", "acc2", "acc3"])
-    expect(accounts[0]).toMatchObject({ port: 34610, email: "a@b.com", proxy: "socks5h://u:***@p1:1", disabled: false, serving: true, error: null, sub2apiId: 7,
+    expect(accounts[0]).toMatchObject({ email: "a@b.com", proxy: "socks5h://u:***@p1:1", disabled: false, serving: true, error: null, sub2apiId: 7,
       health: { completed: 3, failed: 1, reused: 2, prewarmed: 0, processes: 1, activeProcesses: 0, spareReady: 1 },
       quota: { fetchedAt: 5, error: null, windows: [{ type: "5h", group: "g", utilization: 0.25, resetsAt: 9 }] } })
     expect(accounts[0].health.secret).toBeUndefined()
+    expect(accounts[0].port).toBeUndefined()
+    expect(accounts[1].sub2apiId).toBe(null)
+    expect(backendCalls.filter(c => c.key === K1).map(c => c.path).sort()).toEqual(["/health", "/providers/status"])
     expect(accounts[1]).toMatchObject({ email: null, health: null, quota: null, sub2apiId: null })
     expect(accounts[2]).toMatchObject({ disabled: true, serving: false })
   })
   it("creates the next account with a private env file and rejects duplicate exit IPs and bad proxies", async () => {
     const { post, dir } = setup(base)
     const response = await post("/api/accounts", { proxy: "socks5h://new:1" })
-    expect(await response.json()).toEqual({ name: "acc3", port: 34630, exitIp: "3.3.3.3" })
+    expect(await response.json()).toEqual({ name: "acc3", exitIp: "3.3.3.3" })
     const file = join(dir, "acc3", "env")
     expect(statSync(file).mode & 0o777).toBe(0o600)
     expect(statSync(join(dir, "acc3")).mode & 0o777).toBe(0o700)
     const text = readFileSync(file, "utf8")
-    expect(text).toMatch(/^MERIDIAN_PORT=34630\nALL_PROXY=socks5h:\/\/new:1\nHTTP_PROXY=socks5h:\/\/new:1\nHTTPS_PROXY=socks5h:\/\/new:1\nMERIDIAN_API_KEY=cheek-meridian-acc3-[0-9a-f]{24}\n$/)
+    expect(text).toMatch(/^ALL_PROXY=socks5h:\/\/new:1\nHTTP_PROXY=socks5h:\/\/new:1\nHTTPS_PROXY=socks5h:\/\/new:1\nMERIDIAN_API_KEY=cheek-meridian-acc3-[0-9a-f]{24}\n$/)
+    expect(text).not.toContain("MERIDIAN_PORT")
     expect((await post("/api/accounts", { proxy: "socks5h://dup:1" })).status).toBe(409)
     expect(existsSync(join(dir, "acc4"))).toBe(false)
     expect((await post("/api/accounts", { proxy: "ftp://x:1" })).status).toBe(400)
@@ -112,6 +124,7 @@ describe("Antigravity admin API", () => {
     expect(existsSync(join(dir, "acc1", "env.disabled"))).toBe(true)
     expect(set.names).toEqual(["acc2"])
     expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "http://s2/admin/accounts/7", body: { status: "inactive" } })
+    expect(calls.filter(c => c.method === "PUT")).toHaveLength(1)
     sub2Items[0].status = "inactive"
     await post("/api/accounts/acc1/enable")
     expect(existsSync(join(dir, "acc1", "env"))).toBe(true)
@@ -127,8 +140,8 @@ describe("Antigravity admin API", () => {
     const result = await (await post("/api/accounts/acc1/code", { code: "4/abc" })).json() as any
     expect(result).toEqual({ email: "new@x.com", serving: true, error: null, sub2apiId: 99 })
     expect(calls.find(c => c.method === "POST")?.body).toEqual({
-      name: "new@x.com", platform: "anthropic", type: "apikey", concurrency: 4, priority: 3, group_ids: [9], notes: "Antigravity Meridian acc1 (port 34610)",
-      credentials: { base_url: "http://127.0.0.1:34610", api_key: "secret-k1", model_mapping: { a: "b" } },
+      name: "new@x.com", platform: "anthropic", type: "apikey", concurrency: 4, priority: 3, group_ids: [9], notes: "Antigravity Meridian acc1",
+      credentials: { base_url: "http://127.0.0.1:3451", api_key: K1, model_mapping: { a: "b" } },
     })
     expect(existsSync(join(dir, "acc1/.gemini/antigravity-cli/antigravity-oauth-token"))).toBe(true)
   })

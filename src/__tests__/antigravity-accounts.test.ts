@@ -1,18 +1,19 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { EventEmitter } from "node:events"
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
-import { AgAccountSet, parseAgEnvFile, readAgAccounts } from "../proxy/backends/antigravityAccounts"
+import { AgAccountSet, parseAgEnvFile, readAgAccounts, startAgBackend } from "../proxy/backends/antigravityAccounts"
 import { AgProcessPool, AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
-import { DEFAULT_PROXY_CONFIG, type ProxyConfig, type ProxyInstance } from "../proxy/types"
+import { DEFAULT_PROXY_CONFIG, type ProxyConfig } from "../proxy/types"
 
 const executable = fileURLToPath(new URL("./fixtures/agy-cli.cjs", import.meta.url))
 const tool = { name: "lookup", input_schema: { type: "object", properties: { key: { type: "string" } } } }
 const initial = (content = "Get receipt") => ({ model: "fixture-model", max_tokens: 100, messages: [{ role: "user", content }], tools: [tool] })
+const K1 = "key-account-one-0001", K2 = "key-account-two-0002", K3 = "key-account-three-003"
 const cleanup: Array<() => unknown> = []
+const fakeBackend = (key: string, closed: string[] = []) => ({ fetch: async () => new Response(key), close: async () => { closed.push(key) } })
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step() })
 
 function account(options: Record<string, unknown> = {}, config: Partial<ProxyConfig> = {}) {
@@ -40,51 +41,47 @@ describe("Antigravity multi-account process", () => {
   it("parses account env files into per-account agy environments", () => {
     expect(parseAgEnvFile('# c\nexport A="1"\nB=\'two\'\nC=x=y\nbad line\n')).toEqual({ A: "1", B: "two", C: "x=y" })
     const dir = accountsDir({
-      acc2: "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k2\nALL_PROXY=socks5h://p2:1\n",
-      acc1: "MERIDIAN_PORT=3451\nMERIDIAN_API_KEY=k1\nHTTPS_PROXY=socks5h://p1:1\nMERIDIAN_AGY_STATE_PATH=/s1\n",
+      acc2: `MERIDIAN_API_KEY=${K2}\nALL_PROXY=socks5h://p2:1\n`,
+      acc1: `MERIDIAN_PORT=3451\nMERIDIAN_API_KEY=${K1}\nHTTPS_PROXY=socks5h://p1:1\nMERIDIAN_AGY_STATE_PATH=/s1\n`,
     })
     mkdirSync(join(dir, "empty"))
     const [first, second] = readAgAccounts(dir)
     expect(readAgAccounts(dir).map(a => a.name)).toEqual(["acc1", "acc2"])
-    expect(first).toMatchObject({ port: 3451, apiKey: "k1", statePath: "/s1", env: { HOME: join(dir, "acc1"), HTTPS_PROXY: "socks5h://p1:1" } })
+    expect(first).toMatchObject({ apiKey: K1, statePath: "/s1", env: { HOME: join(dir, "acc1"), TMPDIR: join(dir, "acc1", ".tmp"), HTTPS_PROXY: "socks5h://p1:1" } })
     expect(Object.keys(first!.env).some(key => key.startsWith("MERIDIAN_"))).toBe(false)
-    expect(second).toMatchObject({ port: 3452, env: { HOME: join(dir, "acc2"), ALL_PROXY: "socks5h://p2:1" } })
+    expect(second).toMatchObject({ env: { HOME: join(dir, "acc2"), ALL_PROXY: "socks5h://p2:1" } })
   })
-  it("rejects accounts without a key, with a bad port, or sharing a port", () => {
-    expect(() => readAgAccounts(accountsDir({ a: "MERIDIAN_PORT=1\n" }))).toThrow("MERIDIAN_API_KEY")
-    expect(() => readAgAccounts(accountsDir({ a: "MERIDIAN_PORT=x\nMERIDIAN_API_KEY=k\n" }))).toThrow("MERIDIAN_PORT")
-    expect(() => readAgAccounts(accountsDir({ a: "MERIDIAN_PORT=9\nMERIDIAN_API_KEY=k\n", b: "MERIDIAN_PORT=9\nMERIDIAN_API_KEY=j\n" }))).toThrow("both use port 9")
+  it("rejects accounts without a long enough key or sharing a key", () => {
+    expect(() => readAgAccounts(accountsDir({ a: "ALL_PROXY=x\n" }))).toThrow("MERIDIAN_API_KEY")
+    expect(() => readAgAccounts(accountsDir({ a: "MERIDIAN_API_KEY=short\n" }))).toThrow("16 characters")
+    expect(() => readAgAccounts(accountsDir({ a: `MERIDIAN_API_KEY=${K1}\n`, b: `MERIDIAN_API_KEY=${K1}\n` }))).toThrow("a and b use the same MERIDIAN_API_KEY")
   })
   it("starts, restarts and stops only the accounts whose files changed", async () => {
-    const dir = accountsDir({ acc1: "MERIDIAN_PORT=3451\nMERIDIAN_API_KEY=k1\n", acc2: "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k2\n" })
-    const configs: Array<Partial<ProxyConfig>> = [], closed: number[] = []
-    const start = async (config: Partial<ProxyConfig>) => {
-      configs.push(config)
-      const server = Object.assign(new EventEmitter(), { listening: true })
-      return { server, config: { ...DEFAULT_PROXY_CONFIG, ...config }, close: async () => { closed.push(config.port!) } } as unknown as ProxyInstance
-    }
+    const dir = accountsDir({ acc1: `MERIDIAN_API_KEY=${K1}\n`, acc2: `MERIDIAN_API_KEY=${K2}\n` })
+    const configs: Array<Partial<ProxyConfig>> = [], closed: string[] = []
+    const start = async (config: Partial<ProxyConfig>) => { configs.push(config); return fakeBackend(config.apiKey!, closed) }
     const set = new AgAccountSet(dir, { host: "127.0.0.1", antigravity: { statePath: "/shared" } }, start, 3)
     expect(await set.sync()).toEqual({ started: ["acc1", "acc2"], stopped: [], failed: [] })
-    expect(configs[0]).toMatchObject({ backend: "antigravity", port: 3451, apiKey: "k1", antigravity: { env: { HOME: join(dir, "acc1") }, statePath: undefined, pool: set.pool } })
-    writeFileSync(join(dir, "acc2", "env"), "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k2b\n")
-    mkdirSync(join(dir, "acc3")); writeFileSync(join(dir, "acc3", "env"), "MERIDIAN_PORT=3453\nMERIDIAN_API_KEY=k3\n")
+    expect(configs[0]).toMatchObject({ backend: "antigravity", apiKey: K1, antigravity: { env: { HOME: join(dir, "acc1") }, statePath: undefined, pool: set.pool } })
+    expect(configs[0]!.port).toBeUndefined()
+    writeFileSync(join(dir, "acc2", "env"), `MERIDIAN_API_KEY=${K2}b\n`)
+    mkdirSync(join(dir, "acc3")); writeFileSync(join(dir, "acc3", "env"), `MERIDIAN_API_KEY=${K3}\n`)
     expect(await set.sync()).toEqual({ started: ["acc2", "acc3"], stopped: ["acc2"], failed: [] })
     expect(set.failures.size).toBe(0)
     rmSync(join(dir, "acc1"), { recursive: true })
     expect(await set.sync()).toEqual({ started: [], stopped: ["acc1"], failed: [] })
-    writeFileSync(join(dir, "acc3", "env"), "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k3\n")
-    await expect(set.sync()).rejects.toThrow("both use port")
+    writeFileSync(join(dir, "acc3", "env"), `MERIDIAN_API_KEY=${K2}b\n`)
+    await expect(set.sync()).rejects.toThrow("same MERIDIAN_API_KEY")
     expect(set.names).toEqual(["acc2", "acc3"])
     await set.close()
-    expect(closed).toEqual([3452, 3451, 3452, 3453])
+    expect(closed).toEqual([K2, K1, K2 + "b", K3])
   })
   it("records accounts that fail to start and recovers them on a later sync", async () => {
-    const dir = accountsDir({ acc1: "MERIDIAN_PORT=3451\nMERIDIAN_API_KEY=k1\n", acc2: "MERIDIAN_PORT=3452\nMERIDIAN_API_KEY=k2\n" })
+    const dir = accountsDir({ acc1: `MERIDIAN_API_KEY=${K1}\n`, acc2: `MERIDIAN_API_KEY=${K2}\n` })
     let broken = true
     const start = async (config: Partial<ProxyConfig>) => {
-      if (config.port === 3452 && broken) throw new Error("401 UNAUTHENTICATED")
-      const server = Object.assign(new EventEmitter(), { listening: true })
-      return { server, config: { ...DEFAULT_PROXY_CONFIG, ...config }, close: async () => {} } as unknown as ProxyInstance
+      if (config.apiKey === K2 && broken) throw new Error("401 UNAUTHENTICATED")
+      return fakeBackend(config.apiKey!)
     }
     const set = new AgAccountSet(dir, {}, start)
     expect(await set.sync()).toEqual({ started: ["acc1"], stopped: [], failed: ["acc2"] })
@@ -93,6 +90,35 @@ describe("Antigravity multi-account process", () => {
     expect(await set.sync()).toEqual({ started: ["acc2"], stopped: [], failed: [] })
     expect(set.failures.size).toBe(0)
     await set.close()
+  })
+  it("routes each request to the account whose API key it carries", async () => {
+    const dir = accountsDir({ acc1: `MERIDIAN_API_KEY=${K1}\n`, acc2: `MERIDIAN_API_KEY=${K2}\n` })
+    const set = new AgAccountSet(dir, {}, async config => fakeBackend(config.apiKey!))
+    await set.sync()
+    const call = async (headers: Record<string, string>, path = "/v1/messages") => { const r = await set.route(new Request("http://local" + path, { method: "POST", headers })); return [r.status, await r.text()] }
+    expect(await call({ "x-api-key": K1 })).toEqual([200, K1])
+    expect(await call({ authorization: `Bearer ${K2}` })).toEqual([200, K2])
+    expect((await call({ "x-api-key": "unknown-key-0000000000" }))[0]).toBe(401)
+    expect((await call({}))[0]).toBe(401)
+    expect(JSON.parse((await call({}, "/health"))[1] as string)).toMatchObject({ status: "healthy", accounts: 2, failed: 0 })
+    expect(await (await set.request("acc2", "/health"))!.text()).toBe(K2)
+    expect(await set.request("acc9", "/health")).toBeUndefined()
+    rmSync(join(dir, "acc1"), { recursive: true })
+    await set.sync()
+    expect((await call({ "x-api-key": K1 }))[0]).toBe(401)
+    await set.close()
+  })
+  it("serves two real accounts from one listener by key", async () => {
+    const dir = accountsDir({ acc1: `MERIDIAN_API_KEY=${K1}\n`, acc2: `MERIDIAN_API_KEY=${K2}\n` })
+    const set = new AgAccountSet(dir, { antigravity: { executable, reuseConversations: false } }, startAgBackend)
+    cleanup.push(() => set.close())
+    expect(await set.sync()).toMatchObject({ started: ["acc1", "acc2"], failed: [] })
+    for (const key of [K1, K2]) {
+      const response = await set.route(new Request("http://local/v1/messages", { method: "POST", headers: { "x-api-key": key, "content-type": "application/json" }, body: JSON.stringify({ ...initial("hello"), tools: [] }) }))
+      expect(response.status).toBe(200)
+    }
+    const wrong = await set.route(new Request("http://local/v1/messages", { method: "POST", headers: { "x-api-key": K3 }, body: "{}" }))
+    expect(wrong.status).toBe(401)
   })
   it("gives each account its own agy environment and API key", async () => {
     const { runtime, send } = account({ env: { HOME: "/accounts/a", ALL_PROXY: "socks5h://a:1", MERIDIAN_API_KEY: "leak" } }, { apiKey: "key-a" })
