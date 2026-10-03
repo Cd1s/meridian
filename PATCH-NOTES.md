@@ -33,8 +33,8 @@
 ```
 Environment="MERIDIAN_AGY_ACCOUNTS_DIR=/var/lib/meridian/instances"   # fork：单进程多账号
 Environment="MERIDIAN_PORT=3451"                          # fork：全部账号共用这一个端口，API key 选账号（nginx <域名> 也指向它）
-Environment="MERIDIAN_AGY_POOL_MAX=40"                    # fork：全部账号合计最多 40 个 agy（Sub2API 每号并发 5，共 50）
-Environment="MERIDIAN_AGY_PREWARM_IDLE_MS=600000"         # fork：账号 10 分钟内有请求就保持 1 个待命 agy（约 225MB/个）
+Environment="MERIDIAN_AGY_POOL_MAX=80"                    # fork：全部账号合计最多 80 个 agy（≥ Sub2API 每号并发 5 × 账号数，避免 Meridian 先 429；实测每个 agy 真实占用约 110MB）
+Environment="MERIDIAN_AGY_PREWARM_IDLE_MS=600000"         # fork：账号 10 分钟内有请求就保持 1 个待命 agy（RSS 约 215MB，真实占用约 110MB/个）
 Environment="MERIDIAN_ADMIN_PORT=3450"                   # fork：管理面板，nginx <域名> → 127.0.0.1:3450（CF 代理 + <域名> 源站证书）
 EnvironmentFile=/etc/meridian/admin.env                   # MERIDIAN_ADMIN_TOKEN（root 600）
 Environment="MERIDIAN_SUB2API_BASE=http://127.0.0.1:8080/api/v1"
