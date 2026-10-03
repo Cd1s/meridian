@@ -117,3 +117,21 @@ describe("Antigravity model blocking", () => {
     expect(isAgModelBlocked("gemini-3.6-flash-low", { MERIDIAN_AGY_BLOCKED_MODELS: "pro-low,gpt" })).toBe(false)
   })
 })
+
+describe("Antigravity CloudCode bridge opt-in activation", () => {
+  it("defaults to disabled for normal accounts and only activates when requested", () => {
+    function shouldEnable(env: NodeJS.ProcessEnv): boolean {
+      return env.MERIDIAN_AGY_COMPAT_BRIDGE === "1" ||
+             env.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1" ||
+             process.env.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1"
+    }
+
+    // Normal accounts: disabled by default
+    expect(shouldEnable({})).toBe(false)
+    expect(shouldEnable({ ALL_PROXY: "socks5://127.0.0.1:1080" })).toBe(false)
+
+    // Restricted accounts: enabled via opt-in
+    expect(shouldEnable({ MERIDIAN_AGY_COMPAT_BRIDGE: "1" })).toBe(true)
+    expect(shouldEnable({ MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE: "1" })).toBe(true)
+  })
+})

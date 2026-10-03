@@ -807,7 +807,10 @@ export class AntigravityRuntime {
       const address = this.server.address()
       if (!address || typeof address === "string") throw new Error("Cannot bind MCP listener")
       this.mcpUrl = `http://127.0.0.1:${address.port}`
-      if (process.env.MERIDIAN_AGY_DISABLE_CLOUD_CODE_BRIDGE !== "1") {
+      const bridgeEnabled = this.childEnv.MERIDIAN_AGY_COMPAT_BRIDGE === "1" ||
+                            this.childEnv.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1" ||
+                            process.env.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1"
+      if (bridgeEnabled) {
         this.childEnv.CLOUD_CODE_URL = this.mcpUrl
       }
       return this.mcpUrl

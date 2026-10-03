@@ -10,7 +10,7 @@
 | 补丁 | 涉及文件 | 说明 |
 | :--- | :--- | :--- |
 | 放宽 agy 1.x 版本门禁 | `src/proxy/backends/antigravityRuntime.ts` | 兼容所有 `1.x` 官方 agy 版本（包含 `1.2.16` 及后续自动更新）；支持 `MERIDIAN_AGY_ANY_VERSION=1` 环境变量完全跳过版本检查 |
-| CloudCode 桥接与资格修复 | `src/proxy/backends/antigravityBridge.ts`、`antigravityRuntime.ts` | 利用官方 CLI 的 `CLOUD_CODE_URL` 环境变量，将内部 Google 请求重定向到 Meridian loopback（复用 MCP 端口）。拦截并修补 `/v1internal:loadCodeAssist` 响应，注入 `currentTier` 并剔除 `ineligibleTiers`，绕过官方客户端对部分地区/账号的 eligibility 拦截；默认 upstream 切换为 `daily-cloudcode-pa.googleapis.com`，消除 Google 生产端点误报 429 限流；通过原生 Node.js SOCKS5/HTTP 隧道按账号隔离代理，其余 endpoint 原生流式透传 |
+| CloudCode 桥接与资格修复 | `src/proxy/backends/antigravityBridge.ts`、`antigravityRuntime.ts` | **按账号严格 opt-in**：正常账号（未显式配置 `MERIDIAN_AGY_COMPAT_BRIDGE=1`）完全不注入 `CLOUD_CODE_URL`，保留 100% 原始未改写的 Google 原生响应；仅需要兼容的受限账号通过环境变量启用，拦截并修补 `/v1internal:loadCodeAssist` 响应（注入 `currentTier` 并剔除 `ineligibleTiers`），绕过官方客户端对部分地区/账号的 eligibility 拦截，默认 upstream 切换为 `daily-cloudcode-pa.googleapis.com` 消除误报 429；通过原生 Node.js SOCKS5/HTTP 隧道按账号隔离代理，其余 endpoint 原生流式透传 |
 | 屏蔽 Claude 与指定模型 | `src/proxy/backends/antigravityRuntime.ts` | 默认屏蔽 Antigravity 运行时的 Claude 模型（`claude-*`，可通过 `MERIDIAN_AGY_BLOCK_CLAUDE=0` 放开），支持 `MERIDIAN_AGY_BLOCKED_MODELS` 自定义屏蔽列表；被屏蔽模型从 `/v1/models` 剔除，直接请求时返回 400 显式拦截，绝不向 Google 发送请求消耗额度 |
 | 丢弃 `temperature` / `top_p` / `top_k` | `src/proxy/backends/antigravityProtocol.ts` | agy 没有采样参数；上游直接 400，Sub2API 的账号测试固定带 `temperature`，会全部失败。`betas` 仍按上游拒绝 |
 | 思考等级选择同系列官方 slug | `src/proxy/backends/antigravityProtocol.ts`、`antigravityRuntime.ts` | Sub2API 把纯名（如 `gemini-3.8-flash`）映射到 `-low`；客户端带 `effort` / `reasoning_effort` 时换成同系列 `-<effort>`（上游 budget 适配也是这样换后缀）。账号没有该档（3.1 Pro 无 medium）时取最近档，优先更高。非 `gemini-*-low/medium/high` 模型仍按上游报错 |
