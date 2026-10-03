@@ -7218,3 +7218,18 @@ runs. Require liveness answers during those holds, a random tool receipt and
 same-session recall, actual served-model confirmation and zero client exits.
 The direct gate regression additionally requires bounded join and eventual
 sensitive-file cleanup if disk publication remains stuck after child exit.
+
+## Operator-managed Claude executable selection
+
+For PATH/override/package resolver changes, run the actual Linux OpenCode
+consumer gate in `scripts/e2e-claude-path-opencode.mjs`. Pin OpenCode 1.18.34,
+opencode-with-claude 1.10.1 and SDK 0.2.141. Compare a cached Claude 2.1.268
+package with a healthy mise-managed 2.1.288 using actual Opus 5.5. Require the
+baseline version refusal, fixed exact output receipt, native model, identical
+health/SDK executable, intended credential directory, completed SDK iterators
+and zero owned residual processes. Retain explicit override and missing/broken
+PATH controls with a model the fallback CLI supports.
+
+The wrapper observes the real SDK, and only the owned consumer dependency is
+replaced. It does not rewrite provider output or inspect SDK persistence. See
+[versions, commands, causal failures and limits](docs/maintenance/evidence/1246-claude-path-resolution.md).

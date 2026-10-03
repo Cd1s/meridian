@@ -2,7 +2,7 @@
  * Model mapping and Claude executable resolution.
  */
 
-import { exec as execCallback, execFile as execFileCallback } from "child_process"
+import { exec as execCallback, execFile as execFileCallback, execFileSync } from "child_process"
 import { existsSync, statSync } from "fs"
 import { fileURLToPath } from "url"
 import { join, dirname } from "path"
@@ -691,7 +691,7 @@ let cachedClaudePathPromise: Promise<string> | null = null
  * Uses a three-tier cache:
  * 1. cachedClaudePath — resolved path, returned immediately on subsequent calls
  * 2. cachedClaudePathPromise — deduplicates concurrent calls during resolution
- * 3. Falls through to resolution logic (SDK cli.js → system `which claude`)
+ * 3. Falls through to env → usable PATH → packaged CLI → legacy SDK resolution
  *
  * The promise is cleared in `finally` to allow retry on failure while
  * cachedClaudePath prevents re-resolution on success.
@@ -705,6 +705,9 @@ type ResolverDeps = {
   existsSync: (p: string) => boolean
   statSync: (p: string) => { size: number }
   exec: (cmd: string) => Promise<{ stdout: string }>
+  execLookupSync?: (command: string, args: string[]) => string
+  probeClaude?: (candidate: string) => Promise<boolean>
+  probeClaudeSync?: (candidate: string) => boolean
   resolvePackage: (specifier: string) => string
   envGet: (name: string) => string | undefined
   platform: NodeJS.Platform
@@ -715,7 +718,29 @@ type ResolverDeps = {
 const DEFAULT_DEPS: ResolverDeps = {
   existsSync,
   statSync: (p) => statSync(p),
-  exec: (cmd) => exec(cmd, { windowsHide: true }),
+  exec: (cmd) => exec(cmd, { windowsHide: true, timeout: 2000, maxBuffer: 64 * 1024 }),
+  execLookupSync: (command, args) => execFileSync(command, args, {
+    encoding: "utf8", windowsHide: true, timeout: 2000, maxBuffer: 64 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  }),
+  probeClaude: async candidate => {
+    try {
+      const { stdout } = await execFile(candidate, ["--version"], { encoding: "utf8", windowsHide: true, timeout: 2000, maxBuffer: 16 * 1024 })
+      return isClaudeVersionOutput(stdout)
+    } catch {
+      return false
+    }
+  },
+  probeClaudeSync: candidate => {
+    try {
+      return isClaudeVersionOutput(execFileSync(candidate, ["--version"], {
+        encoding: "utf8", windowsHide: true, timeout: 2000, maxBuffer: 16 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+      }))
+    } catch {
+      return false
+    }
+  },
   resolvePackage: (specifier) => fileURLToPath(import.meta.resolve(specifier)),
   envGet: (name) => process.env[name],
   platform: process.platform,
@@ -736,7 +761,7 @@ function tryEnvOverride(deps: ResolverDeps): string | null {
 }
 
 /**
- * Step 1: bundled `@anthropic-ai/claude-code/bin/claude.exe`.
+ * Step 2: bundled `@anthropic-ai/claude-code/bin/claude.exe`.
  *
  * Skips the placeholder stub (≤4 KB) so we don't return a non-functional
  * file when the upstream postinstall failed (issue #445). The real
@@ -756,7 +781,7 @@ function tryBundledBinary(deps: ResolverDeps): string | null {
 }
 
 /**
- * Step 2: platform-specific peer package
+ * Step 3: platform-specific peer package
  * (`@anthropic-ai/claude-code-<platform>-<arch>`). This is where the
  * actual binary lives in the SDK ≥ 0.2.x split layout — the wrapper at
  * `claude-code/bin/claude.exe` is just a hardlink/copy from here.
@@ -788,11 +813,11 @@ function tryPlatformPackage(deps: ResolverDeps): string | null {
 }
 
 /**
- * Step 3: PATH lookup via `where claude` on Windows or `which claude` on POSIX.
+ * Step 1: PATH lookup via `where claude` on Windows or `which claude` on POSIX.
  *
  * Windows nuances handled here:
  *   - `where` returns multiple newline-separated paths when multiple
- *     binaries match — pick the first one that exists.
+ *     binaries match — pick the first existing one that can run Claude.
  *   - On systems with Git for Windows installed, plain `which claude`
  *     would invoke `which.exe` from `usr/bin/` which emits mingw-style
  *     paths like `/c/nvm4w/nodejs/claude` that `existsSync` rejects.
@@ -807,15 +832,38 @@ async function tryPathLookup(deps: ResolverDeps): Promise<string | null> {
   const cmd = deps.platform === "win32" ? "where claude" : "which claude"
   try {
     const { stdout } = await deps.exec(cmd)
-    const candidates = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-    for (const candidate of candidates) {
-      if (deps.platform === "win32" && candidate.startsWith("/")) continue
-      if (deps.existsSync(candidate)) return candidate
+    for (const candidate of existingPathCandidates(stdout, deps)) {
+      if (!deps.probeClaude || await deps.probeClaude(candidate)) return candidate
     }
   } catch {
     // No `claude` on PATH (or `where`/`which` not available).
   }
   return null
+}
+
+/** A broken installation or unrelated shim must not outrank the package. */
+function isClaudeVersionOutput(stdout: string): boolean {
+  return /^\d+\.\d+\.\d+(?:[-+][\w.-]+)? \(Claude Code\)$/.test(stdout.trim())
+}
+
+/** Share candidate filtering between startup/query resolution and CLI auth. */
+function existingPathCandidates(stdout: string, deps: ResolverDeps): string[] {
+  return stdout.split(/\r?\n/).map(s => s.trim()).filter(candidate =>
+    candidate.length > 0 && !(deps.platform === "win32" && candidate.startsWith("/")) && deps.existsSync(candidate))
+}
+
+function tryPathLookupSync(deps: ResolverDeps): string | null {
+  if (!deps.execLookupSync) return null
+  try {
+    const stdout = deps.execLookupSync(deps.platform === "win32" ? "where" : "which", ["claude"])
+    for (const candidate of existingPathCandidates(stdout, deps)) {
+      if (!deps.probeClaudeSync || deps.probeClaudeSync(candidate)) return candidate
+    }
+    return null
+  } catch {
+    // A missing/failed lookup must still allow the packaged fallback.
+    return null
+  }
 }
 
 /**
@@ -839,9 +887,8 @@ function tryLegacySdkCliJs(deps: ResolverDeps): string | null {
  * first hit (path + source tag), or null when all steps miss.
  *
  * Order matters: `env` wins unconditionally (operator escape hatch), then
- * `bundled` (the path the SDK expects), then `platform-package` (postinstall
- * fallback), then `path-lookup` (system PATH — most likely to surface
- * unintended shims, see #478), then `legacy-cli-js` (only matters on stale
+ * `path-lookup` (the operator-managed installation), then `bundled` and
+ * `platform-package` (packaged fallbacks), then `legacy-cli-js` (only matters on stale
  * Bun installs of SDK < 0.2.98).
  */
 export async function resolveClaudeExecutableWithSource(
@@ -849,12 +896,12 @@ export async function resolveClaudeExecutableWithSource(
 ): Promise<ClaudeExecutableInfo | null> {
   const env = tryEnvOverride(deps)
   if (env) return { path: env, source: "env" }
+  const pathLookup = await tryPathLookup(deps)
+  if (pathLookup) return { path: pathLookup, source: "path-lookup" }
   const bundled = tryBundledBinary(deps)
   if (bundled) return { path: bundled, source: "bundled" }
   const platformPkg = tryPlatformPackage(deps)
   if (platformPkg) return { path: platformPkg, source: "platform-package" }
-  const pathLookup = await tryPathLookup(deps)
-  if (pathLookup) return { path: pathLookup, source: "path-lookup" }
   const legacy = tryLegacySdkCliJs(deps)
   if (legacy) return { path: legacy, source: "legacy-cli-js" }
   return null
@@ -875,12 +922,10 @@ export async function resolveClaudeExecutable(deps: ResolverDeps = DEFAULT_DEPS)
  * (`meridian profile list`, `profileAdd`, etc.) that can't await before
  * spawning `claude auth status`.
  *
- * Skips two steps that the async resolver runs:
- *   - `path-lookup` — running `which`/`where` synchronously is awkward
- *     and platform-fragile; the audit showed bundled + platform-package
- *     covers every supported install layout (npm-global, npx/bunx
- *     download, Docker, NixOS).
- *   - `legacy-cli-js` — only matters for stale Bun installs of SDK < 0.2.98.
+ * Uses the same env → PATH → bundled → platform-package precedence as the
+ * async resolver. Its bounded shell-free lookup is limited to these synchronous
+ * CLI commands; live server probes use the async resolver. The legacy SDK
+ * cli.js fallback remains limited to the async Bun resolver.
  *
  * Closes the diagnostic gap from #478: `getAuthStatus` in profileCli.ts
  * and `getClaudeAuthStatusAsync` in this file previously called
@@ -893,6 +938,8 @@ export function resolveClaudeExecutableSync(
 ): ClaudeExecutableInfo | null {
   const env = tryEnvOverride(deps)
   if (env) return { path: env, source: "env" }
+  const pathLookup = tryPathLookupSync(deps)
+  if (pathLookup) return { path: pathLookup, source: "path-lookup" }
   const bundled = tryBundledBinary(deps)
   if (bundled) return { path: bundled, source: "bundled" }
   const platformPkg = tryPlatformPackage(deps)

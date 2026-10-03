@@ -31,6 +31,7 @@ function makeDeps(overrides: Partial<NonNullable<Deps>> = {}): NonNullable<Deps>
     existsSync: () => false,
     statSync: () => ({ size: 0 }),
     exec: async () => ({ stdout: "" }),
+    execLookupSync: () => "",
     resolvePackage: (specifier) => {
       throw new Error(`mock: not configured to resolve ${specifier}`)
     },
@@ -335,6 +336,35 @@ describe("resolveClaudeExecutable: legacy SDK cli.js (bun only)", () => {
 })
 
 describe("resolveClaudeExecutable: priority ordering", () => {
+  it("keeps the packaged fallback when the PATH entry cannot run Claude", async () => {
+    const bundledPkg = "/m/cc/package.json"
+    const deps = makeDeps({
+      existsSync: () => true,
+      statSync: () => ({ size: 200_000_000 }),
+      resolvePackage: () => bundledPkg,
+      exec: async () => ({ stdout: "/mise/shims/claude\n" }),
+      execLookupSync: () => "/mise/shims/claude\n",
+      probeClaude: async candidate => { expect(candidate).toBe("/mise/shims/claude"); return false },
+      probeClaudeSync: candidate => { expect(candidate).toBe("/mise/shims/claude"); return false },
+    })
+    const expected = { path: BIN(bundledPkg, "bin", "claude.exe"), source: "bundled" as const }
+    expect(await resolveClaudeExecutableWithSource(deps)).toEqual(expected)
+    expect(resolveClaudeExecutableSync(deps)).toEqual(expected)
+  })
+
+  it("tries the next Windows PATH candidate after a broken launcher", async () => {
+    const output = "C:\\Broken\\claude.cmd\r\nC:\\Native\\claude.exe\r\n"
+    const deps = makeDeps({
+      platform: "win32", existsSync: () => true,
+      exec: async () => ({ stdout: output }), execLookupSync: () => output,
+      probeClaude: async candidate => candidate.endsWith(".exe"),
+      probeClaudeSync: candidate => candidate.endsWith(".exe"),
+    })
+    const expected = { path: "C:\\Native\\claude.exe", source: "path-lookup" as const }
+    expect(await resolveClaudeExecutableWithSource(deps)).toEqual(expected)
+    expect(resolveClaudeExecutableSync(deps)).toEqual(expected)
+  })
+
   it("env override beats every other source", async () => {
     const deps = makeDeps({
       envGet: (n) => (n === "MERIDIAN_CLAUDE_PATH" ? "/explicit/claude" : undefined),
@@ -345,7 +375,7 @@ describe("resolveClaudeExecutable: priority ordering", () => {
     expect(await resolveClaudeExecutable(deps)).toBe("/explicit/claude")
   })
 
-  it("bundled real binary beats platform package and PATH lookup", async () => {
+  it("PATH installation beats a real bundled binary and platform package", async () => {
     const bundledPkg = "/m/cc/package.json"
     const expectedBin = BIN(bundledPkg, "bin", "claude.exe")
     const deps = makeDeps({
@@ -358,10 +388,10 @@ describe("resolveClaudeExecutable: priority ordering", () => {
       statSync: () => ({ size: 213_404_000 }), // bundled is real
       exec: async () => ({ stdout: "/usr/local/bin/claude\n" }),
     })
-    expect(await resolveClaudeExecutable(deps)).toBe(expectedBin)
+    expect(await resolveClaudeExecutableWithSource(deps)).toEqual({ path: "/usr/local/bin/claude", source: "path-lookup" })
   })
 
-  it("platform package beats PATH lookup when bundled is a stub", async () => {
+  it("PATH installation beats the platform package when bundled is a stub", async () => {
     const bundledPkg = "/m/cc/package.json"
     const platformPkg = "/m/cc-d-a/package.json"
     const platformBin = BIN(platformPkg, "claude")
@@ -377,7 +407,7 @@ describe("resolveClaudeExecutable: priority ordering", () => {
       statSync: () => ({ size: 500 }), // stub
       exec: async () => ({ stdout: "/usr/local/bin/claude\n" }),
     })
-    expect(await resolveClaudeExecutable(deps)).toBe(platformBin)
+    expect(await resolveClaudeExecutableWithSource(deps)).toEqual({ path: "/usr/local/bin/claude", source: "path-lookup" })
   })
 
   it("returns null when ALL sources miss", async () => {
@@ -488,13 +518,61 @@ describe("resolveClaudeExecutableWithSource", () => {
 
 // ---------------------------------------------------------------------------
 // resolveClaudeExecutableSync — synchronous subset used by CLI commands
-// (`meridian profile list`, etc.) that can't await. Skips the async PATH
-// lookup and the legacy SDK cli.js fallback. Closes the diagnostic gap
+// (`meridian profile list`, etc.) that can't await. Shares async precedence
+// through a bounded synchronous PATH lookup. Closes the diagnostic gap
 // from #478 where Stefan's auth-status checks failed because they spawned
 // `claude` via shell PATH instead of routing through the resolver.
 // ---------------------------------------------------------------------------
 
 describe("resolveClaudeExecutableSync", () => {
+  it("selects the same PATH executable for synchronous auth and async requests", async () => {
+    const pkgJson = "/m/cc/package.json"
+    const deps = makeDeps({
+      existsSync: () => true,
+      statSync: () => ({ size: 200_000_000 }),
+      resolvePackage: () => pkgJson,
+      exec: async () => ({ stdout: "/mise/shims/claude\n" }),
+      execLookupSync: (command, args) => {
+        expect(command).toBe("which")
+        expect(args).toEqual(["claude"])
+        return "/mise/shims/claude\n"
+      },
+    })
+    const expected = { path: "/mise/shims/claude", source: "path-lookup" as const }
+    expect(await resolveClaudeExecutableWithSource(deps)).toEqual(expected)
+    expect(resolveClaudeExecutableSync(deps)).toEqual(expected)
+  })
+
+  it("retains packaged fallback after either PATH lookup throws", async () => {
+    const pkgJson = "/m/cc/package.json"
+    const expected = { path: BIN(pkgJson, "bin", "claude.exe"), source: "bundled" as const }
+    const deps = makeDeps({
+      existsSync: p => p === expected.path,
+      statSync: () => ({ size: 200_000_000 }),
+      resolvePackage: () => pkgJson,
+      exec: async () => { throw new Error("lookup unavailable") },
+      execLookupSync: () => { throw new Error("lookup unavailable") },
+    })
+    expect(await resolveClaudeExecutableWithSource(deps)).toEqual(expected)
+    expect(resolveClaudeExecutableSync(deps)).toEqual(expected)
+  })
+
+  it("filters unusable Windows lookup paths identically in both resolvers", async () => {
+    const output = "/c/incorrect/claude\r\nC:\\Missing\\claude.exe\r\nC:\\Tools\\claude.exe\r\n"
+    const deps = makeDeps({
+      platform: "win32",
+      existsSync: p => p === "C:\\Tools\\claude.exe",
+      exec: async () => ({ stdout: output }),
+      execLookupSync: (command, args) => {
+        expect(command).toBe("where")
+        expect(args).toEqual(["claude"])
+        return output
+      },
+    })
+    expect(resolveClaudeExecutableSync(deps)).toEqual(await resolveClaudeExecutableWithSource(deps))
+    expect(resolveClaudeExecutableSync(deps)?.source).toBe("path-lookup")
+  })
+
   it("reports source 'env' when MERIDIAN_CLAUDE_PATH wins", () => {
     const deps = makeDeps({
       envGet: (n) => (n === "MERIDIAN_CLAUDE_PATH" ? "/custom/claude" : undefined),
@@ -541,12 +619,7 @@ describe("resolveClaudeExecutableSync", () => {
     })
   })
 
-  it("returns null when env, bundled, and platform-pkg all miss (PATH lookup not attempted)", () => {
-    // Stefan's case: no MERIDIAN_CLAUDE_PATH, no bundled binary in this
-    // test, no platform peer package, no `claude` on PATH. The async
-    // resolver's PATH-lookup step is intentionally skipped here — sync
-    // exec of `which`/`where` is platform-fragile, and the audit showed
-    // bundled/platform-pkg covers every supported install layout.
+  it("returns null when all sources miss", () => {
     const deps = makeDeps({
       envGet: () => undefined,
       resolvePackage: () => { throw new Error("nope") },
@@ -555,7 +628,7 @@ describe("resolveClaudeExecutableSync", () => {
     expect(resolveClaudeExecutableSync(deps)).toBeNull()
   })
 
-  it("does NOT consult exec/PATH (purely synchronous deps)", () => {
+  it("does not call the asynchronous lookup from synchronous CLI auth", () => {
     // The sync resolver should not even *try* to call exec — that's the
     // whole reason it exists. Pin the contract: pass an exec that throws
     // and assert resolution still works via bundled.

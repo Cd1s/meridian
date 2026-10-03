@@ -84,7 +84,7 @@ import { checkPluginConfigured, isPluginlessOpenCodeRequest, notePluginlessOpenC
 import { describeBuildDrift } from "./buildInfo"
 import { buildRuntime } from "./buildRuntime"
 import { getLatestVersion, isUpdateCheckEnabled, startUpdateCheck, stopUpdateCheck } from "./updateCheck"
-import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveClaudeExecutableSync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext } from "./models"
+import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, explicitModelPin, CANONICAL_SONNET_MODEL, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable, recordExtendedContextRateLimited, subscriptionIncludesExtendedContext } from "./models"
 import { livenessReport, readinessReport, renderProbe } from "./probes"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
@@ -8300,14 +8300,15 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   // Readiness — should traffic come HERE rather than to another instance? Only
   // per-instance checks earn a place; one that every instance fails together
   // cannot move traffic anywhere and only turns a clear error into a 502.
-  app.get("/readyz", (c) => {
+  app.get("/readyz", async (c) => {
+    // Cold embedded instances must not run the CLI's synchronous PATH/version
+    // probes on the HTTP event loop. Startup and concurrent probes share the
+    // asynchronous resolver; a miss keeps the existing unready response.
+    const executableResolved = getResolvedClaudeExecutableInfo() !== null
+      || await resolveClaudeExecutableAsync().then(() => true, () => false)
     const report = readinessReport({
       profileCount: listProfiles(finalConfig.profiles, finalConfig.defaultProfile).length,
-      // Cached answer first, so the steady state costs nothing; the sync
-      // lookup runs only before the first SDK call has populated that cache,
-      // where the alternative is reporting a freshly started instance unready.
-      claudeExecutableResolved:
-        (getResolvedClaudeExecutableInfo() ?? resolveClaudeExecutableSync()) !== null,
+      claudeExecutableResolved: executableResolved,
     })
     return c.text(
       renderProbe("readyz", report, c.req.query("verbose") !== undefined),

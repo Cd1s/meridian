@@ -2,6 +2,25 @@
 
 ## Current continuation — 2026-10-03
 
+#1230 is delivered through [#1249](https://github.com/rynfar/meridian/pull/1249),
+validated head `af7a6a4020de4ef3eaae6d6b1abeb6f129e9c400`, merge
+`67a19e50c743942ab0ed62d340d1caf143c6140b`. All six executed final-head
+CI checks passed, including [test](https://github.com/rynfar/meridian/actions/runs/37107099227/job/111157663187);
+5,144 local tests / 0 failures / 4 skips, typecheck/build. Merged tree exactly
+equals the validated head and Noah Passalacqua credit is verified. Unchanged
+source `d50e28062bad5b98f93359e268ce53aa8facd868` is closed. The later pending
+#1230 leads below are historical.
+
+#1246 executable selection is implemented on current main in isolated branch
+`codex/claude-path-resolution-1246-20261003`. Published and current-main
+Linux/OpenCode/mise before controls reproduce the exact 2.1.268 model refusal;
+corrected Opus 5.5 selects 2.1.288, returns its receipt and leaves no owned
+processes. Override and missing/broken PATH controls are retained. A real missing
+native binary behind a mise shim required a version-probe fallback correction;
+cold readiness now uses asynchronous resolution to keep liveness responsive.
+Final local gates pass 5,151 / 0 / 4 skips, typecheck/build. Exact-head CI and
+merged-tree gates remain. [Durable proof](evidence/1246-claude-path-resolution.md).
+
 This checkpoint supersedes the pending #1242 and #1230 leads below.
 #1248 is merged as `928bddc42b684680bc58f31a0aab18034197e8f3`; final local
 and CI gates, exact merged tree and Nowaker credit were verified before closing
