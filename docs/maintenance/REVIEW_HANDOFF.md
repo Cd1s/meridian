@@ -1,5 +1,81 @@
 # Upstream review handoff
 
+## Goal-backed backlog continuation — 2026-10-03 UTC
+
+Owner explicitly requested a goal and continuing through whatever open PRs can
+be completed. The active goal covers the managed Meridian/scrub queue, with
+no release authorization or external community comments. Owner's dirty main
+checkout remains untouched; all new work uses isolated feature worktrees.
+
+Paginated account + accessible organization discovery refreshed the live queue
+across six managed repositories: Meridian, hudscrub, and Hermes/OpenClaw/
+OpenCode/Pi scrub. The plugin-doc links match the discovered repositories.
+No additional accessible scrub repositories were found. New source items
+#1242 and #1243 and issue #1246 are added to the current queue. #1213 is now
+ready for review (same `553fd5c` head, no longer draft); its actual V2 catalog/
+large-replay evidence gate remains and draft status is no longer a blocker.
+
+- **#1240 / #1239:** accept with a separate fixture correction. Source
+  `d868637455387e0359f1b3f4975caaf5fb1399ac` → authored cherry `cbdd5d17`;
+  robertn702's Author/AuthorDate retained. Integration
+  [#1247](https://github.com/rynfar/meridian/pull/1247), current head
+  `c1a345e2b5f44b33b118e56036517e5660b9255e`, branch
+  `codex/replay-budget-isolation-1240-20261002`, worktree
+  `/Users/rynfar/repos/meridian-replay-budget-1240`. Exact ordered-load
+  reproduction: 11 pass / 2 budget failures; isolated original assertions
+  13/13. Initial full local gates 5,125 pass / 0 fail / 4 skips, typecheck/build
+  pass. Initial CI exposed an SDK gate test readiness race, reproduced with
+  300 ms delayed real gate fsync; worker-ready preceded asynchronous publication.
+  Maintainer commit `c1a345e2` adds actual-executor startup and controlled-release
+  handshakes. Delayed control and all five lifecycle process tests pass.
+  Corrected full local gates pass 5,125 / 0 fail / 4 skips across 17 stages,
+  typecheck/build pass, and all ten executed final CI checks pass. Merged as
+  `802d9398f609eb49b4c93fe34c306b872ebeb647`; merged tree exactly equals the
+  validated head and its human co-author trailer is verified. Unchanged source
+  #1240 is closed; #1239 closed through the validated integration.
+  [Durable evidence](evidence/1240-replay-budget-isolation.md).
+- **#1242:** accept with narrowing correction, pending remaining gates.
+  Source `a2408b82ca4c05e8ed1c770b1ac72615ef1bdd85` → authored cherry
+  `6912ec9f`, now rebased as `37ade6ab` (Nowaker / original authored date
+  retained). Maintainer correction `f11c355b`, now `a42c696e`, preserves recovery wording before a tool result or beside meaningful
+  user text; recognize only the actual synthetic tail. Source regression control
+  16 pass / 1 fail → corrected 18/18. Draft integration
+  [#1248](https://github.com/rynfar/meridian/pull/1248), worktree
+  `/Users/rynfar/repos/meridian-prefill-lineage-1242`, branch
+  `codex/opencode-prefill-lineage-1242-20261002`. Real OpenCode 1.18.34 + released
+  oh-my-openagent 5.1.12 transform + independent scrub 0.2.3 + SDK 0.2.141 /
+  bundled CLI 2.1.284 + native Sonnet 4.6, macOS arm64, Bun 1.4.2:
+  three actual tool recovery rounds caused two replays on unchanged `d57388724`
+  and zero replays after the fix; both return the tool receipt and join cleanup.
+  Source + correction full local npm test 5,130 pass / 0 fail / 4 skips,
+  typecheck/build pass. All four E41 chain/parallel JSON/SSE modes pass
+  unchanged cache/history assertions. Final client harness also passes joined
+  cleanup with four observed recovery rounds / zero replays. Rebased onto
+  test-only main `802d9398f`; product code equals the live-tested tree. Fresh
+  full local gates and exact final-head CI remain pending before landing.
+  [Durable evidence and maintained harness](evidence/1242-opencode-prefill-lineage.md).
+- **#1243 `6558c209f8bddf8e59b554d16c9834381c7817c2`:** queued, not yet fully
+  reviewed; contributor explicitly stacks its SQLite store/journal migration
+  after #1220. Respect that dependency. The full diff is retained locally; do
+  not treat contributor production measurements or green CI as completed
+  migration/rollback/cross-process/live-client review.
+- **#1245 / #1220:** remain draft/pending the unexplained original 200-token
+  canonical prefix reduction. The user-approved async cleanup contract is
+  recorded in #1244 and the integration PR; do not ask again. All corrected
+  local gates and prior final-head CI pass. Real encrypted-transport retry
+  control proves aggregate billing can overstate a canonical cached prompt;
+  it does not explain the residual 200 tokens in the original fixture. Baseline
+  retry control confirms aggregate accounting before this source change, but
+  its continuation was interrupted, so do not claim a complete baseline E41
+  result. Latest facts live in #1245's PR body. Persistent valid owned native
+  fixture is available; the earlier temporary re-authentication directory has
+  been removed. Never print grant values or authorization codes.
+
+Remaining earlier dispositions below are dated leads. Refresh live heads before
+acting, continue independently actionable PRs while these wait, and use exact
+head matching and required CI for every merge. Release Please PRs remain held
+for separate release authorization.
+
 ## Additional Nowaker work (2026-10-02)
 
 Owner authorized continuing more Nowaker work. #1222 source `1bffa43fe` is
