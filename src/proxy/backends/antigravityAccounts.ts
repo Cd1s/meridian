@@ -51,7 +51,9 @@ export function readAgAccounts(dir: string): { accounts: AgAccount[]; invalid: M
       HOME: home, TMPDIR: join(home, ".tmp"),
       XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
     }
-    for (const [key, value] of Object.entries(vars)) if (!key.startsWith("MERIDIAN_")) env[key] = value
+    for (const [key, value] of Object.entries(vars)) {
+      if (key === "MERIDIAN_AGY_COMPAT_BRIDGE" || key === "MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE" || !key.startsWith("MERIDIAN_")) env[key] = value
+    }
     accounts.push({ name: entry.name, home, apiKey: vars.MERIDIAN_API_KEY, env, statePath: vars.MERIDIAN_AGY_STATE_PATH || undefined, digest: createHash("sha256").update(text).digest("hex") })
   }
   const owners = new Map<string, string[]>()

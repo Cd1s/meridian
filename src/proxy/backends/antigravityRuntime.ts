@@ -809,6 +809,8 @@ export class AntigravityRuntime {
       this.mcpUrl = `http://127.0.0.1:${address.port}`
       const bridgeEnabled = this.childEnv.MERIDIAN_AGY_COMPAT_BRIDGE === "1" ||
                             this.childEnv.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1" ||
+                            this.childEnv.ENABLE_CLOUD_CODE_BRIDGE === "1" ||
+                            this.childEnv.AGY_COMPAT_BRIDGE === "1" ||
                             process.env.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1"
       if (bridgeEnabled) {
         this.childEnv.CLOUD_CODE_URL = this.mcpUrl
