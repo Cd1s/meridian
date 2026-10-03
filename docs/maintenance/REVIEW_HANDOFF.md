@@ -1,5 +1,47 @@
 # Upstream review handoff
 
+## Current continuation — 2026-10-03
+
+This checkpoint supersedes the pending #1242 and #1230 leads below.
+#1248 is merged as `928bddc42b684680bc58f31a0aab18034197e8f3`; final local
+and CI gates, exact merged tree and Nowaker credit were verified before closing
+the unchanged #1242 source. No release was authorized.
+
+#1230 source `d50e28062bad5b98f93359e268ce53aa8facd868` is accepted with
+maintainer correction on current main. Actual Claude Code 2.1.287 PTY before/
+after now reproduces native argument failure and verifies a rendered receipt
+on macOS arm64 and Linux x86_64, with SDK 0.2.141/CLI 2.1.284 and native Sonnet 5.
+Source-only code exposed a second live-prompt framing bug from trailing system
+metadata; failing HTTP controls and source-only actual-client failures precede
+the correction. Supported/off and print-mode omitted controls plus all four E41
+modes pass. [Durable evidence](evidence/1230-interactive-thinking-display.md).
+Final local/CI and delivery state must be refreshed before landing.
+
+Browser-login #1217 current head `cc3dee1140d84cc5bc59476138e64c345504f977`
+has 5,248 passing local tests / 35 platform skips, typecheck/build and all six
+executed final-head CI checks passing (test run 37102721775). Its existing-account
+assisted grant exchange is proved, but fresh automatic browser callback and
+post-grant client proof remain open. The preview currently requires account
+sign-in; no fresh authorization completion is claimed. #1245's owner-approved
+async cleanup (#1244) still waits for the unexplained original 200-token
+canonical prefix loss, not renewed public-contract approval.
+
+Bounded review of #1243 current source
+`6558c209f8bddf8e59b554d16c9834381c7817c2` reproduces a legacy migration
+retirement race: an older writer atomically replaces sessions.json after the
+digest read, then retirement renames that unimported replacement away from the
+active path. Fault-control result: 0 pass / 1 fail. Bytes survive in the retired
+file, but automatic restart cannot recover those unimported mappings. Legacy
+writer-lock participation or an equivalent crash-safe protocol, composition
+with #1245's caller snapshots/revocation fences, and the parent acceptance gate
+are prerequisites. This is not a completed full SQLite acceptance review.
+
+#1223 current source `537ccad864336a4f4dc25f925e92177cd12fe6b2` still grants
+a second lease while the synthetic original holder is kernel-confirmed SIGSTOP
+and alive; current main refuses. The maintained ownerless fault harness was
+rerun on both exact heads. Decline age-only same-boot recovery; reconsider with
+affirmative owner-death/boot evidence or actual write fencing.
+
 ## Goal-backed backlog continuation — 2026-10-03 UTC
 
 Owner explicitly requested a goal and continuing through whatever open PRs can
