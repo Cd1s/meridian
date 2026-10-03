@@ -131,6 +131,17 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 账号检查失败（冷却中或检查缓存被清空）时不再继续补待命进程；agy 子进程环境剔除 `MERIDIAN_ADMIN_TOKEN`、`MERIDIAN_SUB2API_*`。
 - 验证：远端 antigravity + auth 测试 215 pass / 0 fail（新增：回落后续轮复用、无效账号只跳过、关闭失败不阻断、授权码只收一次），`tsc` 0 错误；线上 12 个账号服务、Sub2API 抽测 4 个 success、agy 子进程无管理口令。回滚点 `dist-accounts-20261003-115808`、`agy-login.py-20261003-115808`。
 
+### 2026-10-03 CloudCode 桥接与模型屏蔽的审查修复
+审查 `070d333..fa895a9`（版本门禁、CloudCode 桥接、屏蔽 Claude、按账号 opt-in）后的修复：
+- 屏蔽模型的检查原本在进程准入之后：请求 `claude-*` 在返回 400 之前就可能回收本账号或其他账号的空闲热进程、刷新待命进程活跃时间并跑授权检查。改为在 `create()` 最前面拒绝。
+- 未开启桥接的账号，其 MCP 监听口也会把任意 `/v1*` 请求转发到 Google（本机任意进程可借账号代理与 token 中转）。现在只有开启桥接的账号才路由 `/v1*`。
+- 桥接开关统一为 `agBridgeEnabled()`：`MERIDIAN_AGY_COMPAT_BRIDGE=1`（或兼容的 `MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE=1`），去掉了无 `MERIDIAN_` 前缀的两个别名。
+- `loadCodeAssist` 只改写 2xx 响应，401/403/429 原样返回给 agy（之前错误响应也会被注入 `currentTier`）；上游请求固定 `accept-encoding: identity`，加 60s 超时。
+- SOCKS5 / HTTP CONNECT 握手改为累积读取完整应答（之前假设每个应答恰好一个 TCP 包，分包时会把残余字节喂给 TLS 导致握手失败）；IPv6 代理地址去掉方括号。
+- 流式透传用 `pipeline`：上游中途断开时向 agy 传递错误，不再挂住；响应正常结束后不再销毁上游请求，保留 keep-alive 隧道（之前每个请求都重新做一次代理握手 + TLS）。剔除 hop-by-hop 头。
+- 测试：原 `antigravity-bridge.test.ts` 在测试里复制了一份逻辑再断言自己，没有覆盖桥接代码。改为真实测试：逐字节分包的 SOCKS5（带认证、域名型应答）、HTTP CONNECT（含 407）、握手超时、gzip `loadCodeAssist` 改写、错误透传、流式透传与连接复用、上游不可达 502；另加“屏蔽模型不回收其他账号空闲进程”。
+- 验证：远端 tsc 0 错误；antigravity + auth 227 pass / 0 fail；Node 下单独验证 SOCKS 分包握手、改写与流式透传；构建成功。
+
 ## 同步上游
 
 

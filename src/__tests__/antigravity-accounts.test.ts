@@ -144,6 +144,17 @@ describe("Antigravity multi-account process", () => {
     expect((await send({ ...initial(), tools: [] }, { "x-api-key": "key-b" })).status).toBe(401)
     expect((await send({ ...initial(), tools: [] }, { authorization: "Bearer key-a" })).status).toBe(200)
   })
+  it("rejects a blocked model before it can reclaim another account's idle process", async () => {
+    const pool = new AgProcessPool(1)
+    const a = account({ pool }), b = account({ pool })
+    expect((await a.send(initial())).status).toBe(200)
+    expect(pool.used).toBe(1)
+    const blocked = await b.send({ ...initial(), model: "claude-sonnet-4-6", tools: [] })
+    expect(blocked.status).toBe(400)
+    expect(await blocked.text()).toContain("blocked on Antigravity runtime")
+    expect(a.runtime.reclaimed).toBe(0)
+    expect(pool.used).toBe(1)
+  })
   it("lets a full shared pool take another account's idle process but never an active one", async () => {
     const pool = new AgProcessPool(1)
     const a = account({ pool }), b = account({ pool })

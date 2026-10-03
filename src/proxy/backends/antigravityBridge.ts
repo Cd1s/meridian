@@ -1,12 +1,19 @@
 // Fork patch: local loopback bridge for Antigravity official CLI (agy).
 // Bypasses location eligibility blocks by intercepting /v1internal:loadCodeAssist,
 // while transparently tunneling through each account's configured proxy.
-import { type IncomingMessage, type ServerResponse } from "node:http"
+import { type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http"
 import https from "node:https"
 import net from "node:net"
+import { once } from "node:events"
+import { pipeline } from "node:stream"
 import tls from "node:tls"
 import zlib from "node:zlib"
 import { URL } from "node:url"
+
+/** Per-account opt-in; the account env and the service env both end up in the runtime's child env. */
+export function agBridgeEnabled(env: NodeJS.ProcessEnv): boolean {
+  return env.MERIDIAN_AGY_COMPAT_BRIDGE === "1" || env.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1"
+}
 
 export function getProxyUrl(env: NodeJS.ProcessEnv): URL | null {
   const raw = env.ALL_PROXY || env.all_proxy || env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy
@@ -19,147 +26,119 @@ export function getProxyUrl(env: NodeJS.ProcessEnv): URL | null {
   }
 }
 
-function connectSocks5(proxyUrl: URL, targetHost: string, targetPort: number): Promise<net.Socket> {
+/** Grants the eligible tier in a loadCodeAssist body; returns whether the body changed. */
+export function patchLoadCodeAssist(data: unknown): boolean {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false
+  const body = data as { currentTier?: unknown; ineligibleTiers?: unknown }
+  if (body.currentTier && !(Array.isArray(body.ineligibleTiers) && body.ineligibleTiers.length)) return false
+  body.currentTier = { id: "g1-pro-tier", name: "Gemini Pro" }
+  delete body.ineligibleTiers
+  return true
+}
+
+/** Collects a proxy handshake reply, which may arrive split across TCP reads. `size` returns the reply length once known. */
+function readReply(socket: net.Socket, size: (buffer: Buffer) => number | undefined): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const port = Number(proxyUrl.port) || 1080
-    const socket = net.connect(port, proxyUrl.hostname)
-    const timeout = setTimeout(() => {
-      socket.destroy(new Error(`SOCKS5 proxy connection to ${proxyUrl.hostname}:${port} timed out`))
-    }, 15_000)
-    timeout.unref()
-
-    socket.once("connect", () => {
-      const hasAuth = !!(proxyUrl.username || proxyUrl.password)
-      socket.write(hasAuth ? Buffer.from([5, 1, 2]) : Buffer.from([5, 1, 0]))
-      socket.once("data", greetingResp => {
-        if (greetingResp[0] !== 5) {
-          clearTimeout(timeout)
-          socket.destroy()
-          return reject(new Error("Invalid SOCKS5 greeting response"))
-        }
-        const method = greetingResp[1]
-        if (hasAuth) {
-          if (method !== 2) {
-            clearTimeout(timeout)
-            socket.destroy()
-            return reject(new Error(`SOCKS5 auth method rejected: ${method}`))
-          }
-          const userBuf = Buffer.from(decodeURIComponent(proxyUrl.username || ""))
-          const passBuf = Buffer.from(decodeURIComponent(proxyUrl.password || ""))
-          socket.write(Buffer.concat([
-            Buffer.from([1, userBuf.length]),
-            userBuf,
-            Buffer.from([passBuf.length]),
-            passBuf,
-          ]))
-          socket.once("data", authResp => {
-            if (authResp[1] !== 0) {
-              clearTimeout(timeout)
-              socket.destroy()
-              return reject(new Error("SOCKS5 username/password auth failed"))
-            }
-            sendConnect()
-          })
-        } else {
-          if (method !== 0) {
-            clearTimeout(timeout)
-            socket.destroy()
-            return reject(new Error(`SOCKS5 greeting rejected: ${method}`))
-          }
-          sendConnect()
-        }
-      })
-    })
-
-    function sendConnect() {
-      const hostBuf = Buffer.from(targetHost)
-      const reqBuf = Buffer.concat([
-        Buffer.from([5, 1, 0, 3, hostBuf.length]),
-        hostBuf,
-        Buffer.from([targetPort >> 8, targetPort & 0xff]),
-      ])
-      socket.write(reqBuf)
-      socket.once("data", connectResp => {
-        clearTimeout(timeout)
-        if (connectResp[0] !== 5 || connectResp[1] !== 0) {
-          socket.destroy()
-          return reject(new Error(`SOCKS5 connect to ${targetHost}:${targetPort} failed with code ${connectResp[1]}`))
-        }
-        resolve(socket)
-      })
+    let buffered = Buffer.alloc(0)
+    const finish = (error?: Error, reply?: Buffer) => {
+      socket.off("data", onData).off("error", finish).off("close", onClose)
+      socket.pause()
+      if (error) reject(error)
+      else resolve(reply!)
     }
-
-    socket.once("error", err => {
-      clearTimeout(timeout)
-      reject(err)
-    })
+    const onClose = () => finish(new Error("Proxy closed the connection during the handshake"))
+    const onData = (chunk: Buffer) => {
+      buffered = Buffer.concat([buffered, chunk])
+      try {
+        const length = size(buffered)
+        if (length !== undefined) finish(undefined, buffered.subarray(0, length))
+      } catch (error) { finish(error as Error) }
+    }
+    // The previous reply paused the socket; a new data listener alone does not restart reading.
+    socket.on("data", onData).once("error", finish).once("close", onClose).resume()
   })
 }
 
-function connectHttp(proxyUrl: URL, targetHost: string, targetPort: number): Promise<net.Socket> {
-  return new Promise((resolve, reject) => {
-    const port = Number(proxyUrl.port) || 8080
-    const socket = net.connect(port, proxyUrl.hostname)
-    const timeout = setTimeout(() => {
-      socket.destroy(new Error(`HTTP proxy connection to ${proxyUrl.hostname}:${port} timed out`))
-    }, 15_000)
-    timeout.unref()
-
-    socket.once("connect", () => {
-      let req = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n`
-      if (proxyUrl.username || proxyUrl.password) {
-        const auth = Buffer.from(`${decodeURIComponent(proxyUrl.username || "")}:${decodeURIComponent(proxyUrl.password || "")}`).toString("base64")
-        req += `Proxy-Authorization: Basic ${auth}\r\n`
-      }
-      req += "Proxy-Connection: Keep-Alive\r\n\r\n"
-      socket.write(req)
-      socket.once("data", chunk => {
-        clearTimeout(timeout)
-        const line = chunk.toString("utf8").split("\r\n")[0] || ""
-        if (line.includes(" 200 ")) {
-          resolve(socket)
-        } else {
-          socket.destroy()
-          reject(new Error(`HTTP CONNECT failed: ${line}`))
-        }
-      })
-    })
-
-    socket.once("error", err => {
-      clearTimeout(timeout)
-      reject(err)
-    })
-  })
+function socks5ReplySize(buffer: Buffer): number | undefined {
+  if (buffer.length < 2) return undefined
+  if (buffer[1] !== 0) return 2
+  if (buffer.length < 5) return undefined
+  const address = buffer[3] === 1 ? 4 : buffer[3] === 4 ? 16 : buffer[3] === 3 ? 1 + buffer[4]! : undefined
+  if (address === undefined) throw new Error(`SOCKS5 reply has unknown address type ${buffer[3]}`)
+  return buffer.length >= 6 + address ? 6 + address : undefined
 }
 
-async function createProxiedTlsSocket(proxyUrl: URL, targetHost: string, targetPort: number): Promise<tls.TLSSocket> {
-  const isSocks = proxyUrl.protocol.startsWith("socks")
-  const underlying = isSocks
-    ? await connectSocks5(proxyUrl, targetHost, targetPort)
-    : await connectHttp(proxyUrl, targetHost, targetPort)
+async function socks5Handshake(socket: net.Socket, proxyUrl: URL, host: string, port: number): Promise<void> {
+  const auth = !!(proxyUrl.username || proxyUrl.password)
+  socket.write(Buffer.from([5, 1, auth ? 2 : 0]))
+  const greeting = await readReply(socket, buffer => buffer.length >= 2 ? 2 : undefined)
+  if (greeting[0] !== 5 || greeting[1] !== (auth ? 2 : 0)) throw new Error(`SOCKS5 proxy rejected auth method (reply ${greeting[1]})`)
+  if (auth) {
+    const user = Buffer.from(decodeURIComponent(proxyUrl.username))
+    const pass = Buffer.from(decodeURIComponent(proxyUrl.password))
+    socket.write(Buffer.concat([Buffer.from([1, user.length]), user, Buffer.from([pass.length]), pass]))
+    const reply = await readReply(socket, buffer => buffer.length >= 2 ? 2 : undefined)
+    if (reply[1] !== 0) throw new Error("SOCKS5 username/password authentication failed")
+  }
+  const target = Buffer.from(host)
+  socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, target.length]), target, Buffer.from([port >> 8, port & 0xff])]))
+  const reply = await readReply(socket, socks5ReplySize)
+  if (reply[0] !== 5 || reply[1] !== 0) throw new Error(`SOCKS5 connect to ${host}:${port} failed with code ${reply[1]}`)
+}
 
+async function httpConnect(socket: net.Socket, proxyUrl: URL, host: string, port: number): Promise<void> {
+  let head = `CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n`
+  if (proxyUrl.username || proxyUrl.password) {
+    head += `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxyUrl.username)}:${decodeURIComponent(proxyUrl.password)}`).toString("base64")}\r\n`
+  }
+  socket.write(head + "\r\n")
+  const reply = await readReply(socket, buffer => {
+    const end = buffer.indexOf("\r\n\r\n")
+    if (end >= 0) return end + 4
+    if (buffer.length > 16_384) throw new Error("HTTP CONNECT reply headers too large")
+    return undefined
+  })
+  const status = reply.toString("latin1").split("\r\n")[0] ?? ""
+  if (!/^HTTP\/1\.[01] 200\b/.test(status)) throw new Error(`HTTP CONNECT failed: ${status}`)
+}
+
+/** Opens a raw TCP tunnel to host:port through a SOCKS5 or HTTP CONNECT proxy. */
+export async function connectViaProxy(proxyUrl: URL, host: string, port: number, timeoutMs = 15_000): Promise<net.Socket> {
+  const socks = proxyUrl.protocol.startsWith("socks")
+  const proxyPort = Number(proxyUrl.port) || (socks ? 1080 : 8080)
+  const proxyHost = proxyUrl.hostname.replace(/^\[(.*)\]$/, "$1")
+  const socket = net.connect(proxyPort, proxyHost)
+  const timer = setTimeout(() => socket.destroy(new Error(`Proxy ${proxyHost}:${proxyPort} handshake timed out`)), timeoutMs)
+  try {
+    await once(socket, "connect")
+    if (socks) await socks5Handshake(socket, proxyUrl, host, port)
+    else await httpConnect(socket, proxyUrl, host, port)
+    return socket
+  } catch (error) {
+    socket.destroy()
+    throw error
+  } finally { clearTimeout(timer) }
+}
+
+async function createProxiedTlsSocket(proxyUrl: URL, host: string, port: number): Promise<tls.TLSSocket> {
+  const raw = await connectViaProxy(proxyUrl, host, port)
   return new Promise((resolve, reject) => {
-    const secure = tls.connect({
-      socket: underlying,
-      servername: targetHost,
-    }, () => resolve(secure))
-    secure.once("error", reject)
-    underlying.once("error", reject)
+    const fail = (error: Error) => { raw.destroy(); reject(error) }
+    const secure = tls.connect({ socket: raw, servername: host }, () => {
+      secure.off("error", fail)
+      resolve(secure)
+    })
+    secure.once("error", fail)
   })
 }
 
 export function createCloudCodeAgent(env: NodeJS.ProcessEnv): https.Agent {
   const proxyUrl = getProxyUrl(env)
-  if (!proxyUrl) {
-    return new https.Agent({
-      keepAlive: true,
-      keepAliveMsecs: 30_000,
-    })
-  }
+  if (!proxyUrl) return new https.Agent({ keepAlive: true, keepAliveMsecs: 30_000 })
   return new https.Agent({
     keepAlive: true,
     keepAliveMsecs: 30_000,
-    // @ts-ignore
+    // @ts-ignore Node's Agent accepts an async createConnection via the callback.
     createConnection(options, callback) {
       createProxiedTlsSocket(proxyUrl, options.host || "cloudcode-pa.googleapis.com", Number(options.port) || 443)
         .then(sock => callback(null, sock))
@@ -168,107 +147,90 @@ export function createCloudCodeAgent(env: NodeJS.ProcessEnv): https.Agent {
   })
 }
 
+const HOP_BY_HOP = ["host", "connection", "proxy-connection", "keep-alive", "transfer-encoding", "upgrade"]
+function forwardHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
+  const out = { ...headers }
+  for (const name of HOP_BY_HOP) delete out[name]
+  return out
+}
+
+function fail(res: ServerResponse, error: Error): void {
+  if (res.headersSent) { res.destroy(error); return }
+  res.writeHead(502, { "content-type": "application/json" })
+  res.end(JSON.stringify({ error: { message: `CloudCode upstream proxy error: ${error.message}` } }))
+}
+
+function decode(body: Buffer, encoding: string | undefined): Buffer | undefined {
+  try {
+    if (encoding === "gzip") return zlib.gunzipSync(body)
+    if (encoding === "deflate") return zlib.inflateSync(body)
+    if (encoding === "br") return zlib.brotliDecompressSync(body)
+    if (!encoding || encoding === "identity") return body
+  } catch {}
+  return undefined
+}
+
 export async function handleCloudCodeRequest(
   req: IncomingMessage,
   res: ServerResponse,
   env: NodeJS.ProcessEnv,
   agent: https.Agent,
+  request: typeof https.request = https.request,
 ): Promise<void> {
-  const upstreamHost = env.CLOUD_CODE_UPSTREAM_HOST || process.env.CLOUD_CODE_UPSTREAM_HOST || "daily-cloudcode-pa.googleapis.com"
-  const isLoadCodeAssist = req.url?.includes("loadCodeAssist")
-  const headers = { ...req.headers }
-  delete headers.host
+  const upstreamHost = env.CLOUD_CODE_UPSTREAM_HOST || "daily-cloudcode-pa.googleapis.com"
+  const [hostname, port] = upstreamHost.split(":")
+  const target = { hostname, port: Number(port) || 443, path: req.url, method: req.method, agent }
+  const headers = forwardHeaders(req.headers)
 
-  if (isLoadCodeAssist) {
+  if (req.url?.includes(":loadCodeAssist")) {
     const chunks: Buffer[] = []
-    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    try {
+      for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    } catch (error) { return fail(res, error as Error) }
     const body = Buffer.concat(chunks)
     headers["content-length"] = String(body.length)
+    headers["accept-encoding"] = "identity"
 
-    const upstreamReq = https.request({
-      hostname: upstreamHost,
-      port: 443,
-      path: req.url,
-      method: req.method,
-      headers,
-      agent,
-    }, upstreamRes => {
+    const upstreamReq = request({ ...target, headers }, upstreamRes => {
       const resChunks: Buffer[] = []
       upstreamRes.on("data", c => resChunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
+      upstreamRes.on("error", error => fail(res, error))
       upstreamRes.on("end", () => {
-        let respBuf = Buffer.concat(resChunks)
-        const encoding = upstreamRes.headers["content-encoding"]
-        let decompressed: Buffer | null = null
-        try {
-          if (encoding === "gzip") decompressed = zlib.gunzipSync(respBuf)
-          else if (encoding === "deflate") decompressed = zlib.inflateSync(respBuf)
-          else if (encoding === "br") decompressed = zlib.brotliDecompressSync(respBuf)
-        } catch {
-          // Decompression failed; use raw buffer
+        const raw = Buffer.concat(resChunks)
+        const status = upstreamRes.statusCode ?? 502
+        const plain = decode(raw, upstreamRes.headers["content-encoding"])
+        let out = plain
+        // Only a successful eligibility answer is rewritten; errors reach agy unchanged.
+        if (plain && status >= 200 && status < 300) {
+          try {
+            const data = JSON.parse(plain.toString("utf8"))
+            if (patchLoadCodeAssist(data)) out = Buffer.from(JSON.stringify(data))
+          } catch {}
         }
-
-        const jsonBuf = decompressed ?? respBuf
-        try {
-          const data = JSON.parse(jsonBuf.toString("utf8"))
-          // Patch eligibility: remove ineligibleTiers and ensure currentTier is set
-          if (!data.currentTier || (Array.isArray(data.ineligibleTiers) && data.ineligibleTiers.length > 0)) {
-            data.currentTier = { id: "g1-pro-tier", name: "Gemini Pro" }
-            delete data.ineligibleTiers
-            const patched = Buffer.from(JSON.stringify(data))
-            const outHeaders = { ...upstreamRes.headers }
-            delete outHeaders["content-encoding"]
-            delete outHeaders["transfer-encoding"]
-            outHeaders["content-length"] = String(patched.length)
-            res.writeHead(upstreamRes.statusCode || 200, outHeaders)
-            res.end(patched)
-            return
-          }
-        } catch {}
-
-        if (decompressed) {
-          const outHeaders = { ...upstreamRes.headers }
+        const outHeaders = forwardHeaders(upstreamRes.headers)
+        if (out) {
           delete outHeaders["content-encoding"]
-          delete outHeaders["transfer-encoding"]
-          outHeaders["content-length"] = String(decompressed.length)
-          res.writeHead(upstreamRes.statusCode || 200, outHeaders)
-          res.end(decompressed)
-        } else {
-          res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers)
-          res.end(respBuf)
+          outHeaders["content-length"] = String(out.length)
         }
+        res.writeHead(status, outHeaders)
+        res.end(out ?? raw)
       })
     })
-
-    upstreamReq.on("error", err => {
-      if (!res.headersSent) {
-        res.writeHead(502, { "content-type": "application/json" })
-        res.end(JSON.stringify({ error: { message: `CloudCode upstream proxy error: ${err.message}` } }))
-      }
-    })
+    upstreamReq.setTimeout(60_000, () => upstreamReq.destroy(new Error("loadCodeAssist timed out")))
+    upstreamReq.on("error", error => fail(res, error))
     upstreamReq.end(body)
     return
   }
 
   // Transparent streaming proxy for models, streamGenerateContent, usage/quota, etc.
-  const upstreamReq = https.request({
-    hostname: upstreamHost,
-    port: 443,
-    path: req.url,
-    method: req.method,
-    headers,
-    agent,
-  }, upstreamRes => {
-    res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers)
-    upstreamRes.pipe(res)
+  const upstreamReq = request({ ...target, headers }, upstreamRes => {
+    res.writeHead(upstreamRes.statusCode ?? 502, forwardHeaders(upstreamRes.headers))
+    // pipeline propagates a broken upstream stream to agy instead of leaving the response open.
+    pipeline(upstreamRes, res, () => {})
   })
-
-  upstreamReq.on("error", err => {
-    if (!res.headersSent) {
-      res.writeHead(502, { "content-type": "application/json" })
-      res.end(JSON.stringify({ error: { message: `CloudCode upstream proxy error: ${err.message}` } }))
-    }
-  })
-  res.on("close", () => upstreamReq.destroy())
+  upstreamReq.on("error", error => fail(res, error))
+  // A finished response also emits close; destroying then would discard the kept-alive tunnel.
+  res.on("close", () => { if (!res.writableFinished) upstreamReq.destroy() })
   req.on("error", err => upstreamReq.destroy(err))
   req.pipe(upstreamReq)
 }

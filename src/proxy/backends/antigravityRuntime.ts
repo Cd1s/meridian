@@ -1,5 +1,5 @@
 import { readAgProbe, ProbeFailure } from "./antigravityProbe"
-import { createCloudCodeAgent, handleCloudCodeRequest } from "./antigravityBridge"
+import { agBridgeEnabled, createCloudCodeAgent, handleCloudCodeRequest } from "./antigravityBridge"
 import type { Agent as HttpsAgent } from "node:https"
 import { AgGrammars } from "./antigravityGrammar"
 import { AgPlugins } from "./antigravityPlugins"
@@ -73,15 +73,10 @@ function agTextOnly(messages: AgMessage[]): boolean {
  * Fork patch: filters out blocked models (Claude models on Antigravity runtime, or custom blocked list).
  */
 export function isAgModelBlocked(model: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const name = model.toLowerCase()
   const blockClaude = env.MERIDIAN_AGY_BLOCK_CLAUDE !== "0" && env.MERIDIAN_AGY_BLOCK_CLAUDE !== "false"
-  if (blockClaude && model.toLowerCase().startsWith("claude")) {
-    return true
-  }
-  const customBlocked = (env.MERIDIAN_AGY_BLOCKED_MODELS || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean)
-  if (customBlocked.some(b => model.toLowerCase().includes(b))) {
-    return true
-  }
-  return false
+  if (blockClaude && name.startsWith("claude")) return true
+  return (env.MERIDIAN_AGY_BLOCKED_MODELS || "").split(",").map(s => s.trim().toLowerCase()).some(blocked => blocked && name.includes(blocked))
 }
 /** Fork patch: the spawn shape of a new text conversation, or undefined when a pre-started agy cannot serve it. */
 export function agSpareKey(runtime: AntigravityRuntime, request: AgRequest, launch: AgLaunch): string | undefined {
@@ -791,13 +786,11 @@ export class AntigravityRuntime {
     if (this.mcpUrl) return this.mcpUrl
     if (this.draining) throw new Error("Antigravity is shutting down")
     this.serverPromise ??= (async () => {
+      // Without the per-account opt-in this listener stays MCP-only, so it is never an open relay to Google.
+      const bridge = agBridgeEnabled(this.childEnv)
       this.server = createServer((req, res) => {
-        const url = req.url ?? ""
-        if (url.startsWith("/v1") || url.includes(":loadCodeAssist") || url.includes(":streamGenerateContent")) {
-          void handleCloudCodeRequest(req, res, this.childEnv, this.cloudCodeAgent)
-        } else {
-          void this.handleMcp(req, res)
-        }
+        if (bridge && (req.url ?? "").startsWith("/v1")) void handleCloudCodeRequest(req, res, this.childEnv, this.cloudCodeAgent)
+        else void this.handleMcp(req, res)
       })
       this.server.unref()
       await new Promise<void>((resolve, reject) => {
@@ -807,14 +800,7 @@ export class AntigravityRuntime {
       const address = this.server.address()
       if (!address || typeof address === "string") throw new Error("Cannot bind MCP listener")
       this.mcpUrl = `http://127.0.0.1:${address.port}`
-      const bridgeEnabled = this.childEnv.MERIDIAN_AGY_COMPAT_BRIDGE === "1" ||
-                            this.childEnv.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1" ||
-                            this.childEnv.ENABLE_CLOUD_CODE_BRIDGE === "1" ||
-                            this.childEnv.AGY_COMPAT_BRIDGE === "1" ||
-                            process.env.MERIDIAN_AGY_ENABLE_CLOUD_CODE_BRIDGE === "1"
-      if (bridgeEnabled) {
-        this.childEnv.CLOUD_CODE_URL = this.mcpUrl
-      }
+      if (bridge) this.childEnv.CLOUD_CODE_URL = this.mcpUrl
       return this.mcpUrl
     })().catch(error => {
       this.serverPromise = undefined
@@ -840,6 +826,8 @@ export class AntigravityRuntime {
   }
   async create(request: AgRequest, signal?: AbortSignal): Promise<AntigravityRun> {
     if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
+    // Rejected before admission: a blocked model must not reclaim warm processes, count as activity or run account checks.
+    if (isAgModelBlocked(request.model, this.childEnv)) throw new AntigravityError(`Model ${request.model} is blocked on Antigravity runtime`, 400, "invalid_request_error")
     this.lastRequestAt = Date.now()
     if (((request.tools.length && request.tool_choice?.type !== "none") || hasAgImages(request.messages)) && !this.options.allowToolBridge) throw new AntigravityError("Client tools and images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
     const reusable = [...this.runs.values()].find(run => run.matches(request))
@@ -863,9 +851,6 @@ export class AntigravityRuntime {
       await this.initialize()
       // Model discovery may be cached, subscription/provider authorization cannot be.
       await this.verifyAccount()
-      if (isAgModelBlocked(request.model, this.childEnv)) {
-        throw new AntigravityError(`Model ${request.model} is blocked on Antigravity runtime`, 400, "invalid_request_error")
-      }
       const models = await this.availableModels()
       const fallback = !models.includes(request.model) && request.output_config?.effort ? agEffortFallback(request.model, models) : undefined
       const launch = fallback ?? { model: request.model, effort: request.output_config?.effort }
