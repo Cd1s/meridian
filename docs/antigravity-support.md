@@ -95,16 +95,20 @@ or active-resume guarantee. No automatic client-side reconciliation UI is claime
 
 ## Practical execution budgets
 
-`MERIDIAN_AGY_TURN_TIMEOUT_MS` bounds an active CLI turn (default 300,000 ms).
+`MERIDIAN_AGY_TURN_TIMEOUT_MS` bounds one active agy reasoning phase (default
+300,000 ms); it is paused while Meridian waits for client tool results and
+restarted for each continuation. `MERIDIAN_AGY_RUN_MAX_MS` bounds the absolute
+run lifetime (default 1,800,000 ms), including those client waits.
 `MERIDIAN_AGY_TOOL_TIMEOUT_MS` bounds idle waiting for a client result
 (default 60,000 ms); a late result can recover through completed history.
 `MERIDIAN_AGY_MAX_CONCURRENT` bounds concurrent CLI processes (default 4).
 Request/response/attachment buffers are also bounded; see the backend guide.
 
-These controls do not cap the entire multi-turn task's tokens, number of tool
-rounds, or external tool execution duration. Set those in the executing client or
-tool when available. A long shell command belongs to the client's cancellation
-and timeout policy. Cancelling generation does not refund tokens already used.
+The run limit caps elapsed time but does not cap the task's tokens, number of
+tool rounds, or external tool execution duration. Set those in the executing
+client or tool when available. A long shell command belongs to the client's
+cancellation and timeout policy. Cancelling generation does not refund tokens
+already used.
 
 After a CLI version/configuration/model probe fails, Meridian returns an error
 with `Retry-After` and holds new account checks for five seconds. It then requires

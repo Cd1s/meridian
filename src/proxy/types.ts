@@ -16,6 +16,8 @@ export interface AntigravityOptions {
   adaptThinkingBudgets?: boolean
   maxConcurrent?: number
   turnTimeoutMs?: number
+  /** Absolute lifetime limit for one Antigravity run, including tool-result waits. */
+  runMaxMs?: number
   /** Retain matching ordinary conversations in a live official CLI process. */
   reuseConversations?: boolean
   /** Explicit opt-in until an authenticated Windows live gate is available. */
@@ -94,6 +96,7 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
       allowNativeSubagents: process.env.MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS === "1",
       maxConcurrent: process.env.MERIDIAN_AGY_MAX_CONCURRENT === undefined ? undefined : Number(process.env.MERIDIAN_AGY_MAX_CONCURRENT),
       turnTimeoutMs: process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS),
+      runMaxMs: process.env.MERIDIAN_AGY_RUN_MAX_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_RUN_MAX_MS),
       pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
       accountCheckTtlMs: process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS),
       prewarmIdleMs: process.env.MERIDIAN_AGY_PREWARM_IDLE_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_PREWARM_IDLE_MS),
