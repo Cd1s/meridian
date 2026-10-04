@@ -7233,3 +7233,17 @@ PATH controls with a model the fallback CLI supports.
 The wrapper observes the real SDK, and only the owned consumer dependency is
 replaced. It does not rewrite provider output or inspect SDK persistence. See
 [versions, commands, causal failures and limits](docs/maintenance/evidence/1246-claude-path-resolution.md).
+
+## Antigravity catalogs above 128 client tools
+
+For catalog-validation changes, run `scripts/e2e-antigravity-tool-catalog.mjs`
+with actual OpenCode 1.18.30, official agy 1.2.7 and
+`gemini-3.8-flash-high`. Two real stdio MCP servers must advertise 129 or 256
+fixture tools to the client. Require the complete client catalog, a tail tool
+beyond index 127, exactly one target invocation, a tool-only random receipt in
+actual frontend output and the returned client tool result in the next request.
+Both client MCP processes must exit, and backend shutdown must join. Preserve
+invalid-name, duplicate-name and malformed-schema HTTP 400 controls beyond the
+former limit. `E2E_EXPECT_TOOL_LIMIT=1` targets an unchanged baseline;
+`E2E_SERVER_MODULE` selects a built baseline or independently installed package.
+See [versioned proof and limits](docs/maintenance/evidence/1238-antigravity-tool-catalog.md).

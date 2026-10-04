@@ -2,6 +2,24 @@
 
 ## Current continuation — 2026-10-03
 
+#1246 is delivered through [#1250](https://github.com/rynfar/meridian/pull/1250).
+Validated head `29799ce68a72e4f71ce77f9ba965e9d6b5ee0a91` merged as
+`4170a8a7f30c98de99d411321158b41a71098b6f`; exact tree match and maintainer
+credit verified. All six executed CI checks passed, including
+[test](https://github.com/rynfar/meridian/actions/runs/37110676264/job/111167808247).
+Issue #1246 closed through the validated merge. The older pending lead below
+is historical; no release was authorized.
+
+#1238 is accepted on current main with the unsupported Antigravity 128-tool
+catalog cap removed. Published 1.76.5 and final main controls reproduce the
+exact rejection through actual OpenCode 1.18.30. Official agy 1.2.7 and native
+Gemini 3.8 Flash High then pass 129/256 MCP catalogs, actual tail-tool receipts,
+returned client results, negative validations and joined cleanup. The corrected
+129-tool gate also uses an independently unpacked tarball. Local final gates:
+5,154 / 0 / 4 skips, typecheck/build. Final-head CI and merge remain.
+[Durable harness/proof](evidence/1238-antigravity-tool-catalog.md).
+
+
 #1230 is delivered through [#1249](https://github.com/rynfar/meridian/pull/1249),
 validated head `af7a6a4020de4ef3eaae6d6b1abeb6f129e9c400`, merge
 `67a19e50c743942ab0ed62d340d1caf143c6140b`. All six executed final-head
