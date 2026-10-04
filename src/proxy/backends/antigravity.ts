@@ -229,7 +229,11 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           // cancelled process, before any new tool call could reach the client.
           // Native actions cannot be proven side-effect-free, so never replay them.
           const suffix = body.messages.slice(body.messages.findLastIndex(message => message.role === "assistant") + 1)
-          if (status === 499 && !emittedTool && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents && suffix.flatMap(blocks).some(block => block.type === "tool_result")) {
+          // A completed client tool result is safe to replay when agy failed before
+          // delivering the following assistant response. Treat transport, process,
+          // and turn deadline failures alike; the result was already consumed, so
+          // recovery must never dispatch the client tool again.
+          if ((status === 499 || status >= 500) && !emittedTool && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents && suffix.flatMap(blocks).some(block => block.type === "tool_result")) {
             await runtime.recordInterruptedAfterJoin(body, run.settled)
           }
           const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
