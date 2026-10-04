@@ -187,8 +187,7 @@ export class AntigravityRun {
     const schemas = new AgSchemaCompiler()
     for (const tool of request.tools) this.toolValidators.set(tool.name, schemas.compile(tool.input_schema, `Tool ${tool.name}`))
     if (request.output_config?.format) this.outputValidator = schemas.compile(request.output_config.format.schema, "output_config.format.schema")
-    this.runTimer = setTimeout(() => this.abort(new AntigravityError("Antigravity run timed out", 504, "api_error")), runtime.runMaxMs)
-    this.runTimer.unref()
+    this.armRunTimer()
   }
   private prompt(request: AgRequest): string {
     const native = agNativeTools(this.runtime.options)
@@ -270,6 +269,7 @@ export class AntigravityRun {
             if (!this.stopped && this.reusable) {
               this.runtime.completed++
               this.clearTurnTimer()
+              clearTimeout(this.runTimer)
               this.idle = true
               this.queue.push({ kind: "end" })
               this.pendingTimer = setTimeout(() => this.abort(new Error("Idle conversation expired"), "retired"), this.runtime.pendingToolTimeoutMs)
@@ -374,6 +374,7 @@ export class AntigravityRun {
     this.busy = true
     this.idle = false
     clearTimeout(this.pendingTimer)
+    this.armRunTimer()
     this.armTurnTimer()
     const cancel = () => this.abort(new AntigravityError("Request cancelled", 499, "api_error"))
     signal?.addEventListener("abort", cancel, { once: true })
@@ -453,6 +454,13 @@ export class AntigravityRun {
   private signal(signal: NodeJS.Signals): void {
     if (!this.child?.pid) return
     signalAgProcess(this.child, signal)
+  }
+  // The absolute limit bounds one client turn (including its tool loop), not
+  // the life of a reused conversation process: resume() starts a new turn.
+  private armRunTimer(): void {
+    clearTimeout(this.runTimer)
+    this.runTimer = setTimeout(() => this.abort(new AntigravityError("Antigravity run timed out", 504, "api_error")), this.runtime.runMaxMs)
+    this.runTimer.unref()
   }
   private clearTurnTimer(): void { clearTimeout(this.timer); this.timer = undefined }
   private armTurnTimer(): void {
