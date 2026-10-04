@@ -7296,3 +7296,20 @@ native grants and future expiry, then the actual OpenCode client/resume gate.
 public factory with 20 KiB synthetic cookies and a refused 40 KiB control;
 `E2E_EXPECT_HEADER_OVERFLOW=1 E2E_SERVER_MODULE=<baseline bundle>` repeats
 the failure control. No grant/model call is involved in that header probe.
+
+## Responsive contained/wide pages
+
+For layout changes, run `bun scripts/e2e-page-layout-http.mjs` for actual
+settings I/O, instance-key refusal, defaults/invalid/null-reset controls and
+all main/standalone provider HTML stamping. Run
+`bun scripts/e2e-page-layout-live.mjs` for the native browser with 14 owned
+synthetic profiles; it explicitly isolates auth/native-store boundaries and
+forbids model requests. Its `/fixture/frame?width=2560&path=/profiles` supplies
+an exact CSS viewport when outer preview resizing is unavailable. Select wide
+and evaluate `scripts/e2e-page-layout-browser.js` in that frame for actual
+reorder/search/anchor/switch HTTP flows. Test home/Profiles at 375/1280/1920/2560
+and retain a contained comparison. Phone controls use
+`e2e-mobile-header-pricing-tiles.mjs` with an unchanged E2E_BASELINE_ROOT and
+its browser probe at 320/375/414/768/1280; require intact warnings/updates,
+uncut pricing values, no new overflow, reversible provenance fitting and
+unchanged desktop geometry. These UI gates do not require SDK/model generation.

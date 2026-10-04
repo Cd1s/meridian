@@ -2,6 +2,28 @@
 
 ## Current continuation — 2026-10-03
 
+Browser-login #1217 is delivered as 93d6c5c97daf9f21778cf5e6ecf90f12d53f40cb,
+validated head e80b68adc99d2a0e7ccc3f6a86fb7b8ec3b0f94a. All six executed
+final-head CI checks passed, including test run 37174543121/job 111354323110.
+Exact merged tree and Nowaker co-author verified; unchanged #792 a9abcce8
+closed and approval issue #1215 closed. Fresh automatic native re-authentication
+and actual OpenCode/Opus receipt/resume proof supersede the older pending notes.
+
+#1251/#1252 are accepted together with a separate native phone header
+correction. The owner explicitly approved the layout API contract under #1254;
+do not ask again. Isolated branch codex/responsive-layout-1251-1252-20261003,
+worktree /Users/rynfar/repos/meridian-mobile-review-1252, base 93d6c5c9. Six
+authored Nowaker commits retain Author/AuthorDate. Native browser matrices,
+actual app/settings persistence, all HTML routes including standalone provider
+pages, key refusal, reversible fitting, 169 unchanged desktop elements and
+real browser grid reorder/search/anchor/switch flows pass. Final local gates
+5,296 / 0 / 35 platform skips, typecheck/build. Final-head CI/merge remain.
+[Durable review/source maps](evidence/1251-1252-responsive-layout.md).
+The synthetic fixture now explicitly fences host metadata and SDK queries.
+An existing API-profile default native-store metadata fallback is a separate
+follow-up; it is not accepted as synthetic evidence or a layout regression.
+
+
 #1246 is delivered through [#1250](https://github.com/rynfar/meridian/pull/1250).
 Validated head `29799ce68a72e4f71ce77f9ba965e9d6b5ee0a91` merged as
 `4170a8a7f30c98de99d411321158b41a71098b6f`; exact tree match and maintainer
