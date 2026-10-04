@@ -333,6 +333,35 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(events[2].delta.text).toBe("READY")
     expect(events[4].usage.output_tokens).toBe(10)
   })
+  it("populates message_start input tokens from prompt estimate while preserving queue usage on message_delta", async () => {
+    const { send } = fixture()
+    const request = {
+      model: "fixture-model",
+      max_tokens: 200,
+      stream: true,
+      system: "You are an expert pair programming assistant with deep knowledge of systems programming and performance optimizations.",
+      messages: [
+        { role: "user", content: "SKIP_TOOLS: Please inspect the project structure and give an architecture summary." },
+        { role: "assistant", content: "I am ready to summarize the project architecture for you." },
+        { role: "user", content: "SKIP_TOOLS: Include component interactions and error-handling patterns." },
+      ],
+      tools: [
+        tool,
+        { name: "edit", description: "Edit file contents", input_schema: { type: "object", properties: { path: { type: "string" }, edits: { type: "array" } } } },
+      ],
+    }
+    const response = await send(request)
+    expect(response.status).toBe(200)
+    const events = (await response.text()).split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)))
+    expect(events.map(e => e.type)).toEqual(["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop"])
+    const startEvent = events[0]
+    const deltaEvent = events[4]
+    expect(startEvent.message.usage.input_tokens).toBeGreaterThan(0)
+    expect(startEvent.message.usage.output_tokens).toBe(0)
+    expect(deltaEvent.usage.input_tokens).toBe(120)
+    expect(deltaEvent.usage.output_tokens).toBe(10)
+    expect(deltaEvent.usage.cache_read_input_tokens).toBe(20)
+  })
   it("does not report denied actions as a successful response", async () => {
     const { send } = fixture()
     expect((await send({ ...initial("DENIED"), tools: [] })).status).toBe(502)

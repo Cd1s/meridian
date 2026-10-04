@@ -1,6 +1,7 @@
 import { AgCompletedAnswers, agRequestId, replayAgAnswer } from "./antigravityReplay"
 import { AgResponseJobs, agEventStream, responseEvents } from "./antigravityJobs"
 import { estimateAgTokens } from "./antigravityTokens"
+import { estimateRequestInputTokens } from "../replayBudget"
 import { agOpenai } from "./antigravityOpenai"
 import { AgResponseStore, agResponseScope } from "./antigravityResponses"
 import { AgTextStops } from "./antigravityStops"
@@ -164,7 +165,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (tail?.type === "text") tail.text += text
         emit?.("content_block_delta", { type: "content_block_delta", index: content.length - 1, delta: { type: "text_delta", text: text } })
       }
-      emit?.("message_start", { type: "message_start", message: base })
+      emit?.("message_start", { type: "message_start", message: { ...base, usage: { ...base.usage, input_tokens: estimateRequestInputTokens(body) } } })
       try {
         while (true) {
           const event = await run.queue.next()

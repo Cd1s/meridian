@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { contextWindowFor, estimateTokens, replayBudgetFor, replayReserveFor, trimReplayHistory } from "../proxy/replayBudget"
+import { contextWindowFor, estimateRequestInputTokens, estimateTokens, replayBudgetFor, replayReserveFor, trimReplayHistory } from "../proxy/replayBudget"
 
 const user = (content: string) => ({ role: "user", content })
 const assistant = (content: string) => ({ role: "assistant", content })
@@ -68,6 +68,27 @@ describe("replay budget", () => {
     expect(estimateTokens([{ type: "tool_use", name: "read", input: { path: "a" } }])).toBe(estimateTokens('read{"path":"a"}'))
     expect(estimateTokens([{ type: "thinking", thinking: text(100) }, { type: "redacted_thinking" }])).toBe(0)
     expect(estimateTokens(123)).toBe(estimateTokens("123"))
+  })
+  it("estimates prompt input tokens from system, messages and serialized tools", () => {
+    expect(estimateRequestInputTokens()).toBe(0)
+    expect(estimateRequestInputTokens({})).toBe(0)
+    expect(estimateRequestInputTokens({ system: "", messages: [], tools: [] })).toBe(0)
+
+    const system = "You are a helpful assistant."
+    const messages = [
+      { role: "user", content: "Hello world" },
+      { role: "assistant", content: [{ type: "text", text: "Greetings! How can I help?" }] },
+    ]
+    const tools = [{ name: "lookup", input_schema: { type: "object", properties: { key: { type: "string" } } } }]
+
+    const systemTokens = estimateTokens(system)
+    const messagesTokens = estimateTokens("Hello world") + estimateTokens("Greetings! How can I help?")
+    const toolsTokens = estimateTokens(JSON.stringify(tools))
+
+    expect(estimateRequestInputTokens({ system, messages, tools })).toBe(systemTokens + messagesTokens + toolsTokens)
+    expect(estimateRequestInputTokens({ system })).toBe(systemTokens)
+    expect(estimateRequestInputTokens({ messages })).toBe(messagesTokens)
+    expect(estimateRequestInputTokens({ tools })).toBe(toolsTokens)
   })
   it("uses the resolved model's context variant", () => {
     expect(contextWindowFor("opus[1m]")).toBe(1_000_000)

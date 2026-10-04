@@ -143,9 +143,10 @@ describe("fixBunExports (integration)", () => {
     } catch (e) {
       before = e instanceof Error ? e.message : String(e)
     }
-    // Both Node ("Duplicate export") and Bun ("Cannot export a duplicate
-     // name") report the same underlying problem with different wording.
-    expect(before?.toLowerCase()).toContain("duplicate")
+    // Node ("Duplicate export"), older Bun ("Cannot export a duplicate
+    // name") and newer Bun ("Multiple exports with the same name") all
+    // report the same underlying problem with different wording.
+    expect(before?.toLowerCase()).toMatch(/duplicate|multiple exports with the same name/)
 
     const totalFixed = await fixBunExports(tmpDir)
     expect(totalFixed).toBe(1)

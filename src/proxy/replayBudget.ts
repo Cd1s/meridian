@@ -22,6 +22,29 @@ export function estimateTokens(content: unknown): number {
   }, 0)
 }
 
+/** Approximate prompt input tokens: system instructions, conversation messages,
+ *  and tools serialized to JSON, without requiring a tokenizer or subprocess. */
+export function estimateRequestInputTokens(request?: {
+  system?: unknown
+  messages?: Array<{ content?: unknown }>
+  tools?: unknown
+}): number {
+  if (!request) return 0
+  let tokens = 0
+  if (request.system) tokens += estimateTokens(request.system)
+  if (Array.isArray(request.messages)) {
+    for (const message of request.messages) {
+      if (message?.content !== undefined && message?.content !== null) {
+        tokens += estimateTokens(message.content)
+      }
+    }
+  }
+  if (request.tools && (!Array.isArray(request.tools) || request.tools.length > 0)) {
+    tokens += estimateTokens(JSON.stringify(request.tools))
+  }
+  return tokens
+}
+
 export function contextWindowFor(model: string): number {
   return hasExtendedContext(model as ClaudeModel) ? 1_000_000 : 200_000
 }
