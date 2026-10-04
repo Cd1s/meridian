@@ -24,6 +24,7 @@ import { join } from "node:path"
 // local run mean the same thing as a CI run. Tests that need a knob set it
 // themselves, in-process, after this point.
 for (const key of Object.keys(process.env)) {
+  if (key === "MERIDIAN_RESILIENCE_STRICT") continue // opt-in switch for known-red antigravity-resilience cases
   if (key.startsWith("MERIDIAN_") || key.startsWith("CLAUDE_PROXY_")) delete process.env[key]
 }
 
