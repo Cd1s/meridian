@@ -222,6 +222,10 @@ src/
 │   ├── sessionStore.ts        ← Shared file store (cross-proxy session resume)
 │   ├── profiles.ts            ← Multi-profile support: resolve, list, switch auth contexts (leaf)
 │   ├── profileCli.ts          ← CLI commands for profile management (leaf, I/O)
+│   ├── profileConfigStore.ts  ← cross-process profile writer lock and atomic snapshots (leaf, I/O)
+│   ├── profileLogin.ts        ← Browser re-authentication state, redirect/paste completion and status
+│   ├── profileAdd.ts          ← Browser profile creation and isolated credential persistence
+│   ├── profileOAuthBody.ts    ← Runtime schemas for browser OAuth request bodies (pure)
 │   ├── statusProbe.ts         ← Asks a busy port whether it is Meridian, and collects what / shows
 │   ├── agentDefs.ts           ← Subagent definition extraction from tool descriptions
 │   ├── agentMatch.ts          ← Fuzzy agent name matching
@@ -246,6 +250,7 @@ src/
 │   ├── pricingStore.ts        ← User pricing overrides (persisted JSON)
 │   ├── profileBar.ts          ← Shared profile switcher bar (injected into HTML pages)
 │   ├── profilePage.ts         ← Profile management page HTML
+│   ├── pageLayout.ts          ← Contained/wide layout setting, stamped on each page as it is served
 │   ├── cliDashboard.ts        ← The landing page rendered for a terminal (pure)
 │   └── types.ts               ← Telemetry types
 

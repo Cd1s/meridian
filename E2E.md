@@ -7233,3 +7233,105 @@ PATH controls with a model the fallback CLI supports.
 The wrapper observes the real SDK, and only the owned consumer dependency is
 replaced. It does not rewrite provider output or inspect SDK persistence. See
 [versions, commands, causal failures and limits](docs/maintenance/evidence/1246-claude-path-resolution.md).
+
+## Antigravity catalogs above 128 client tools
+
+For catalog-validation changes, run `scripts/e2e-antigravity-tool-catalog.mjs`
+with actual OpenCode 1.18.30, official agy 1.2.7 and
+`gemini-3.8-flash-high`. Two real stdio MCP servers must advertise 129 or 256
+fixture tools to the client. Require the complete client catalog, a tail tool
+beyond index 127, exactly one target invocation, a tool-only random receipt in
+actual frontend output and the returned client tool result in the next request.
+Both client MCP processes must exit, and backend shutdown must join. Preserve
+invalid-name, duplicate-name and malformed-schema HTTP 400 controls beyond the
+former limit. `E2E_EXPECT_TOOL_LIMIT=1` targets an unchanged baseline;
+`E2E_SERVER_MODULE` selects a built baseline or independently installed package.
+See [versioned proof and limits](docs/maintenance/evidence/1238-antigravity-tool-catalog.md).
+
+## Browser account login (#792)
+
+Run `bun scripts/e2e-profile-login-live.mjs`, open its loopback `/profiles`
+page, and complete **Add a profile** with a real Claude account. Keep the
+returned code in the page, never in command arguments, logs or the evidence
+record. The harness uses isolated Meridian/session/credential directories
+and intentionally starts the HTTP application without the host default
+credential-refresh scheduler. After building, run `E2E_PROFILE_CLAUDE_DIR=<published directory>
+E2E_PLUGIN_PATH=<independent installed scrub entrypoint> bun
+scripts/e2e-profile-login-client.mjs` to verify the new account through an
+actual headless client, then
+re-authenticate that account from its card. A synthetic grant does not satisfy
+this live gate.
+
+Independent regressions require no live account:
+
+- `bun scripts/e2e-profile-native-store.mjs`: synthetic-grant round trip through
+  actual macOS Keychain or Linux credential-file storage; cleans its own item.
+- Build `src/proxy/profileCli.ts` for Node, set `E2E_PROFILE_CLI_BUNDLE` to that
+  bundle, then run `node scripts/e2e-profile-creation-concurrent.mjs`. Repeat
+  with `E2E_PROFILE_RACE_MODE=same`. Two independent processes must preserve
+  both distinct accounts, and only one may create a shared name.
+- Build `src/proxy/tokenRefresh.ts` for Node, set
+  `E2E_CREDENTIAL_STORE_BUNDLE` to that bundle, then run
+  `node scripts/e2e-keychain-write-log.mjs`. The controlled failed command must
+  report failure without logging its synthetic password arguments.
+- `bun scripts/e2e-profile-login-page.mjs` serves the actual profile page with
+  synthetic API replies for browser inspection, including valid IDs
+  `__proto__` and `constructor`. `E2E_PAGE_ROOT` selects an older source tree
+  for the before control. This fixture is not OAuth or live-model evidence.
+
+Profile add/remove/rename writers now share `profiles.json.lock` and atomically
+publish mode-0600 snapshots. An interrupted writer leaves its lock in place:
+stop every writer before manually removing that specific lock. Never recover
+it solely because it is old; an active slow writer still owns its snapshot.
+
+For owned existing-account re-authentication through native Node ingress, build
+first, then run `E2E_EXISTING_ROOT=<owned fixture> E2E_PROFILE_ID=<owned id>
+E2E_PORT=<unused port> node scripts/e2e-profile-login-node-live.mjs`. Open its
+Profiles page and authorize in the browser. Run the native-grant harness with
+the same root/id and `E2E_GRANT_ACTION=capture` before authorization, then
+`E2E_GRANT_ACTION=verify` afterward. The mode-0600 before control is private;
+never attach it or OAuth URLs/codes. Require unchanged profile mapping, changed
+native grants and future expiry, then the actual OpenCode client/resume gate.
+`node scripts/e2e-profile-login-header-limit.mjs` separately exercises the
+public factory with 20 KiB synthetic cookies and a refused 40 KiB control;
+`E2E_EXPECT_HEADER_OVERFLOW=1 E2E_SERVER_MODULE=<baseline bundle>` repeats
+the failure control. No grant/model call is involved in that header probe.
+
+## Responsive contained/wide pages
+
+For layout changes, run `bun scripts/e2e-page-layout-http.mjs` for actual
+settings I/O, instance-key refusal, defaults/invalid/null-reset controls and
+all main/standalone provider HTML stamping. Run
+`bun scripts/e2e-page-layout-live.mjs` for the native browser with 14 owned
+synthetic profiles; it explicitly isolates auth/native-store boundaries and
+forbids model requests. Its `/fixture/frame?width=2560&path=/profiles` supplies
+an exact CSS viewport when outer preview resizing is unavailable. Select wide
+and evaluate `scripts/e2e-page-layout-browser.js` in that frame for actual
+reorder/search/anchor/switch HTTP flows. Test home/Profiles at 375/1280/1920/2560
+and retain a contained comparison. Phone controls use
+`e2e-mobile-header-pricing-tiles.mjs` with an unchanged E2E_BASELINE_ROOT and
+its browser probe at 320/375/414/768/1280; require intact warnings/updates,
+uncut pricing values, no new overflow, reversible provenance fitting and
+unchanged desktop geometry. These UI gates do not require SDK/model generation.
+
+## Proposed SQLite migration retirement review
+
+For #1243, use `scripts/e2e-session-store-retirement-review.mjs` with explicit
+E2E_STORE_DATABASE_MODULE and exact E2E_SOURCE_SHA for the reviewed source.
+Default mode asserts that an older writer's unimported atomic replacement
+stays active. E2E_EXPECT_RETIREMENT_RACE=1 records the defective source control
+as REPRODUCED_UNSAFE_RETIREMENT; its zero exit is not acceptance of a fix.
+See docs/maintenance/evidence/1243-migration-retirement-review.md for the real
+filesystem boundary and outstanding migration/parent gates.
+
+## Profile credential metadata isolation
+
+Run `bun scripts/e2e-profile-credential-isolation.mjs` for actual HTTP + CLI
+auth-status + owned native Keychain/file data, with SDK/model requests fenced.
+`E2E_SOURCE_ROOT=<unchanged tree> E2E_SOURCE_SHA=<exact head>
+E2E_EXPECT_METADATA_LEAK=1` repeats the defective native-metadata control.
+API profiles must make zero stored-OAuth metadata reads and stay governed by
+their own auth status. A synthetic API key recognition is not inference-key
+validation. The separately isolated HTTP regression file checks supplied setup
+tokens and preserves stored subscription plan, renewal and missing-token rules.
+See [bounded proof](docs/maintenance/evidence/1257-profile-credential-isolation.md).
