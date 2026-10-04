@@ -7313,3 +7313,13 @@ and retain a contained comparison. Phone controls use
 its browser probe at 320/375/414/768/1280; require intact warnings/updates,
 uncut pricing values, no new overflow, reversible provenance fitting and
 unchanged desktop geometry. These UI gates do not require SDK/model generation.
+
+## Proposed SQLite migration retirement review
+
+For #1243, use `scripts/e2e-session-store-retirement-review.mjs` with explicit
+E2E_STORE_DATABASE_MODULE and exact E2E_SOURCE_SHA for the reviewed source.
+Default mode asserts that an older writer's unimported atomic replacement
+stays active. E2E_EXPECT_RETIREMENT_RACE=1 records the defective source control
+as REPRODUCED_UNSAFE_RETIREMENT; its zero exit is not acceptance of a fix.
+See docs/maintenance/evidence/1243-migration-retirement-review.md for the real
+filesystem boundary and outstanding migration/parent gates.

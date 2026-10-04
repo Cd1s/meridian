@@ -9,20 +9,37 @@ Exact merged tree and Nowaker co-author verified; unchanged #792 a9abcce8
 closed and approval issue #1215 closed. Fresh automatic native re-authentication
 and actual OpenCode/Opus receipt/resume proof supersede the older pending notes.
 
-#1251/#1252 are accepted together with a separate native phone header
-correction. The owner explicitly approved the layout API contract under #1254;
-do not ask again. Isolated branch codex/responsive-layout-1251-1252-20261003,
-worktree /Users/rynfar/repos/meridian-mobile-review-1252, base 93d6c5c9. Six
-authored Nowaker commits retain Author/AuthorDate. Native browser matrices,
-actual app/settings persistence, all HTML routes including standalone provider
-pages, key refusal, reversible fitting, 169 unchanged desktop elements and
-real browser grid reorder/search/anchor/switch flows pass. Final local gates
-5,296 / 0 / 35 platform skips, typecheck/build. Final-head CI/merge remain.
-[Durable review/source maps](evidence/1251-1252-responsive-layout.md).
-The synthetic fixture now explicitly fences host metadata and SDK queries.
-An existing API-profile default native-store metadata fallback is a separate
-follow-up; it is not accepted as synthetic evidence or a layout regression.
+#1251/#1252 are delivered through [#1255](https://github.com/rynfar/meridian/pull/1255).
+Validated head cc8b0634cf2369ee4c2e07b54b36065fd1996be8 merged as
+240287e809cb57f675e7919de76f6d867a3d3352; exact tree
+edffe0fb5327863fe006600fe524a3fb50bd4040 and Nowaker co-author verified.
+All six executed final-head checks passed, including test run
+37176043204/job 111358731010. Final local gates 5,296 / 0 / 35 platform skips,
+typecheck/build. The owner approved the layout API contract under #1254;
+issue closed. Both unchanged source heads (1251 74ac9017, 1252 3d02224d)
+were refreshed and closed after delivery. Native browser matrices, actual
+settings persistence, authenticated API controls, every HTML route including
+standalone provider pages, reversible phone fitting, 169 unchanged desktop
+elements and real browser grid flows pass. [Durable review/source maps](evidence/1251-1252-responsive-layout.md).
 
+The #1243 retirement fault now has a maintained credentialless harness and
+[bounded review record](evidence/1243-migration-retirement-review.md). Exact
+source 6558c209f8bddf8e59b554d16c9834381c7817c2 still retires an unimported
+older-writer replacement. Expected-hazard mode is a negative control, not fix
+acceptance; parent #1245/cache and full migration acceptance remain open.
+
+Paginated owner and both accessible organization repository discovery was
+refreshed after the layout merge. The same six managed repositories are in
+scope; no additional managed scrub repo appeared. Meridian has 18 open PRs
+and 11 open issues; OpenCode scrub has #18 plus release #20, Pi scrub release
+#15, and the other three scrubs have no open PRs/issues. Separate release
+approval remains absent. Existing dispositions below continue to apply to
+unchanged sources; release heads are live leads, never permission to publish.
+
+An existing API-profile default native-store metadata fallback exposed by the
+owned UI fixture is under independent investigation. The layout fixture
+explicitly fences native metadata and SDK generation; its corrected proof
+never uses host account data.
 
 #1246 is delivered through [#1250](https://github.com/rynfar/meridian/pull/1250).
 Validated head `29799ce68a72e4f71ce77f9ba965e9d6b5ee0a91` merged as
@@ -41,28 +58,6 @@ issue #1238 is closed. Official agy 1.2.7 / actual OpenCode 1.18.30 / native
 Gemini 3.8 Flash High pass 129/256 MCP catalogs, tail-tool receipts, client
 results, negative controls and joined cleanup. Final local 5,154 / 0 / 4 skips,
 typecheck/build. [Durable proof](evidence/1238-antigravity-tool-catalog.md).
-
-Browser-login #1217 / source #792 now has fresh automatic existing-account
-re-authentication and actual post-grant OpenCode/Opus 5.5 receipt/resume proof.
-The real blank callback was Node header overflow from localhost cookies; a
-finite 32 KiB ingress budget accepts them while 40 KiB remains refused. Claude
-also rewrites IPv4 redirects to localhost; minting/storing the canonical
-localhost address fixes exchange consistency. Both real native browser
-parameter comparisons are retained without OAuth values. Final source rebuilt
-from a9abcce8 onto e2b09669b with all four original Author/AuthorDates intact;
-separate corrections remain. Current isolated branch
-codex/browser-login-current-source-792-20261003, worktree
-/Users/rynfar/repos/meridian-browser-login-finalize-792. Final local gates pass 5,273 / 0 / 35 platform skips across 17 stages,
-standalone typecheck/build and current Node header harness pass. Updated
-integration head/CI and merge remain.
-[Proof and source mappings](evidence/792-browser-account-login.md).
-
-Newly discovered Nowaker #1251 (74ac9017) adds a layout settings API: public
-contract approval and a tracking issue remain required before modification.
-#1252 (3d02224d) phone pricing/header/spacing is independently under review
-from e2b09669b. Native preview outer resizing currently times out; the owned
-same-origin fixture frame supplies real exact CSS viewports without another
-browser. No release or community messages are authorized.
 
 #1230 is delivered through [#1249](https://github.com/rynfar/meridian/pull/1249),
 validated head `af7a6a4020de4ef3eaae6d6b1abeb6f129e9c400`, merge
