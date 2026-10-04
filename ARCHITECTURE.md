@@ -297,7 +297,13 @@ server.ts (HTTP layer)
 
 3. **`errors.ts`, `retryAfter.ts`, `models.ts`, `tools.ts`, `messages.ts`, `profiles.ts`, `profileCli.ts`, `buildInfo.ts`, `updateCheck.ts` are leaf modules.** They must not import from `server.ts`, `session/`, or `adapter.ts`. `buildInfo.ts` and `retryAfter.ts` are additionally pure — every export is a function of its arguments (plus `process.env` for `buildInfo.ts`), so the registry I/O lives in `updateCheck.ts` instead.
 
-4. **`server.ts` is the only module that imports from Hono** or touches HTTP concerns.
+4. **`server.ts` owns Hono route registration and orchestration.** Hono
+   middleware stays at the proxy boundary. Standard `Request`/`Response`
+   dispatch lives in the provider backend where needed. Shared
+   `src/headerSettings.ts` handles only hostname settings validation, Origin
+   policy and persisted consent, using standard web types and `settings.ts`;
+   it must not import a server, provider, Hono or session module. Backend auth
+   remains at each caller's existing boundary.
 
 5. **No circular dependencies.** If you need to share types, put them in `types.ts` or the relevant leaf module.
 

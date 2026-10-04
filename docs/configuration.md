@@ -301,8 +301,9 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `POST /profiles/add/complete` | Finish that creation — writes the profile only once Anthropic returns credentials |
 | `GET /v1/usage/quota` | Usage windows for the active profile (JSON) |
 | `GET /v1/usage/quota/all` | Usage windows for every profile (JSON) |
-| `GET /settings` | Routing, SDK feature toggles, model pricing, telemetry storage, update-check and page layout UI |
+| `GET /settings` | Routing, SDK feature toggles, model pricing, telemetry storage, update-check, site-header and page layout UI |
 | `GET/PUT /settings/api/updates` | Read or set `checkForUpdates` (JSON `{"checkForUpdates": true}`); takes effect on the running proxy |
+| `GET/PUT /settings/api/header` | Read or set `showHostname` (JSON `{"showHostname": true}`): name the machine beside the header's status; takes effect on the running proxy |
 | `GET/PUT /settings/api/layout` | Read or set the web pages' `layout`: `contained` (default, a centered column) or `wide` (spans the window, more cards per row). JSON `{"layout": "wide"}`, `null` to unset; applies on the next page load |
 | `GET /plugins` | Plugin management page (`/plugins/list`, `POST /plugins/reload` for JSON/actions) |
 
@@ -320,6 +321,34 @@ Illustrative health response excerpt (versions and status vary by installation):
 ```
 
 `plugin.opencode` is `"configured"` when `meridian setup` has been run, `"not-configured"` otherwise.
+
+With `"showHostname": true` in `settings.json` (or the switch under **Site
+Header** at `/settings`), `/health` also carries `"hostname"`, the machine's
+name as the OS reports it, and the site header shows it beside the status, e.g.
+`Operational · nwkr-desktop`. It is off by default because `/health` answers
+without the API key.
+
+This applies to Claude and standalone Antigravity health, including unhealthy
+and draining responses; their status codes and other fields stay intact.
+`/livez` and `/readyz` do not disclose the hostname. The header shows the first
+DNS label (or a whole IP address), with the complete name in its tooltip.
+
+`GET /settings/api/header` returns `{ "showHostname": false, "hostname":
+"<OS name>" }` when off. `PUT` accepts a boolean, `null` to remove the saved
+field, or an omitted field to preserve it; invalid values or bodies return
+400. Both routes use the existing `MERIDIAN_API_KEY` gate when configured.
+Health and header settings bypass caches, and disabling takes effect on
+responses assembled after the setting changes, including probes already
+waiting for auth. The UI permits one hostname save at a time and ignores
+older health polls when a newer refresh has started.
+
+Browser writes must originate from this server. HTTPS origins are also
+accepted across an internal HTTP TLS-termination hop with the same preserved
+public Host/port; explicit default 443 is equivalent to omitted HTTPS 443.
+Foreign, opaque, malformed or different-port origins return 403. Forwarding
+headers are not trusted. A reverse proxy that rewrites Host must preserve the
+public Host for this route. CLI writes without an `Origin` header continue to
+work through the API-key gate.
 
 ## Error reporting
 
