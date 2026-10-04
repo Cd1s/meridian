@@ -13,14 +13,16 @@ function fixture(options = {}) {
   const runtime = new AntigravityRuntime({ executable, reuseConversations: false, allowToolBridge: true, turnTimeoutMs: 10000, ...options })
   const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: 'antigravity' }, runtime)
   closing.push(server.closeBackend)
-  const send = (body: unknown, signal?: AbortSignal) => server.app.fetch(new Request('http://local/v1/messages', { method: 'POST', body: JSON.stringify(body), signal }))
+  const send = async (body: unknown, signal?: AbortSignal) => server.app.fetch(new Request('http://local/v1/messages', { method: 'POST', body: JSON.stringify(body), signal }))
   return { runtime, server, send }
 }
 type Block = { type: string; id?: string; text?: string }
 type Reply = { stop_reason: string; content: Block[] }
 const tool = { name: 'lookup', input_schema: { type: 'object', properties: { key: { type: 'string' } } } }
-const initial = (content: string, extra = {}) => ({ model: 'fixture-model', max_tokens: 100, messages: [{ role: 'user', content }], tools: [tool], ...extra })
-const followup = (request: ReturnType<typeof initial>, reply: Reply, content = 'receipt') => ({ ...request, messages: [...request.messages, { role: 'assistant', content: reply.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: reply.content.find(b => b.type === 'tool_use')!.id, content }] }] })
+type Message = { role: string; content: unknown }
+type Body = { model: string; max_tokens: number; messages: Message[]; tools: unknown[]; [key: string]: unknown }
+const initial = (content: string, extra = {}): Body => ({ model: 'fixture-model', max_tokens: 100, messages: [{ role: 'user', content }], tools: [tool], ...extra })
+const followup = (request: Body, reply: Reply, content = 'receipt'): Body => ({ ...request, messages: [...request.messages, { role: 'assistant', content: reply.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: reply.content.find(b => b.type === 'tool_use')!.id, content }] }] })
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const sse = (text: string) => text.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
 const describeKnownRed = process.env.MERIDIAN_RESILIENCE_STRICT ? describe : describe.skip
