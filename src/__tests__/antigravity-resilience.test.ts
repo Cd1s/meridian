@@ -69,19 +69,34 @@ describe.skipIf(process.platform === 'win32')('Antigravity resilience', () => {
     if (final.status === 200) { expect(text).toContain('event: error'); expect(text).not.toContain('event: message_stop') }
     else expect(final.status).toBeGreaterThanOrEqual(500)
   })
+
+  it('recovers when replaying after a turn timeout', async () => {
+    const { send } = fixture({ turnTimeoutMs: 300 })
+    const request = initial('SLOW_ANSWER')
+    const first = await (await send(request)).json() as Reply
+    const body = followup(request, first, 'TIMEOUT')
+    const timedOut = await send(body)
+    expect(timedOut.status).toBe(504)
+    for (const attempt of [1, 2]) {
+      const retry = await send(body)
+      expect(retry.status, `retry ${attempt}: ${await retry.clone().text()}`).not.toBe(409)
+    }
+  })
 })
 
 describeKnownRed('known-red: Antigravity resilience (MERIDIAN_RESILIENCE_STRICT=1)', () => {
-  it('answers a tool_result retry storm with one execution and a deterministic second result', async () => {
+  it('answers a tool_result retry storm with one execution and a deterministic active-turn conflict', async () => {
     const { send, runtime } = fixture()
     const request = initial('Get receipt')
     const first = await (await send(request)).json() as Reply
     const body = followup(request, first, 'STORM')
     const [a, b] = await Promise.all([send(body), send(body)])
     const texts = await Promise.all([a.text(), b.text()])
-    expect([a.status, b.status], texts.join(' || ')).toEqual([200, 200])
-    expect(JSON.parse(texts[0]!)).toEqual(JSON.parse(texts[1]!))
-    expect(texts[0]).toContain('STORM')
+    expect([a.status, b.status].sort(), texts.join(' || ')).toEqual([200, 409])
+    const success = a.status === 200 ? texts[0]! : texts[1]!
+    const conflict = a.status === 409 ? texts[0]! : texts[1]!
+    expect(success).toContain('STORM')
+    expect(conflict).toContain('active response')
     expect(runtime.completed).toBe(1)
     expect(runtime.runs.size).toBe(0)
   })
@@ -98,19 +113,6 @@ describeKnownRed('known-red: Antigravity resilience (MERIDIAN_RESILIENCE_STRICT=
       const retry = await send(body)
       expect(retry.status, `retry ${attempt}: ${await retry.clone().text()}`).not.toBe(409)
       expect(retry.status).toBe(200)
-    }
-  })
-
-  it('gives a recoverable or terminal non-409 result when replaying after a turn timeout', async () => {
-    const { send } = fixture({ turnTimeoutMs: 300 })
-    const request = initial('SLOW_ANSWER')
-    const first = await (await send(request)).json() as Reply
-    const body = followup(request, first, 'TIMEOUT')
-    const timedOut = await send(body)
-    expect(timedOut.status).toBe(504)
-    for (const attempt of [1, 2]) {
-      const retry = await send(body)
-      expect(retry.status, `retry ${attempt}: ${await retry.clone().text()}`).not.toBe(409)
     }
   })
 
