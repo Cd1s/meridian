@@ -207,7 +207,8 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_ALLOW_NATIVE_SUBAGENTS` | off | Guarded native self/research subagent opt-in |
 | `MERIDIAN_AGY_WHISPER_MODEL` | unset | Local whisper.cpp model for audio transcription |
 | `MERIDIAN_AGY_MAX_CONCURRENT` | `4` | Maximum live processes; idle pending tools can yield capacity |
-| `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Per-turn deadline, including preprocessing and tool waits |
+| `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Deadline for one active agy reasoning phase; reset when a tool-result continuation resumes agy |
+| `MERIDIAN_AGY_RUN_MAX_MS` | `1800000` | Absolute lifetime limit for one run, including client tool-result waits |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending result deadline and completed-conversation idle retention |
 
 Capacity exhaustion returns 429 with `Retry-After`. No unbounded request queue
@@ -216,7 +217,7 @@ Prompts use stdin to avoid OS argument-size limits. Shutdown terminates owned
 process groups and closes the MCP listener.
 
 Embedders can set `backend: "antigravity"` and `antigravity: { executable,
-allowToolBridge, maxConcurrent, turnTimeoutMs, pendingToolTimeoutMs }` on
+allowToolBridge, maxConcurrent, turnTimeoutMs, runMaxMs, pendingToolTimeoutMs }` on
 `startProxyServer`. Call `ProxyInstance.close()` to release resources. Direct
 `createProxyServer().app.fetch` embedders must call the optional
 `closeBackend()` when finished.

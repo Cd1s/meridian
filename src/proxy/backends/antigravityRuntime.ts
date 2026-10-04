@@ -49,7 +49,11 @@ function reply(res: ServerResponse, status: number, value: unknown) {
 
 
 function agRunArgs(runtime: AntigravityRuntime, workspace: string, model: string, effort: string | undefined, skipPermissions: boolean, conversationId?: string, schemaPath?: string): string[] {
-  const args = [...(conversationId ? ["--conversation", conversationId] : ["--new-project"]), "--add-dir", workspace, "--input-format", "stream-json", "--model", model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(runtime.turnTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
+  // agy's print timeout guards the lifetime of its stream-json print session.
+  // Meridian enforces the shorter per-turn deadline; keep the CLI guard at or
+  // above the absolute run limit so it cannot preempt our phase semantics.
+  const printTimeoutMs = Math.max(runtime.turnTimeoutMs, runtime.runMaxMs)
+  const args = [...(conversationId ? ["--conversation", conversationId] : ["--new-project"]), "--add-dir", workspace, "--input-format", "stream-json", "--model", model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(printTimeoutMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
   if (schemaPath) args.push("--json-schema", schemaPath)
   if (effort) args.push("--effort", effort)
   if (skipPermissions) args.push("--dangerously-skip-permissions")
@@ -163,6 +167,7 @@ export class AntigravityRun {
   private exited = false
   private cleaning?: Promise<void>
   private timer?: ReturnType<typeof setTimeout>
+  private runTimer?: ReturnType<typeof setTimeout>
   private pendingTimer?: ReturnType<typeof setTimeout>
   private killTimer?: ReturnType<typeof setTimeout>
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
@@ -182,14 +187,14 @@ export class AntigravityRun {
     const schemas = new AgSchemaCompiler()
     for (const tool of request.tools) this.toolValidators.set(tool.name, schemas.compile(tool.input_schema, `Tool ${tool.name}`))
     if (request.output_config?.format) this.outputValidator = schemas.compile(request.output_config.format.schema, "output_config.format.schema")
+    this.armRunTimer()
   }
   private prompt(request: AgRequest): string {
     const native = agNativeTools(this.runtime.options)
     return renderAgPrompt(request, native) + (this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : "")
   }
   async start(): Promise<void> {
-      this.timer = setTimeout(() => this.abort(new AntigravityError("Antigravity turn timed out", 504, "api_error")), this.runtime.turnTimeoutMs)
-      this.timer.unref()
+    this.armTurnTimer()
     let spare: AgSpare | undefined
     try {
       await this.grammars.prepare()
@@ -263,7 +268,8 @@ export class AntigravityRun {
             }
             if (!this.stopped && this.reusable) {
               this.runtime.completed++
-              clearTimeout(this.timer)
+              this.clearTurnTimer()
+              clearTimeout(this.runTimer)
               this.idle = true
               this.queue.push({ kind: "end" })
               this.pendingTimer = setTimeout(() => this.abort(new Error("Idle conversation expired"), "retired"), this.runtime.pendingToolTimeoutMs)
@@ -368,8 +374,8 @@ export class AntigravityRun {
     this.busy = true
     this.idle = false
     clearTimeout(this.pendingTimer)
-    this.timer = setTimeout(() => this.abort(new AntigravityError("Antigravity turn timed out", 504, "api_error")), this.runtime.turnTimeoutMs)
-    this.timer.unref()
+    this.armRunTimer()
+    this.armTurnTimer()
     const cancel = () => this.abort(new AntigravityError("Request cancelled", 499, "api_error"))
     signal?.addEventListener("abort", cancel, { once: true })
     if (signal?.aborted) cancel()
@@ -389,6 +395,9 @@ export class AntigravityRun {
   }
   markDelivered(calls: AgCall[]): void {
     this.delivered = calls
+    // Once a client tool is emitted, agy is waiting for the client. That wait
+    // is bounded separately and must not consume the active turn deadline.
+    this.clearTurnTimer()
     this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; completed history can be replayed", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
     this.pendingTimer.unref()
   }
@@ -410,6 +419,7 @@ export class AntigravityRun {
     const messages = await this.attachments!.messages(clientMessages)
     if (this.stopped || results.some(result => !this.pending.has(result.tool_use_id))) throw new AntigravityError("Tool result was not requested by this turn", 409)
     clearTimeout(this.pendingTimer)
+    this.armTurnTimer()
     this.delivered = []
     for (let index = 0; index < results.length; index++) {
       const result = results[index]!
@@ -434,7 +444,7 @@ export class AntigravityRun {
     this.queue.fail(error)
     for (const [id, pending] of this.pending) { this.runtime.toolOwners.delete(id); pending.reject(error) }
     this.pending.clear()
-    clearTimeout(this.timer); clearTimeout(this.pendingTimer)
+    clearTimeout(this.timer); clearTimeout(this.runTimer); clearTimeout(this.pendingTimer)
     if (this.child?.pid && !this.exited) {
       this.signal("SIGTERM")
       this.killTimer = setTimeout(() => this.signal("SIGKILL"), 1000)
@@ -445,13 +455,26 @@ export class AntigravityRun {
     if (!this.child?.pid) return
     signalAgProcess(this.child, signal)
   }
+  // The absolute limit bounds one client turn (including its tool loop), not
+  // the life of a reused conversation process: resume() starts a new turn.
+  private armRunTimer(): void {
+    clearTimeout(this.runTimer)
+    this.runTimer = setTimeout(() => this.abort(new AntigravityError("Antigravity run timed out", 504, "api_error")), this.runtime.runMaxMs)
+    this.runTimer.unref()
+  }
+  private clearTurnTimer(): void { clearTimeout(this.timer); this.timer = undefined }
+  private armTurnTimer(): void {
+    this.clearTurnTimer()
+    this.timer = setTimeout(() => this.abort(new AntigravityError("Antigravity turn timed out", 504, "api_error")), this.runtime.turnTimeoutMs)
+    this.timer.unref()
+  }
   private stateFailure(error: unknown) { this.runtime.stateError = String(error); console.error("[antigravity] Workspace retention failed:", String(error)) }
   private cleanup(): Promise<void> {
     this.cleaning ??= this.cleanupOnce()
     return this.cleaning
   }
   private async cleanupOnce(): Promise<void> {
-    clearTimeout(this.timer); clearTimeout(this.pendingTimer); clearTimeout(this.killTimer)
+    clearTimeout(this.timer); clearTimeout(this.runTimer); clearTimeout(this.pendingTimer); clearTimeout(this.killTimer)
     this.runtime.settling.add(this.settled)
     this.runtime.runs.delete(this.id)
     if (this.spareId) this.runtime.mcpAliases.delete(this.spareId)
@@ -508,6 +531,7 @@ export class AntigravityRuntime {
   readonly settling = new Set<Promise<void>>()
   readonly executable: string
   readonly turnTimeoutMs: number
+  readonly runMaxMs: number
   readonly pendingToolTimeoutMs: number
   readonly accountCheckTtlMs: number
   readonly prewarmIdleMs: number
@@ -599,8 +623,9 @@ export class AntigravityRuntime {
     this.executable = options.executable ?? "agy"
     this.maxConcurrent = options.maxConcurrent ?? 4
     this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000
+    this.runMaxMs = options.runMaxMs ?? 1_800_000
     this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
-    for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
+    for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.runMaxMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
     this.accountCheckTtlMs = options.accountCheckTtlMs ?? 0
     if (!Number.isSafeInteger(this.accountCheckTtlMs) || this.accountCheckTtlMs < 0 || this.accountCheckTtlMs > 600_000) throw new Error("Antigravity account check TTL must be an integer from 0 to 600000 ms")
     // Fork patch: pre-started agy processes; off unless prewarmIdleMs is set.

@@ -456,6 +456,39 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     await Promise.all([...runtime.runs.values()].map(run => run.settled))
     expect(runtime.runs.size).toBe(0)
   })
+  it("terminates a timed-out stream with an SSE error event", async () => {
+    const { send } = fixture({ turnTimeoutMs: 100 })
+    const response = await send({ ...initial("HANG"), tools: [], stream: true })
+    const sse = await response.text()
+    expect(sse).toContain("event: error")
+    expect(sse).toContain("Antigravity turn timed out")
+    expect(sse).not.toContain("event: message_stop")
+  })
+  it("starts a fresh turn deadline after each tool continuation", async () => {
+    const { send, runtime } = fixture({ reuseConversations: true, turnTimeoutMs: 200, pendingToolTimeoutMs: 1_000 })
+    const request = initial("NEXT_TOOL")
+    const first = await decode(await send(request))
+    expect(first.stop_reason).toBe("tool_use")
+    await new Promise(resolve => setTimeout(resolve, 250))
+    const firstCall = first.content.find(block => block.type === "tool_use")!
+    const secondRequest = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: firstCall.id, content: "first" }] }] }
+    const second = await decode(await send(secondRequest))
+    expect(second.stop_reason).toBe("tool_use")
+    await new Promise(resolve => setTimeout(resolve, 250))
+    const secondCall = second.content.find(block => block.type === "tool_use")!
+    const third = await decode(await send({ ...secondRequest, messages: [...secondRequest.messages, { role: "assistant", content: second.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: secondCall.id, content: "second" }] }] }))
+    expect(third.stop_reason).toBe("end_turn")
+    expect(third.content[0]?.text).toContain("first")
+    expect(runtime.failed).toBe(0)
+    expect(runtime.requests.some(exchange => exchange.status === 504)).toBe(false)
+  })
+  it("enforces an absolute run deadline after a CLI produces a result", async () => {
+    const { send, runtime } = fixture({ turnTimeoutMs: 1_000, runMaxMs: 150 })
+    const response = await send({ ...initial("LINGER"), tools: [] })
+    expect(response.status).toBe(504)
+    expect(await response.text()).toContain("Antigravity run timed out")
+    await Promise.all([...runtime.runs.values()].map(run => run.settled))
+  })
   it("rejects malformed CLI output instead of emitting success", async () => {
     const { send } = fixture()
     expect((await send({ ...initial("MALFORMED"), tools: [] })).status).toBe(502)

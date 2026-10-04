@@ -267,7 +267,15 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         const heartbeat = setInterval(() => { try { emit("ping", { type: "ping" }) } catch (error) { run.abort(error instanceof Error ? error : new Error(String(error))) } }, 10000)
         heartbeat.unref()
         void consume(emit).catch(error => {
-          emit("error", { type: "error", error: { type: error instanceof AntigravityError ? error.type : "api_error", message: String(error instanceof Error ? error.message : error), retry_after: error instanceof AntigravityError ? error.retryAfter : undefined } })
+          if (cancelled) return
+          try {
+            emit("error", { type: "error", error: { type: error instanceof AntigravityError ? error.type : "api_error", message: String(error instanceof Error ? error.message : error), retry_after: error instanceof AntigravityError ? error.retryAfter : undefined } })
+          } catch (emitError) {
+            // A disconnected/backpressured client cannot receive an SSE
+            // terminal event. Keep the stream in an errored state rather than
+            // leaving the controller open and leaking the run.
+            if (!cancelled) { cancelled = true; controller.error(emitError) }
+          }
         }).finally(() => { clearInterval(heartbeat); if (!cancelled) controller.close() })
       },
       cancel() { cancelled = true; cancel() },
