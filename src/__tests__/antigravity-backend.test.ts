@@ -85,6 +85,18 @@ describe("Antigravity request contract", () => {
     expect(parseAgRequest({ ...original, thinking: { type: "disabled" } }, true).model).toBe(original.model)
     expect(parseAgRequest({ ...original, thinking: { type: "adaptive" } }, true).model).toBe(original.model)
   })
+  it("falls back to agy's default for client thinking displays agy cannot render", () => {
+    const adaptive = (display: unknown) => parseAgRequest({ ...initial(), thinking: { type: "adaptive", display } })
+    for (const display of ["full", "auto", "", "updates", 5, null]) expect(adaptive(display).thinking).toEqual({ type: "adaptive" })
+    expect(adaptive("summarized").thinking).toEqual({ type: "adaptive", display: "summarized" })
+    expect(adaptive("omitted").thinking).toEqual({ type: "adaptive", display: "omitted" })
+    expect(contractKey(adaptive("full"))).toBe(contractKey(parseAgRequest({ ...initial(), thinking: { type: "adaptive" } })))
+  })
+  it("ignores the nested thinking.adaptive display clients add ahead of agy", () => {
+    expect(parseAgRequest({ ...initial(), thinking: { type: "adaptive", adaptive: { display: "full" } } }).thinking).toEqual({ type: "adaptive" })
+    expect(parseAgRequest({ ...initial(), thinking: { type: "adaptive", display: "summarized", adaptive: { display: "full" } } }).thinking).toEqual({ type: "adaptive", display: "summarized" })
+    expect(parseAgRequest({ ...initial(), model: "gemini-fixture-low", thinking: { type: "enabled", budget_tokens: 8192, adaptive: { display: "full" } } }, true).thinking).toEqual({ type: "adaptive" })
+  })
   it("includes exact client schemas without requiring private CLI metadata reads", () => {
     const prompt = renderAgPrompt(parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "lookup" } }))
     expect(prompt).toContain(JSON.stringify([tool]))
@@ -111,6 +123,12 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(response.status).toBe(400)
     expect(await response.text()).toContain("Tool invalid_schema: Invalid or unsupported JSON Schema")
     expect(runtime.runs.size).toBe(0)
+  })
+
+  it("accepts an unknown thinking.display value instead of returning 400", async () => {
+    const { send } = fixture()
+    const response = await send({ ...initial("hello"), tools: [], thinking: { type: "adaptive", display: "full" } })
+    expect(response.status, await response.clone().text()).toBe(200)
   })
 
   it("returns model discovery, health, text and per-invocation usage", async () => {

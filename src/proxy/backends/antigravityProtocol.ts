@@ -35,6 +35,13 @@ const resultBlock = z.object({
 const block = z.discriminatedUnion("type", [textBlock, imageBlock, documentBlock, audioBlock, videoBlock, callBlock, resultBlock])
 const message = z.object({ role: z.enum(["user", "assistant"]), content: z.union([z.string(), z.array(block)]) })
 const outputFormat = z.object({ type: z.literal("json_schema"), schema: z.record(z.string(), z.unknown()) }).strict()
+const agThinkingDisplays = new Set(["summarized", "omitted"])
+/** agy renders only summarized/omitted; API-side display values and the nested adaptive form fall back to agy's default instead of failing the turn. */
+function agThinking(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  const { display, adaptive, ...rest } = value as Record<string, unknown>
+  return { ...rest, ...(typeof display === "string" && agThinkingDisplays.has(display) ? { display } : {}) }
+}
 const schema = z.object({
   meridian_tool_grammars: z.record(z.string(), z.object({ syntax: z.enum(['lark', 'regex']), definition: z.string().max(65536) }).strict()).refine(value => Object.keys(value).length <= 16, 'At most 16 custom grammars').optional(),
   meridian_session_key: z.string().max(512).optional(),
@@ -50,11 +57,11 @@ const schema = z.object({
     z.object({ type: z.literal("none") }).strict(),
     z.object({ type: z.literal("tool"), name: z.string(), disable_parallel_tool_use: z.boolean().optional() }).strict(),
   ]).optional(),
-  thinking: z.discriminatedUnion("type", [
+  thinking: z.preprocess(agThinking, z.discriminatedUnion("type", [
     z.object({ type: z.literal("disabled") }),
     z.object({ type: z.literal("enabled"), budget_tokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER), display: z.enum(["summarized", "omitted"]).optional() }).strict(),
     z.object({ type: z.literal("adaptive"), display: z.enum(["summarized", "omitted"]).optional() }),
-  ]).optional(),
+  ])).optional(),
   output_config: z.object({
     effort: z.enum(["low", "medium", "high"]).optional(),
     format: outputFormat.optional(),
