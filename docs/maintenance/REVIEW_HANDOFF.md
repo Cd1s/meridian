@@ -36,10 +36,31 @@ and 11 open issues; OpenCode scrub has #18 plus release #20, Pi scrub release
 approval remains absent. Existing dispositions below continue to apply to
 unchanged sources; release heads are live leads, never permission to publish.
 
-An existing API-profile default native-store metadata fallback exposed by the
-owned UI fixture is under independent investigation. The layout fixture
-explicitly fences native metadata and SDK generation; its corrected proof
-never uses host account data.
+#1257 API/setup-token credential metadata isolation is corrected in isolated
+branch codex/api-profile-credential-isolation-20261003, base a079dc94b,
+product commit 68a614ecd68a02467d693de39b4838dbba746447. Unchanged main
+reproduces the metadata leak and wrong API logged-out demotion; actual CLI
+2.1.289 + owned macOS Keychain + actual HTTP after controls make zero native
+store reads. Eight isolated HTTP regression controls retain stored-Claude
+plan/renewal/presence and unknown-store behavior. Native browser confirms the
+API card no longer shows Max 20x or wrong logged-out status. SDK/model calls
+are fenced. Final local gates 5,304 / 0 / 35 platform skips across 18 stages,
+standalone typecheck/build pass. Integration [#1258](https://github.com/rynfar/meridian/pull/1258)
+awaits final-head CI/merge.
+[Durable proof](evidence/1257-profile-credential-isolation.md).
+
+#1233 source c609e8d1a82b7c98114d65376474dcde5ed3ff56 is completely
+reviewed for its opt-in hostname contract. [Issue #1259](https://github.com/rynfar/meridian/issues/1259)
+records authenticated GET/PUT /settings/api/header and optional hostname on
+unauthenticated /health while enabled. Owner decision is pending; no source
+incorporation or new contract is authorized yet. After approval, compose the
+current responsive header and verify all API/width/privacy controls. The source
+PR remains reviewable and unchanged; no external comment was sent.
+
+#1256 retirement-harness checkpoint delivered as
+a079dc94bd313a830a318215d760baf7c984e695 from exact validated head
+e189e454c7332868f8da22aa1a44b1445b408c2a; merged tree verified. All six
+executed checks passed, including test 37176523505/job 111360151539.
 
 #1246 is delivered through [#1250](https://github.com/rynfar/meridian/pull/1250).
 Validated head `29799ce68a72e4f71ce77f9ba965e9d6b5ee0a91` merged as

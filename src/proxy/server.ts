@@ -8417,15 +8417,20 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // are separate auth contexts keyed by CLAUDE_CONFIG_DIR, so the default
       // store would report an unrelated account's expiry.
       const renewalConfigDir = profileEnvOverrides?.CLAUDE_CONFIG_DIR
-      const healthStore = renewalConfigDir
-        ? createPlatformCredentialStore({ claudeConfigDir: renewalConfigDir })
+      // API keys and supplied setup tokens do not authenticate with this
+      // store. Falling back to it would report another account's plan/expiry.
+      const healthStore = healthProfile.type === "claude-max"
+        ? createPlatformCredentialStore(renewalConfigDir ? { claudeConfigDir: renewalConfigDir } : undefined)
         : undefined
-      const renewal = await getAuthRenewalStatus(healthStore, warnDays)
-        .catch(() => ({ renewalRequiredSoon: false }))
+      const renewal = healthStore
+        ? await getAuthRenewalStatus(healthStore, warnDays).catch(() => ({ renewalRequiredSoon: false }))
+        : { renewalRequiredSoon: false }
       // `claude auth status` reports the plan family (`max`) but not the tier
       // that sizes it, so the 5x-vs-20x distinction can only come off disk.
       // Same store, same cached read as the renewal window above.
-      const plan = await getStoredPlanFields(healthStore).catch((): StoredPlanFields => ({}))
+      const plan = healthStore
+        ? await getStoredPlanFields(healthStore).catch((): StoredPlanFields => ({}))
+        : {}
       // Spread the live status only WHEN IT HAS ONE. `subscriptionType:
       // undefined` overwrites the value read off disk, so an account whose
       // `claude auth status` omits the field lost its stored plan entirely -
@@ -8495,12 +8500,16 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // The tier that sizes the plan is never in `claude auth status` — only
       // the family (`max`), which covers both 5x and 20x. It is on disk, in
       // the profile's own credential file.
-      const profileStore = createPlatformCredentialStore(
-        envOverrides?.CLAUDE_CONFIG_DIR
-          ? { claudeConfigDir: envOverrides.CLAUDE_CONFIG_DIR }
-          : undefined,
-      )
-      const plan = await getStoredPlanFields(profileStore).catch((): StoredPlanFields => ({}))
+      const profileStore = resolved.type === "claude-max"
+        ? createPlatformCredentialStore(
+            envOverrides?.CLAUDE_CONFIG_DIR
+              ? { claudeConfigDir: envOverrides.CLAUDE_CONFIG_DIR }
+              : undefined,
+          )
+        : undefined
+      const plan = profileStore
+        ? await getStoredPlanFields(profileStore).catch((): StoredPlanFields => ({}))
+        : {}
       const allowance = planAllowance({
         ...plan,
         ...(auth?.subscriptionType ? { subscriptionType: auth.subscriptionType } : {}),
@@ -8513,7 +8522,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
       // a request actually presents, so an access token that is not there
       // outranks a cheerful probe. Only `absent` demotes: see
       // `readStoredCredentialPresence` for why `unknown` must not.
-      const presence = await readStoredCredentialPresence(profileStore)
+      // A supplied API key/setup token is not the grant in this store; an
+      // empty stored OAuth grant cannot invalidate those credentials.
+      const presence = profileStore ? await readStoredCredentialPresence(profileStore) : "unknown"
       return {
         ...p,
         email: auth?.email || null,

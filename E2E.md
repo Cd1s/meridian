@@ -7323,3 +7323,15 @@ stays active. E2E_EXPECT_RETIREMENT_RACE=1 records the defective source control
 as REPRODUCED_UNSAFE_RETIREMENT; its zero exit is not acceptance of a fix.
 See docs/maintenance/evidence/1243-migration-retirement-review.md for the real
 filesystem boundary and outstanding migration/parent gates.
+
+## Profile credential metadata isolation
+
+Run `bun scripts/e2e-profile-credential-isolation.mjs` for actual HTTP + CLI
+auth-status + owned native Keychain/file data, with SDK/model requests fenced.
+`E2E_SOURCE_ROOT=<unchanged tree> E2E_SOURCE_SHA=<exact head>
+E2E_EXPECT_METADATA_LEAK=1` repeats the defective native-metadata control.
+API profiles must make zero stored-OAuth metadata reads and stay governed by
+their own auth status. A synthetic API key recognition is not inference-key
+validation. The separately isolated HTTP regression file checks supplied setup
+tokens and preserves stored subscription plan, renewal and missing-token rules.
+See [bounded proof](docs/maintenance/evidence/1257-profile-credential-isolation.md).
