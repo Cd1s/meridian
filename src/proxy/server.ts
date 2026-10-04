@@ -138,6 +138,7 @@ import {
   OVERLOADED_RETRY_AFTER_SECONDS,
 } from "./retryAfter"
 import { getSetting, setSetting, TELEMETRY_SETTING_LIMITS } from "../settings" 
+import { headerSettingsResponse, healthHostname } from "../headerSettings"
 import { startProfileLogin, completeProfileLogin, completeProfileLoginFromCallback, getProfileLoginStatus } from "./profileLogin"
 import { startProfileAdd, completeProfileAdd } from "./profileAdd"
 import { profileStartBody, profileLoginCompleteBody, profileAddCompleteBody } from "./profileOAuthBody"
@@ -8237,6 +8238,9 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return c.json(updateSettingsState())
   })
 
+  app.get("/settings/api/header", (c) => headerSettingsResponse(c.req.raw))
+  app.put("/settings/api/header", (c) => headerSettingsResponse(c.req.raw))
+
   // Every page reads this as it is served, so a change shows on the next page
   // load; nothing has to restart.
   const layoutSettingsState = () => ({ layout: resolvePageLayout(getSetting("layout")), layouts: PAGE_LAYOUTS })
@@ -8346,6 +8350,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   })
 
   app.get("/health", async (c) => {
+    c.header("Cache-Control", "no-store")
     // Checked first and unconditionally: a fleet manager routing on this
     // endpoint (e.g. a gateway's account-pool scheduler) needs to learn
     // "stop sending here" as fast as possible during shutdown, without
@@ -8355,6 +8360,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         status: "draining",
         version: serverVersion,
         backend: finalConfig.backend ?? "claude",
+        ...healthHostname(),
         message: "Meridian is shutting down; route new requests to another instance.",
       }, 503)
     }
@@ -8369,6 +8375,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         status: "unhealthy",
         version: serverVersion,
         backend: finalConfig.backend ?? "claude",
+        ...healthHostname(),
         error: "Cannot capture a process incarnation, so no request that touches a session can be served.",
         bootIdentity,
       }, 503)
@@ -8386,6 +8393,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           status: "degraded",
           version: serverVersion,
           backend: finalConfig.backend ?? "claude",
+          ...healthHostname(),
           build: currentBuild(),
           error: "Could not verify auth status",
           mode: envBool("PASSTHROUGH") ? "passthrough" : "internal",
@@ -8396,6 +8404,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
           status: "unhealthy",
           version: serverVersion,
           backend: finalConfig.backend ?? "claude",
+          ...healthHostname(),
           build: currentBuild(),
           error: "Not logged in. Run: claude login",
           auth: { loggedIn: false }
@@ -8444,6 +8453,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         status: "healthy",
         version: serverVersion,
         backend: finalConfig.backend ?? "claude",
+        ...healthHostname(),
         build: currentBuild(),
         auth: {
           loggedIn: true,
@@ -8468,6 +8478,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         status: "degraded",
         version: serverVersion,
         backend: finalConfig.backend ?? "claude",
+        ...healthHostname(),
         build: currentBuild(),
         error: "Could not verify auth status",
         mode: envBool("PASSTHROUGH") ? "passthrough" : "internal",

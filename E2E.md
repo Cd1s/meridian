@@ -7148,6 +7148,25 @@ by the owner and is tracked separately from local installation.
 
 ### Mobile account layout and packaged favicon
 
+For the opt-in hostname contract (#1259, source #1233), run
+`E2E_BASELINE_ROOT=<unchanged tree> bun scripts/e2e-hostname-header.mjs` and open
+`http://127.0.0.1:42233/fixture/frame?width=375&path=/settings` in the native
+collaborative browser. Evaluate `scripts/e2e-hostname-header-browser.js` inside
+the owned frame at 320/375/414/768/1280px. Require real settings persistence,
+one pending save at a time, an older enabled health response unable to restore
+a disabled label, failed-poll label removal, full-name tooltips, clipped long
+labels, intact update notices and no added page overflow against the measured
+same-width baseline (retain strict header/hostname bounds). Repeat on
+`path=/fixture/provider` for standalone Antigravity's shared header, and use
+`path=/fixture/before/settings` for baseline visual comparison. The fixture
+uses actual pages, HTTP routes and settings I/O with isolated configuration;
+auth/account probes and the long/IP stress labels are controlled explicitly,
+and SDK/model requests are forbidden. Preserve browser output and before/after
+media in the durable review record. No model generation is implicated by this
+header/settings/health feature. The isolated HTTP suite
+`bun test src/__tests__/header-settings-routes.test.ts` additionally pins
+API-key/Origin/TLS-termination, invalid/reset and delayed-probe privacy cases.
+
 Use `scripts/e2e-mobile-layout.mjs` with `E2E_BASELINE_ROOT` pointing at unchanged
 main. Open its synthetic fixture URL in the collaborative browser and evaluate
 `scripts/e2e-mobile-layout-browser.js`. The real DOM matrix asserts baseline
