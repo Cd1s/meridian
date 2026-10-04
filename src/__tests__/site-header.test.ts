@@ -85,6 +85,10 @@ describe("shared site header", () => {
     expect(linkRule).toContain("var(--accent, #58a6ff)")
     expect(linkRule).not.toContain("--accent2")
 
+    // The separator is a pseudo-element of the link it precedes, so a hover
+    // underline reaches it unless it is an atomic inline.
+    expect(rule(".mh-prov-part + .mh-prov-part::before")).toContain("display: inline-block")
+
     const driftWarning = rule(".mh-drift.warning")
     expect(driftWarning).toContain("var(--yellow, #d29922)")
     expect(rule(".mh-drift")).not.toContain("--yellow")

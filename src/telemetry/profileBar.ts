@@ -154,8 +154,10 @@ export const profileBarCss = `
   }
   .meridian-header .mh-prov.visible { display: inline-flex; }
   .meridian-header .mh-prov-part { white-space: nowrap; flex: none; }
+  /* inline-block: a link's hover underline does not propagate into an
+     atomic inline, so it stays under the link text and off the separator. */
   .meridian-header .mh-prov-part + .mh-prov-part::before {
-    content: "·"; margin-right: 6px; color: var(--muted, #8b949e);
+    content: "·"; display: inline-block; margin-right: 6px; color: var(--muted, #8b949e);
   }
   .meridian-header .mh-prov-branch {
     flex: 0 1 auto; min-width: 6ch; max-width: 22ch; overflow: hidden;
