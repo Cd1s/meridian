@@ -1,5 +1,16 @@
 # End-to-End Testing
 
+## Shared header separator hover (#1262)
+
+Run `E2E_HEADER_PORT=42231 bun scripts/e2e-build-header-fixture.ts` and use the
+collaborative browser. `/?separator=before` removes only the
+new atomic-inline separator declaration; `/` uses the corrected shared header.
+At desktop width, hover the branch and commit: their text must underline while
+the dot remains plain after the fix. Check metadata spans, long-branch ellipsis,
+compact links and reversible phone/desktop fitting. The fixture uses actual
+shared header CSS/HTML/JS with synthetic health data and no model calls.
+See [durable before/after and negative controls](docs/maintenance/evidence/1262-header-separator.md).
+
 Live tests against the real proxy + Claude Max SDK. These verify the full request cycle that unit tests (mocked SDK) cannot cover.
 
 **Prerequisites:** Claude Max subscription, `claude auth status` shows `loggedIn: true`, `opencode` installed.
