@@ -27,6 +27,7 @@ describe("AgPanelStore", () => {
       labels: {},
       proxies: [],
       keys: [],
+      sub2api: null,
     })
     expect(existsSync(store.filePath)).toBe(false)
   })

@@ -47,7 +47,7 @@ export function parseEligibility(output: string): { eligible: boolean; message: 
 }
 
 export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
-  const { token, sub2api } = options
+  const { token } = options
   if (!token) throw new Error("Admin token is required")
   const http = options.fetch ?? fetch
   const exec = options.exec ?? (async (file, args) => (await run(file, args, { timeout: 20_000 })).stdout)
@@ -56,6 +56,14 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   // Each quota read makes the account run `agy -p /usage`; the panel polls every 15s, so keep results for 5 minutes.
   const quotas = new Map<string, { at: number; value: Json | null }>()
   const panel = set.panel
+  /** Sub2API sync settings: the panel's own config wins over the service environment. */
+  type Sub2Cfg = { base: string; key: string; templateId: number | null; groupIds: number[]; concurrency: number | null; priority: number | null; source: "panel" | "env" }
+  const getSub2 = (): Sub2Cfg | undefined => {
+    const saved = panel.data.sub2api
+    if (saved) return { base: saved.base, key: saved.key, templateId: saved.templateId, groupIds: saved.groupIds, concurrency: saved.concurrency, priority: saved.priority, source: "panel" }
+    const env = options.sub2api
+    return env ? { base: env.base, key: env.key, templateId: env.templateId, groupIds: [], concurrency: null, priority: null, source: "env" } : undefined
+  }
 
   let defaultVersion = "unknown"
   try {
@@ -97,13 +105,14 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     } catch (error) { return null }
   }
 
-  const s2 = async (path: string, init: { method?: string; body?: unknown } = {}): Promise<Json> => {
-    const response = await http(`${sub2api!.base}${path}`, { method: init.method, headers: { "x-api-key": sub2api!.key, "content-type": "application/json" }, body: init.body === undefined ? undefined : JSON.stringify(init.body), signal: AbortSignal.timeout(15_000) })
+  const s2With = async (cfg: { base: string; key: string }, path: string, init: { method?: string; body?: unknown } = {}): Promise<Json> => {
+    const response = await http(`${cfg.base}${path}`, { method: init.method, headers: { "x-api-key": cfg.key, "content-type": "application/json" }, body: init.body === undefined ? undefined : JSON.stringify(init.body), signal: AbortSignal.timeout(15_000) })
     const body = await response.json().catch(() => ({})) as Json
     if (!response.ok || (body.code !== undefined && body.code !== 0)) fail(502, `Sub2API: ${body.message ?? response.status}`)
     return body.data
   }
-  const sub2Accounts = async (): Promise<Json[]> => sub2api ? (await s2("/admin/accounts?page=1&page_size=500")).items ?? [] : []
+  const s2 = (path: string, init: { method?: string; body?: unknown } = {}) => s2With(getSub2() ?? fail(409, "Sub2API is not configured"), path, init)
+  const sub2Accounts = async (): Promise<Json[]> => getSub2() ? (await s2("/admin/accounts?page=1&page_size=500")).items ?? [] : []
   // All accounts share one base_url and Sub2API never returns api keys, so an account is identified by its notes.
   const findSub2 = (items: Json[], name: string) => items.find(item => /^Antigravity Meridian (acc\d+)\b/.exec(item.notes ?? "")?.[1] === name)
   const setStatus = async (name: string, status: string) => {
@@ -400,7 +409,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
     await set.sync()
 
-    if (sub2api) {
+    if (getSub2()) {
       const items = await sub2Accounts().catch(() => [])
       const found = findSub2(items, name)
       if (found) {
@@ -475,7 +484,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
         max: set.pool?.maxProcesses ?? null,
       },
       sub2api: {
-        enabled: Boolean(sub2api),
+        enabled: Boolean(getSub2()),
       },
       version,
     }
@@ -612,7 +621,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
       await set.sync()
     }
-    const items = sub2api ? await sub2Accounts().catch(() => null) : null
+    const items = getSub2() ? await sub2Accounts().catch(() => null) : null
     return describe(name, items)
   }
 
@@ -645,6 +654,62 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const { vars } = existing(name)
     return reconcile(name, vars.MERIDIAN_API_KEY ?? "", email(name))
   }
+  /** Settings as shown to the browser: the admin key is never returned, only whether one is stored. */
+  const sub2Public = () => {
+    const cfg = getSub2()
+    return { enabled: Boolean(cfg), source: cfg?.source ?? null, base: cfg?.base ?? null, hasKey: Boolean(cfg?.key), groupIds: cfg?.groupIds ?? [], concurrency: cfg?.concurrency ?? null, priority: cfg?.priority ?? null, templateId: cfg?.templateId ?? null }
+  }
+  const sub2Url = (raw: unknown) => {
+    let url: URL
+    try { url = new URL(String(raw ?? "").trim()) } catch { return fail(400, "Invalid Sub2API address") }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) fail(400, "Sub2API address must be an http(s) URL without credentials")
+    // Accept either the site root or the /api/v1 base; store the /api/v1 base.
+    return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/api\/v1$/, "")}/api/v1`
+  }
+  const sub2Groups = async (cfg: { base: string; key: string }) => {
+    const data = await s2With(cfg, "/admin/groups/all")
+    return (Array.isArray(data) ? data : (data?.items ?? [])).map((g: Json) => ({ id: Number(g.id), name: String(g.name ?? ""), platform: String(g.platform ?? ""), status: String(g.status ?? "") }))
+  }
+  async function saveSub2(body: Json) {
+    const current = getSub2()
+    const base = body.base === undefined ? current?.base ?? fail(400, "Sub2API address is required") : sub2Url(body.base)
+    const keyInput = typeof body.key === "string" ? body.key.trim() : ""
+    const key = keyInput || current?.key || fail(400, "Sub2API admin key is required")
+    if (/[\s\x00-\x1f]/.test(key)) fail(400, "Invalid Sub2API admin key")
+    const ids = Array.isArray(body.groupIds) ? body.groupIds.map(Number) : current?.groupIds ?? []
+    if (!ids.length || ids.some(id => !Number.isInteger(id) || id <= 0)) fail(400, "Pick at least one Sub2API group")
+    const int = (v: unknown, fallback: number | null) => v === undefined || v === null || v === "" ? fallback : Number.isInteger(Number(v)) && Number(v) >= 0 ? Number(v) : fail(400, "concurrency and priority must be non-negative integers")
+    const templateId = body.templateId === undefined ? current?.templateId ?? null : body.templateId === null || body.templateId === "" ? null : Number(body.templateId)
+    if (templateId !== null && (!Number.isInteger(templateId) || templateId <= 0)) fail(400, "Invalid template account id")
+    // Verify before saving so a typo never replaces a working configuration.
+    const groups = await sub2Groups({ base, key })
+    const missing = ids.filter(id => !groups.some((g: Json) => g.id === id))
+    if (missing.length) fail(400, `Unknown Sub2API group ${missing.join(", ")}`)
+    panel.data.sub2api = { base, key, groupIds: ids, concurrency: int(body.concurrency, current?.concurrency ?? 5) ?? 5, priority: int(body.priority, current?.priority ?? 1) ?? 1, templateId }
+    panel.save()
+    return { ...sub2Public(), groups }
+  }
+  async function testSub2(body: Json) {
+    const current = getSub2()
+    const base = body.base ? sub2Url(body.base) : current?.base ?? fail(400, "Sub2API address is required")
+    const key = (typeof body.key === "string" && body.key.trim()) || current?.key || fail(400, "Sub2API admin key is required")
+    const started = Date.now()
+    try { const groups = await sub2Groups({ base, key }); return { ok: true, latencyMs: Date.now() - started, groups, error: null } }
+    catch (error) { return { ok: false, latencyMs: null, groups: [], error: error instanceof Error ? error.message : String(error) } }
+  }
+  /** Brings every logged-in account to Sub2API (eligible ones only); safe to repeat. */
+  async function syncSub2() {
+    if (!getSub2()) fail(409, "Sub2API is not configured")
+    const results: Array<{ name: string; status: string; sub2apiId: number | null; error: string | null }> = []
+    for (const name of names()) {
+      const env = readEnv(name)!
+      if (env.disabled || !email(name)) { results.push({ name, status: env.disabled ? "disabled" : "not-logged-in", sub2apiId: null, error: null }); continue }
+      try { const r = await reconcile(name, env.vars.MERIDIAN_API_KEY ?? "", email(name)); results.push({ name, status: r.sub2apiStatus, sub2apiId: r.sub2apiId, error: null }) }
+      catch (error) { results.push({ name, status: "error", sub2apiId: null, error: error instanceof Error ? error.message : String(error) }) }
+    }
+    return { results }
+  }
+
   async function testAccount(name: string) {
     const { vars } = existing(name)
     if (!set.names.includes(name)) {
@@ -724,24 +789,28 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   /** Checks eligibility, then makes Sub2API follow it: eligible accounts are mirrored and active; an unverified one never serves traffic. */
   async function reconcile(name: string, apiKey: string, address: string | null) {
     const eligibility = parseEligibility(await agyCheck(name))
-    let sub2apiId: number | null = null, sub2apiStatus: "active" | "inactive" | "pending" | "off" = sub2api ? "pending" : "off"
-    if (sub2api) {
+    let sub2apiId: number | null = null, sub2apiStatus: "active" | "inactive" | "pending" | "off" = getSub2() ? "pending" : "off"
+    if (getSub2()) {
       if (eligibility.eligible) { sub2apiId = await mirror(name, apiKey, address); sub2apiStatus = "active" }
       else { sub2apiId = await setStatus(name, "inactive"); sub2apiStatus = sub2apiId == null ? "pending" : "inactive" }
     }
     return { sub2apiId, sub2apiStatus, ...eligibility }
   }
   async function mirror(name: string, apiKey: string, address: string | null) {
-    if (!sub2api) return null
+    const cfg = getSub2()
+    if (!cfg) return null
     const found = findSub2(await sub2Accounts(), name)
     if (found) {
       if (found.status !== "active") await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { status: "active" } })
       return found.id
     }
-    const template = await s2(`/admin/accounts/${sub2api.templateId}`)
+    // The template (optional) supplies model mapping, groups and limits; explicit panel settings override it.
+    const template = cfg.templateId ? await s2(`/admin/accounts/${cfg.templateId}`) : {}
+    const groupIds = cfg.groupIds.length ? cfg.groupIds : template.group_ids ?? []
+    if (!groupIds.length) fail(409, "Sub2API group is not configured")
     const created = await s2("/admin/accounts", { method: "POST", body: {
-      name: address ?? name, platform: "anthropic", type: "apikey", concurrency: template.concurrency, priority: template.priority, group_ids: template.group_ids,
-      notes: `Antigravity Meridian ${name}`, credentials: { base_url: options.baseUrl, api_key: apiKey, model_mapping: template.credentials?.model_mapping },
+      name: address ?? name, platform: "anthropic", type: "apikey", concurrency: cfg.concurrency ?? template.concurrency ?? 5, priority: cfg.priority ?? template.priority ?? 1, group_ids: groupIds,
+      notes: `Antigravity Meridian ${name}`, credentials: { base_url: options.baseUrl, api_key: apiKey, ...(template.credentials?.model_mapping ? { model_mapping: template.credentials.model_mapping } : {}) },
     } })
     return created.id
   }
@@ -756,10 +825,10 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
 
   async function route(request: Request, path: string): Promise<unknown> {
     const method = request.method, parts = path.split("/").filter(Boolean).slice(1)
-    const body = (method === "POST" || method === "PATCH") ? await request.json().catch(() => ({})) as Json : {}
+    const body = (method === "POST" || method === "PATCH" || method === "PUT") ? await request.json().catch(() => ({})) as Json : {}
     if (parts[0] === "reload" && method === "POST") return set.sync()
     if (parts[0] === "session" && method === "GET") {
-      return { ok: true, version, features: { sub2api: Boolean(sub2api) } }
+      return { ok: true, version, features: { sub2api: Boolean(getSub2()) } }
     }
     if (parts[0] === "overview" && method === "GET") {
       return getOverview()
@@ -769,19 +838,23 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
         version,
         baseUrl: options.baseUrl,
         pool: { max: set.pool?.maxProcesses ?? null },
-        sub2api: {
-          enabled: Boolean(sub2api),
-          base: sub2api ? sub2api.base : null,
-          templateId: sub2api ? sub2api.templateId : null,
-        },
+        sub2api: sub2Public(),
         accountsDir: set.dir,
       }
+    }
+    if (parts[0] === "sub2api") {
+      if (parts.length === 1 && method === "GET") { const cfg = getSub2(); return { ...sub2Public(), groups: cfg ? await sub2Groups(cfg).catch(() => []) : [] } }
+      if (parts.length === 1 && method === "PUT") return saveSub2(body)
+      if (parts.length === 1 && method === "DELETE") { panel.data.sub2api = null; panel.save(); return sub2Public() }
+      if (parts[1] === "test" && method === "POST") return testSub2(body)
+      if (parts[1] === "sync" && method === "POST") return syncSub2()
+      return fail(404, "Not found")
     }
     if (parts[0] === "proxies") return routeProxies(method, parts.slice(1), body)
     if (parts[0] === "keys") return routeKeys(method, parts.slice(1), body)
     if (parts[0] === "accounts") {
       if (parts.length === 1 && method === "GET") {
-        const items = sub2api ? await sub2Accounts().catch(() => null) : null
+        const items = getSub2() ? await sub2Accounts().catch(() => null) : null
         return { accounts: await Promise.all(names().map(name => describe(name, items))), pool: { max: set.pool?.maxProcesses ?? null } }
       }
       if (parts.length === 1 && method === "POST") return create(body)

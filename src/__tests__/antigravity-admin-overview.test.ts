@@ -80,7 +80,12 @@ describe("Antigravity Overview, Session, and Settings API", () => {
       pool: { max: 4 },
       sub2api: {
         enabled: true,
+        source: "env",
         base: "http://s2",
+        hasKey: true,
+        groupIds: [],
+        concurrency: null,
+        priority: null,
         templateId: 1001,
       },
       accountsDir: dir,

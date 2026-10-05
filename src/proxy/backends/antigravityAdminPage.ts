@@ -480,6 +480,28 @@ var VIEWS = {
     }
   },
 
+  sub2api: {
+    title: "Sub2API 对接", icon: "link", name: "Sub2API",
+    load: function () { return api("GET", "/api/sub2api").then(function (r) { S.sub2 = r; }); },
+    shell: function () { return '<div class="stack" style="max-width:860px"><div id="s2s">' + skeleton(6) + "</div></div>"; },
+    fill: function () {
+      var c = S.sub2 || {}, env = c.source === "env";
+      var groups = (c.groups || []);
+      $("#s2s").innerHTML =
+        '<div class="card"><div class="hd"><div><h3>连接设置</h3><div class="muted xs">登录并通过资格核验的账号会自动添加到下面选择的分组</div></div><span class="sp"></span>' + (c.enabled ? '<span class="tag green">已启用</span>' : '<span class="tag">未配置</span>') + "</div><div class=\"bd\">" +
+        (env ? '<div class="note info" style="margin-bottom:14px">' + ic("alert") + "<div>当前使用服务端环境变量里的 Sub2API 配置。在这里保存后，将改用面板配置。</div></div>" : "") +
+        '<div class="field"><label for="s2b">Sub2API 地址</label><input class="inp mono" id="s2b" placeholder="https://your-sub2api.example.com" autocomplete="off" spellcheck="false" value="' + esc(c.base ? c.base.replace(/\/api\/v1$/, "") : "") + '"><div class="hint">填写站点地址即可，会自动补全 /api/v1</div></div>' +
+        '<div class="field"><label for="s2k">管理员 API Key</label><div class="iwrap"><input class="inp mono" id="s2k" type="password" placeholder="' + (c.hasKey ? "已保存，留空表示不修改" : "admin-xxxxxxxx") + '" autocomplete="off" spellcheck="false"><button type="button" class="icon-btn" id="s2e" aria-label="显示或隐藏">' + ic("eye") + '</button></div><div class="hint">在 Sub2API 后台「设置 → 管理员 API Key」生成。保存在服务端，不会再返回到浏览器。</div></div>' +
+        '<div style="display:flex;gap:10px;margin-bottom:6px"><button class="btn" id="s2t">' + ic("zap") + '测试并获取分组</button></div><div id="s2r" class="hint"></div>' +
+        '<div class="field" style="margin-top:14px"><label>推送到分组</label><div class="checks" id="s2g" style="max-height:220px">' + groupsHtml(groups, c.groupIds || []) + '</div><div class="hint">可多选；只显示 Anthropic 平台分组更合适，其它平台分组也列出以便你确认</div></div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px"><div class="field"><label for="s2c">并发数</label><input class="inp" id="s2c" type="number" min="0" value="' + esc(c.concurrency == null ? 5 : c.concurrency) + '"></div>' +
+        '<div class="field"><label for="s2p">优先级</label><input class="inp" id="s2p" type="number" min="0" value="' + esc(c.priority == null ? 1 : c.priority) + '"></div>' +
+        '<div class="field"><label for="s2m">模板账号 ID（可选）</label><input class="inp" id="s2m" type="number" min="1" value="' + esc(c.templateId == null ? "" : c.templateId) + '" placeholder="复制模型映射"></div></div>' +
+        '</div><div class="mfoot" style="border-radius:0 0 12px 12px"><button class="btn danger" id="s2d" ' + (c.source === "panel" ? "" : "disabled") + ">清除面板配置</button><button class=\"btn primary\" id=\"s2s2\">保存配置</button></div></div>" +
+        '<div class="card"><div class="hd"><div><h3>同步现有账号</h3><div class="muted xs">把已登录且通过核验的账号一次性推送到 Sub2API；已存在的不会重复创建，未通过核验的会保持停用</div></div><span class="sp"></span><button class="btn" id="s2y" ' + (c.enabled ? "" : "disabled") + ">" + ic("refresh") + '立即同步</button></div><div id="s2o"></div></div>';
+      bindSub2();
+    }
+  },
   settings: {
     title: "系统设置", icon: "sliders", name: "设置",
     load: function () { return Promise.all([api("GET", "/api/settings"), api("GET", "/api/overview")]).then(function (r) { S.settings = r[0]; S.overview = r[1]; }); },
@@ -490,12 +512,12 @@ var VIEWS = {
     fill: function () {
       var s = S.settings; if (!s) return; var sb = s.sub2api || {};
       var rows = [["版本", "v" + s.version], ["Base URL", s.baseUrl], ["账号目录", s.accountsDir], ["进程池上限", s.pool && s.pool.max != null ? s.pool.max : "未限制"],
-        ["Sub2API 同步", sb.enabled ? "已启用" : "未启用"], ["Sub2API 地址", sb.base || "—"], ["Sub2API 模板 ID", sb.templateId != null ? sb.templateId : "—"]];
+        ["Sub2API 同步", sb.enabled ? "已启用（" + (sb.source === "panel" ? "面板配置" : "环境变量") + "）" : "未启用"], ["Sub2API 地址", sb.base || "—"], ["Sub2API 分组", (sb.groupIds || []).length ? sb.groupIds.join(", ") : "—"]];
       $("#sv").innerHTML = '<div class="kv">' + rows.map(function (r) { return fmt("<div>{k}</div><div class=\"mono\">{v}</div>", { k: r[0], v: r[1] }); }).join("") + "</div>";
     }
   }
 };
-var ORDER = ["dashboard", "accounts", "proxies", "keys", "settings"];
+var ORDER = ["dashboard", "accounts", "proxies", "keys", "sub2api", "settings"];
 
 /* ---------- shell ---------- */
 function drawNav() {
@@ -638,6 +660,43 @@ function checkEligibility(name, box) {
   api("POST", "/api/accounts/" + encodeURIComponent(name) + "/verify").then(function (r) {
     if (!box.isConnected) return; box.innerHTML = eligibilityHtml(r) + '<div class="muted xs" style="margin-top:8px">Sub2API：' + sub2Text(r) + "</div>"; bindEligibility(name, box);
   }, function (e) { if (box.isConnected) box.innerHTML = '<div class="note">' + ic("alert") + "<div>资格检查失败：" + esc(e.message) + "</div></div>"; });
+}
+function groupsHtml(groups, sel) {
+  if (!groups.length) return '<div class="muted xs" style="padding:6px">填写地址和密钥后点「测试并获取分组」</div>';
+  return groups.map(function (g) { return fmt('<label><input type="checkbox" value="{id}" {c}>{n} <span class="muted xs">#{id} · {p}{s}</span></label>', { id: g.id, c: sel.indexOf(g.id) >= 0 ? "checked" : "", n: g.name, p: g.platform, s: g.status && g.status !== "active" ? " · " + g.status : "" }); }).join("");
+}
+function sub2Body() {
+  var ids = $$("#s2g input:checked").map(function (c) { return Number(c.value); }), tpl = $("#s2m").value.trim();
+  var body = { base: $("#s2b").value.trim(), groupIds: ids, concurrency: Number($("#s2c").value), priority: Number($("#s2p").value), templateId: tpl ? Number(tpl) : null };
+  var k = $("#s2k").value.trim(); if (k) body.key = k; return body;
+}
+function bindSub2() {
+  $("#s2e").onclick = function () { var p = $("#s2k"), h = p.type === "password"; p.type = h ? "text" : "password"; this.innerHTML = ic(h ? "eyeoff" : "eye"); };
+  $("#s2t").onclick = function (e) {
+    var b = $("#s2b").value.trim(), k = $("#s2k").value.trim(); if (!b) return toast("请填写 Sub2API 地址", "err");
+    busy(e.currentTarget, async function () {
+      var r = await api("POST", "/api/sub2api/test", { base: b, key: k || undefined });
+      $("#s2r").innerHTML = r.ok ? '<span style="color:var(--gr)">连接成功 · ' + esc(r.latencyMs) + " ms · 共 " + r.groups.length + " 个分组</span>" : '<span style="color:var(--rd)">连接失败：' + esc(r.error || "无响应") + "</span>";
+      if (r.ok) { var keep = $$("#s2g input:checked").map(function (c) { return Number(c.value); }); $("#s2g").innerHTML = groupsHtml(r.groups, keep.length ? keep : (S.sub2 && S.sub2.groupIds) || []); }
+    });
+  };
+  $("#s2s2").onclick = function (e) {
+    busy(e.currentTarget, async function () {
+      var body = sub2Body(); if (!body.base) return toast("请填写 Sub2API 地址", "err"); if (!body.groupIds.length) return toast("请至少选择一个分组", "err");
+      S.sub2 = await api("PUT", "/api/sub2api", body); toast("已保存，新账号将自动推送到所选分组", "ok"); VIEWS.sub2api.fill();
+    });
+  };
+  $("#s2d").onclick = async function () {
+    if (!(await confirmBox("清除面板配置", "清除后将不再自动同步到 Sub2API（若服务端环境变量里有配置会回退使用它）。继续吗？", "清除", true))) return;
+    try { S.sub2 = await api("DELETE", "/api/sub2api"); S.sub2.groups = []; toast("已清除", "ok"); refreshRoute(true); } catch (e) { toast(e.message, "err"); }
+  };
+  $("#s2y").onclick = function (e) {
+    busy(e.currentTarget, async function () {
+      var r = await api("POST", "/api/sub2api/sync"), L = { active: ["green", "已同步并启用"], inactive: ["yellow", "已停用（待核验）"], pending: ["yellow", "待核验"], disabled: ["", "账号已停用"], "not-logged-in": ["", "未登录"], error: ["red", "失败"], off: ["", "未启用"] };
+      $("#s2o").innerHTML = '<div class="tw"><table><thead><tr><th>账号</th><th>结果</th><th>Sub2API ID</th></tr></thead><tbody>' + r.results.map(function (x) { var l = L[x.status] || ["", x.status]; return fmt('<tr><td class="cell"><b>{n}</b></td><td><span class="tag {c}" {t}>{s}</span></td><td class="mono">{i}</td></tr>', { n: x.name, c: l[0], s: l[1], t: x.error ? 'title="' + esc(x.error) + '"' : "", i: x.sub2apiId == null ? "—" : "#" + x.sub2apiId }); }).join("") + "</tbody></table></div>";
+      toast("同步完成", "ok");
+    });
+  };
 }
 /* ---------- account actions ---------- */
 function openEditAccount(a) {

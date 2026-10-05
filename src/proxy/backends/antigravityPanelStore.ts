@@ -40,10 +40,21 @@ export interface PanelGatewayKey {
   requests: number
 }
 
+/** Sub2API sync settings entered in the panel; the admin key lives only in the 0600 panel.json on the server. */
+export interface PanelSub2api {
+  base: string
+  key: string
+  groupIds: number[]
+  concurrency: number
+  priority: number
+  templateId: number | null
+}
+
 export interface PanelData {
   labels: Record<string, string>
   proxies: PanelProxy[]
   keys: PanelGatewayKey[]
+  sub2api: PanelSub2api | null
 }
 
 const NAME_REGEX = /^acc[0-9]+$/
@@ -61,6 +72,7 @@ export function createDefaultPanelData(): PanelData {
     labels: {},
     proxies: [],
     keys: [],
+    sub2api: null,
   }
 }
 
@@ -85,6 +97,7 @@ export class AgPanelStore {
           labels: typeof parsed.labels === "object" && parsed.labels !== null ? parsed.labels : {},
           proxies: Array.isArray(parsed.proxies) ? parsed.proxies : [],
           keys: Array.isArray(parsed.keys) ? parsed.keys : [],
+          sub2api: parsed.sub2api && typeof parsed.sub2api === "object" && typeof parsed.sub2api.base === "string" && typeof parsed.sub2api.key === "string" ? parsed.sub2api : null,
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)

@@ -35,9 +35,10 @@ function setup(files: Record<string, string>, options: { sub2: boolean; agy?: st
   const calls: Array<{ url: string; method: string; body?: any }> = []
   const sub2Items: any[] = [{ id: 7, name: "x", status: "active", notes: "Antigravity Meridian acc1 (port 34610)" }, { id: 8, name: "y", status: "active", notes: "Antigravity Meridian acc10" }]
   const fakeFetch = (async (input: any, init: any = {}) => {
-    const url = String(input), method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined
+    const url = String(input).replace("http://s2/api/v1/", "http://s2/"), method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined
     calls.push({ url, method, body })
     if (url.startsWith("http://s2/admin/accounts?")) return sub2({ items: sub2Items })
+    if (url.endsWith("/admin/groups/all")) return sub2([{ id: 9, name: "antigravity", platform: "anthropic", status: "active" }, { id: 1, name: "default", platform: "anthropic", status: "active" }])
     if (url === "http://s2/admin/accounts/1001") return sub2({ concurrency: 4, priority: 3, group_ids: [9], credentials: { model_mapping: { a: "b" } } })
     if (url === "http://s2/admin/accounts" && method === "POST") return sub2({ id: 99 })
     if (url.startsWith("http://s2/admin/accounts/") && method === "PUT") return sub2({})
@@ -178,6 +179,32 @@ describe("Antigravity admin API", () => {
     const { post, calls } = setup(base, { sub2: true })
     expect(await (await post("/api/accounts/acc1/verify")).json()).toMatchObject({ eligible: false, sub2apiId: 7, sub2apiStatus: "inactive" })
     expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "http://s2/admin/accounts/7", body: { status: "inactive" } })
+  })
+  it("saves Sub2API settings after verifying them, never returns the key, and mirrors into the chosen group", async () => {
+    const { req, post, calls, sub2Items, dir } = setup({ acc1: base.acc1 }, { sub2: false, agy: OK_AGY })
+    sub2Items.length = 0
+    expect(((await (await req("/api/sub2api")).json()) as any).enabled).toBe(false)
+    expect((await post("/api/sub2api/test", { base: "ftp://x", key: "k" })).status).toBe(400)
+    expect((await req("/api/sub2api", { method: "PUT", body: JSON.stringify({ base: "http://s2", key: "S2-SECRET-KEY", groupIds: [999] }) })).status).toBe(400)
+    const saved = await (await req("/api/sub2api", { method: "PUT", body: JSON.stringify({ base: "http://s2/", key: "S2-SECRET-KEY", groupIds: [9], concurrency: 3, priority: 2 }) })).text()
+    expect(saved).not.toContain("S2-SECRET-KEY")
+    expect(JSON.parse(saved)).toMatchObject({ enabled: true, source: "panel", hasKey: true, groupIds: [9], base: "http://s2/api/v1" })
+    expect(readFileSync(join(dir, "panel.json"), "utf8")).toContain("S2-SECRET-KEY")
+    expect(statSync(join(dir, "panel.json")).mode & 0o777).toBe(0o600)
+    expect(((await (await req("/api/sub2api")).text()))).not.toContain("S2-SECRET-KEY")
+    await post("/api/accounts/acc1/login")
+    const result = await (await post("/api/accounts/acc1/code", { code: "4/abc" })).json() as any
+    expect(result).toMatchObject({ eligible: true, sub2apiStatus: "active" })
+    expect(calls.find(c => c.method === "POST" && c.url.endsWith("/admin/accounts"))?.body).toMatchObject({ group_ids: [9], concurrency: 3, priority: 2, notes: "Antigravity Meridian acc1" })
+    expect(await (await req("/api/sub2api", { method: "DELETE" })).json()).toMatchObject({ enabled: false })
+  })
+  it("syncs every logged-in account to Sub2API in one call", async () => {
+    const { req, post, sub2Items } = setup(base, { sub2: true, agy: OK_AGY })
+    sub2Items.length = 0
+    const out = await (await post("/api/sub2api/sync")).json() as any
+    expect(out.results.map((r: any) => r.name)).toEqual(["acc1", "acc2"])
+    expect(out.results.every((r: any) => r.status === "not-logged-in")).toBe(true)
+    expect((await req("/api/sub2api/sync", { method: "GET" })).status).toBe(404)
   })
   it("verify endpoint runs the account check and reports the link", async () => {
     const { post } = setup(base)
