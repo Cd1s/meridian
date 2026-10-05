@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -32,6 +32,13 @@ describe("AgPanelStore", () => {
     expect(existsSync(store.filePath)).toBe(false)
   })
 
+  it("keeps a copy of an unreadable panel.json instead of overwriting it", () => {
+    const dir = createTempDir()
+    writeFileSync(join(dir, "panel.json"), "{ not json")
+    const store = new AgPanelStore(dir)
+    expect(store.data.keys).toEqual([])
+    expect(readdirSync(dir).some(name => name.startsWith("panel.json.corrupt-"))).toBe(true)
+  })
   it("saves panel data atomically with 0600 mode and loads it back", () => {
     const dir = createTempDir()
     const store = new AgPanelStore(dir)

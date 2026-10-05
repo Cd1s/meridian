@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createAgAdmin, parseEligibility } from "../proxy/backends/antigravityAdmin"
 import { AgAccountSet } from "../proxy/backends/antigravityAccounts"
+import { maskProxyUrl } from "../proxy/backends/antigravityPanelStore"
 import type { ProxyConfig } from "../proxy/types"
 
 const cleanup: Array<() => unknown> = []
@@ -205,6 +206,50 @@ describe("Antigravity admin API", () => {
     expect(out.results.map((r: any) => r.name)).toEqual(["acc1", "acc2"])
     expect(out.results.every((r: any) => r.status === "not-logged-in")).toBe(true)
     expect((await req("/api/sub2api/sync", { method: "GET" })).status).toBe(404)
+  })
+  it("never puts a proxy password into returned errors", async () => {
+    const { post } = setup(base)
+    const created = await (await post("/api/proxies", { url: "socks5h://leak:topsecret@dead:1" })).json() as any
+    const id = created.id as string
+    const tested = await (await post(`/api/proxies/${id}/test`)).text()
+    expect(tested).not.toContain("topsecret")
+    expect(maskProxyUrl("Command failed: curl -x socks5://u:pa@ss@h:1 https://x")).toBe("Command failed: curl -x socks5://u:***@h:1 https://x")
+    expect(maskProxyUrl("see http://TOKEN@h/x")).toBe("see http://***@h/x")
+  })
+  it("treats an agy that cannot run as not eligible and keeps the account out of Sub2API", async () => {
+    const { post, calls, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true, agy: "Eligibility check failed: could not run agy (timeout)" })
+    sub2Items.length = 0
+    const result = await (await post("/api/accounts/acc1/verify")).json() as any
+    expect(result.eligible).toBe(false)
+    expect(calls.some(c => c.method === "POST")).toBe(false)
+  })
+  it("refuses to verify an account that is disabled or not logged in", async () => {
+    const { post, dir } = setup(base, { sub2: true, agy: OK_AGY })
+    expect((await post("/api/accounts/acc1/verify")).status).toBe(409)
+    renameSync(join(dir, "acc2", "env"), join(dir, "acc2", "env.disabled"))
+    expect((await post("/api/accounts/acc2/verify")).status).toBe(409)
+  })
+  it("will not send a stored Sub2API admin key to a different address", async () => {
+    const { req, post } = setup(base, { sub2: true })
+    expect((await req("/api/sub2api/test", { method: "POST", body: JSON.stringify({ base: "https://attacker.example" }) })).status).toBe(400)
+    expect((await post("/api/sub2api/test", { base: "https://attacker.example", key: "their-own-key" })).status).toBe(200)
+  })
+  it("deleting an account removes it from gateway key scopes and its number is not reused", async () => {
+    const { post, req, dir } = setup(base)
+    const key = await (await post("/api/keys", { name: "k", accounts: ["acc2"] })).json() as any
+    expect((await req("/api/accounts/acc2", { method: "DELETE" })).status).toBe(200)
+    const keys = await (await req("/api/keys")).json() as any
+    expect(keys.gateway.find((k: any) => k.id === key.key.id).accounts).toEqual([])
+    const created = await (await post("/api/accounts", { proxy: "socks5h://new:1" })).json() as any
+    expect(created.name).toBe("acc3")
+    expect(existsSync(join(dir, "_deleted"))).toBe(true)
+  })
+  it("writes a rotated account key atomically and keeps the file private", async () => {
+    const { post, dir } = setup(base)
+    await post("/api/accounts/acc1/key/rotate")
+    expect(statSync(join(dir, "acc1", "env")).mode & 0o777).toBe(0o600)
+    expect(readFileSync(join(dir, "acc1", "env"), "utf8")).toMatch(/MERIDIAN_API_KEY=cheek-meridian-acc1-[0-9a-f]{24}/)
+    expect(readFileSync(join(dir, "acc1", "env"), "utf8")).toContain("ALL_PROXY=socks5h://u:pw@p1:1")
   })
   it("verify endpoint runs the account check and reports the link", async () => {
     const { post } = setup(base)

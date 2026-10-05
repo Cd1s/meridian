@@ -176,7 +176,9 @@ export class AgAccountSet {
         if (headers.has("authorization")) {
           headers.set("authorization", `Bearer ${selectedEntry.account.apiKey}`)
         }
-        const forwarded = new Request(request, { headers })
+        // Rebuild from the URL: node-server's lightweight Request cannot be cloned with `new Request(request, ...)`.
+        const hasBody = request.method !== "GET" && request.method !== "HEAD"
+        const forwarded = new Request(request.url, { method: request.method, headers, body: hasBody ? request.body : undefined, signal: request.signal, ...(hasBody ? { duplex: "half" } : {}) } as RequestInit)
         return selectedEntry.backend.fetch(forwarded)
       }
     }

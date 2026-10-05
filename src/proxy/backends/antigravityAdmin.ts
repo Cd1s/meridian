@@ -33,10 +33,18 @@ export interface AgAdminOptions {
 class HttpError extends Error { constructor(readonly status: number, message: string) { super(message) } }
 const NAME = /^acc[0-9]+$/
 const run = promisify(execFile)
+/** Writes a private file via a temp file and rename, so a crash can never leave a truncated env behind. */
+const writePrivate = (file: string, content: string) => {
+  const tmp = `${file}.${randomBytes(4).toString("hex")}.tmp`
+  writeFileSync(tmp, content, { mode: 0o600 })
+  renameSync(tmp, file)
+}
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const mask = (proxy: string) => maskProxyUrl(proxy)
 const strip = (text: string) => text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)?/g, "")
 const fail = (status: number, message: string): never => { throw new HttpError(status, message) }
+/** Error text that is safe to store or return: Node puts the full curl command line, proxy password included, into exec errors. */
+const safeError = (error: unknown) => maskProxyUrl(error instanceof Error ? error.message : String(error))
 /** agy's "Eligibility check failed" error: the Google verification link it asks the user to open, if any. */
 export function parseEligibility(output: string): { eligible: boolean; message: string | null; verifyUrl: string | null } {
   const text = output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\r/g, "")
@@ -106,7 +114,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   }
 
   const s2With = async (cfg: { base: string; key: string }, path: string, init: { method?: string; body?: unknown } = {}): Promise<Json> => {
-    const response = await http(`${cfg.base}${path}`, { method: init.method, headers: { "x-api-key": cfg.key, "content-type": "application/json" }, body: init.body === undefined ? undefined : JSON.stringify(init.body), signal: AbortSignal.timeout(15_000) })
+    const response = await http(`${cfg.base}${path}`, { method: init.method, headers: { "x-api-key": cfg.key, "content-type": "application/json" }, body: init.body === undefined ? undefined : JSON.stringify(init.body), signal: AbortSignal.timeout(15_000), redirect: "error" })
     const body = await response.json().catch(() => ({})) as Json
     if (!response.ok || (body.code !== undefined && body.code !== 0)) fail(502, `Sub2API: ${body.message ?? response.status}`)
     return body.data
@@ -174,8 +182,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       return { ok: false, exitIp: null, latencyMs, at, error: "Proxy did not return an exit IP" }
     } catch (error) {
       const latencyMs = Math.max(1, Date.now() - start)
-      const message = error instanceof Error ? error.message : String(error)
-      return { ok: false, exitIp: null, latencyMs, at, error: message }
+      return { ok: false, exitIp: null, latencyMs, at, error: safeError(error) }
     }
   }
 
@@ -210,7 +217,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
           if (trimmed.startsWith("HTTPS_PROXY=") || trimmed.startsWith("export HTTPS_PROXY=")) return `HTTPS_PROXY=${newUrl}`
           return line
         })
-        writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
+        writePrivate(file, newLines.join("\n"))
         changed = true
       }
     }
@@ -406,11 +413,11 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     if (!newLines.some(l => l.startsWith("MERIDIAN_API_KEY="))) {
       newLines.push(`MERIDIAN_API_KEY=${newKey}`)
     }
-    writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
+    writePrivate(file, newLines.join("\n"))
     await set.sync()
 
     if (getSub2()) {
-      const items = await sub2Accounts().catch(() => [])
+      const items = await sub2Accounts()
       const found = findSub2(items, name)
       if (found) {
         const detail = await s2(`/admin/accounts/${found.id}`)
@@ -558,7 +565,8 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const [ip, ...used] = await Promise.all([exitIp(proxyUrl), ...others.map(vars => exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "").catch(() => null))])
     if (used.includes(ip!)) fail(409, `Exit IP ${ip} is already used by another account`)
 
-    const number = Math.max(0, ...names().map(name => Number(name.slice(3)))) + 1, name = `acc${number}`
+    const deletedNumbers = existsSync(join(set.dir, "_deleted")) ? readdirSync(join(set.dir, "_deleted")).map(entry => Number(/^acc(\d+)-/.exec(entry)?.[1] ?? 0)) : []
+    const number = Math.max(0, ...names().map(name => Number(name.slice(3))), ...deletedNumbers) + 1, name = `acc${number}`
     mkdirSync(join(set.dir, name), { recursive: true, mode: 0o700 })
     const lines = [`ALL_PROXY=${proxyUrl}`, `HTTP_PROXY=${proxyUrl}`, `HTTPS_PROXY=${proxyUrl}`, `MERIDIAN_API_KEY=cheek-meridian-${name}-${randomBytes(12).toString("hex")}`]
     writeFileSync(envPath(name), lines.join("\n") + "\n", { mode: 0o600 })
@@ -618,7 +626,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
         if (trimmed.startsWith("HTTPS_PROXY=") || trimmed.startsWith("export HTTPS_PROXY=")) return `HTTPS_PROXY=${newProxyUrl}`
         return line
       })
-      writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
+      writePrivate(file, newLines.join("\n"))
       await set.sync()
     }
     const items = getSub2() ? await sub2Accounts().catch(() => null) : null
@@ -634,6 +642,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const ts = Date.now()
     renameSync(join(set.dir, name), join(deletedDir, `${name}-${ts}`))
     delete panel.data.labels[name]
+    for (const key of panel.data.keys) key.accounts = key.accounts.filter(account => account !== name)
     panel.save()
     await set.sync()
     await setStatus(name, "inactive")
@@ -647,11 +656,13 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmp, TERM: "dumb",
       XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state") }
     for (const [key, value] of Object.entries(vars)) if (!key.startsWith("MERIDIAN_")) env[key] = value
-    try { const { stdout, stderr } = await run("agy", ["-p", "/usage"], { env, timeout: 45_000 }); return `${stdout}\n${stderr}` }
-    catch (error) { const e = error as { stdout?: string; stderr?: string; message?: string }; return `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.stdout || e.stderr ? "" : e.message ?? ""}` }
+    try { const { stdout, stderr } = await run("agy", ["-p", "/usage"], { env, timeout: 45_000, killSignal: "SIGKILL", maxBuffer: 1 << 20 }); return `${stdout}\n${stderr}` }
+    catch (error) { const e = error as { stdout?: string; stderr?: string; message?: string }; return `${e.stdout ?? ""}\n${e.stderr ?? ""}\nEligibility check failed: could not run agy (${safeError(e.message ?? "unknown error")})` }
   })
   async function verify(name: string) {
-    const { vars } = existing(name)
+    const { vars, disabled } = existing(name)
+    if (disabled) fail(409, "Account is disabled")
+    if (!email(name)) fail(409, "Account is not logged in yet")
     return reconcile(name, vars.MERIDIAN_API_KEY ?? "", email(name))
   }
   /** Settings as shown to the browser: the admin key is never returned, only whether one is stored. */
@@ -674,6 +685,8 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const current = getSub2()
     const base = body.base === undefined ? current?.base ?? fail(400, "Sub2API address is required") : sub2Url(body.base)
     const keyInput = typeof body.key === "string" ? body.key.trim() : ""
+    // A stored key only ever goes to the address it was stored for; a different address needs its own key.
+    if (!keyInput && current && base !== current.base) fail(400, "Changing the Sub2API address requires entering the admin key again")
     const key = keyInput || current?.key || fail(400, "Sub2API admin key is required")
     if (/[\s\x00-\x1f]/.test(key)) fail(400, "Invalid Sub2API admin key")
     const ids = Array.isArray(body.groupIds) ? body.groupIds.map(Number) : current?.groupIds ?? []
@@ -692,10 +705,12 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   async function testSub2(body: Json) {
     const current = getSub2()
     const base = body.base ? sub2Url(body.base) : current?.base ?? fail(400, "Sub2API address is required")
-    const key = (typeof body.key === "string" && body.key.trim()) || current?.key || fail(400, "Sub2API admin key is required")
+    const given = typeof body.key === "string" ? body.key.trim() : ""
+    if (!given && current && base !== current.base) fail(400, "Testing a different Sub2API address requires entering the admin key")
+    const key = given || current?.key || fail(400, "Sub2API admin key is required")
     const started = Date.now()
     try { const groups = await sub2Groups({ base, key }); return { ok: true, latencyMs: Date.now() - started, groups, error: null } }
-    catch (error) { return { ok: false, latencyMs: null, groups: [], error: error instanceof Error ? error.message : String(error) } }
+    catch (error) { return { ok: false, latencyMs: null, groups: [], error: safeError(error) } }
   }
   /** Brings every logged-in account to Sub2API (eligible ones only); safe to repeat. */
   async function syncSub2() {
@@ -705,7 +720,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       const env = readEnv(name)!
       if (env.disabled || !email(name)) { results.push({ name, status: env.disabled ? "disabled" : "not-logged-in", sub2apiId: null, error: null }); continue }
       try { const r = await reconcile(name, env.vars.MERIDIAN_API_KEY ?? "", email(name)); results.push({ name, status: r.sub2apiStatus, sub2apiId: r.sub2apiId, error: null }) }
-      catch (error) { results.push({ name, status: "error", sub2apiId: null, error: error instanceof Error ? error.message : String(error) }) }
+      catch (error) { results.push({ name, status: "error", sub2apiId: null, error: safeError(error) }) }
     }
     return { results }
   }
@@ -722,7 +737,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     try {
       ip = await exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "")
     } catch (error) {
-      testError = error instanceof Error ? error.message : String(error)
+      testError = safeError(error)
     }
     const latencyMs = Math.max(1, Date.now() - start)
     quotas.delete(name)
@@ -801,7 +816,11 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     if (!cfg) return null
     const found = findSub2(await sub2Accounts(), name)
     if (found) {
-      if (found.status !== "active") await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { status: "active" } })
+      // A record left over from an earlier account with the same number must follow the current key.
+      const detail = await s2(`/admin/accounts/${found.id}`)
+      const credentials = typeof detail.credentials === "object" && detail.credentials !== null ? detail.credentials : {}
+      const stale = credentials.api_key !== apiKey || credentials.base_url !== options.baseUrl
+      if (stale || found.status !== "active") await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { status: "active", ...(stale ? { credentials: { ...credentials, api_key: apiKey, base_url: options.baseUrl } } : {}) } })
       return found.id
     }
     // The template (optional) supplies model mapping, groups and limits; explicit panel settings override it.
@@ -897,7 +916,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
         return Response.json(await route(request, path))
       } catch (error) {
         const status = error instanceof HttpError ? error.status : 500
-        return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status })
+        return Response.json({ error: safeError(error) }, { status })
       }
     },
   }

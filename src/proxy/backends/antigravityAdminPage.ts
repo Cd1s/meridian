@@ -418,7 +418,7 @@ var VIEWS = {
       box.innerHTML = "<table><thead><tr><th>账号</th><th>出口代理</th><th>状态</th><th>额度</th><th>请求</th><th></th></tr></thead><tbody>" + rows.map(function (a) {
         var s = accStatus(a), h = a.health, pn = proxyName(a.proxyId);
         return fmt('<tr data-n="{n}"><td class="cell"><b>{t}</b> <span class="chip">{n}</span><div class="l2">{e}</div></td><td class="cell">{pn}<div class="l2 mono">{px}</div></td>' +
-          '<td><span class="tag {c}" {tip}>{s}</span></td><td>{!q}</td><td class="cell">{!h}</td>' +
+          '<td><span class="tag {c}" {!tip}>{s}</span></td><td>{!q}</td><td class="cell">{!h}</td>' +
           '<td class="act"><button class="btn sm" data-a="test">{!z}测试</button> <span class="menu"><button class="icon-btn" data-a="menu" aria-label="更多操作" aria-haspopup="true">{!m}</button></span></td></tr>',
           { n: a.name, t: a.label || a.email || a.name, e: a.label && a.email ? a.email : (a.email ? "" : "未登录"), pn: pn || "", px: a.proxy || "未设置代理", c: s[0], s: s[1], tip: a.error ? 'title="' + esc(a.error) + '"' : "",
             q: quotaRows(a.quota, 2), h: h ? "<div>" + num(h.completed) + ' <span class="muted xs">成功</span></div><div class="l2">失败 ' + num(h.failed) + " · 进程 " + num(h.processes) + "</div>" : '<span class="muted">—</span>', z: ic("zap"), m: ic("more", 3) });
@@ -446,7 +446,7 @@ var VIEWS = {
       if (!rows.length) { box.innerHTML = empty("search", "没有匹配的代理", "换个关键词试试"); return; }
       box.innerHTML = "<table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th>出口 IP</th><th>延迟</th><th>使用账号</th><th></th></tr></thead><tbody>" + rows.map(function (p) {
         var t = p.lastTest, st = !t ? ["", "未测试"] : t.ok ? ["green", "可用"] : ["red", "失败"], used = p.usedBy || [];
-        return fmt('<tr data-id="{id}"><td class="cell"><b>{n}</b><div class="l2">{note}</div></td><td class="cell"><span class="chip">{pr}</span><div class="l2 mono">{u}</div></td><td><span class="tag {c}" {tip}>{s}</span><div class="l2 muted">{at}</div></td>' +
+        return fmt('<tr data-id="{id}"><td class="cell"><b>{n}</b><div class="l2">{note}</div></td><td class="cell"><span class="chip">{pr}</span><div class="l2 mono">{u}</div></td><td><span class="tag {c}" {!tip}>{s}</span><div class="l2 muted">{at}</div></td>' +
           '<td class="mono">{ip}</td><td>{!lat}</td><td>{!us}</td><td class="act"><button class="btn sm" data-a="ptest">{!z}测试</button> <button class="icon-btn" data-a="pedit" aria-label="编辑">{!e}</button><button class="icon-btn" data-a="pdel" aria-label="删除" {dis}>{!d}</button></td></tr>',
           { id: p.id, n: p.name, note: p.note || "", pr: p.protocol, u: p.url, c: st[0], s: st[1], tip: t && t.error ? 'title="' + esc(t.error) + '"' : "", at: t ? rel(t.at) : "", ip: (t && t.exitIp) || "—",
             lat: t && t.latencyMs != null ? '<span class="tag ' + latCls(t.latencyMs) + '">' + t.latencyMs + " ms</span>" : '<span class="muted">—</span>',
@@ -693,7 +693,7 @@ function bindSub2() {
   $("#s2y").onclick = function (e) {
     busy(e.currentTarget, async function () {
       var r = await api("POST", "/api/sub2api/sync"), L = { active: ["green", "已同步并启用"], inactive: ["yellow", "已停用（待核验）"], pending: ["yellow", "待核验"], disabled: ["", "账号已停用"], "not-logged-in": ["", "未登录"], error: ["red", "失败"], off: ["", "未启用"] };
-      $("#s2o").innerHTML = '<div class="tw"><table><thead><tr><th>账号</th><th>结果</th><th>Sub2API ID</th></tr></thead><tbody>' + r.results.map(function (x) { var l = L[x.status] || ["", x.status]; return fmt('<tr><td class="cell"><b>{n}</b></td><td><span class="tag {c}" {t}>{s}</span></td><td class="mono">{i}</td></tr>', { n: x.name, c: l[0], s: l[1], t: x.error ? 'title="' + esc(x.error) + '"' : "", i: x.sub2apiId == null ? "—" : "#" + x.sub2apiId }); }).join("") + "</tbody></table></div>";
+      $("#s2o").innerHTML = '<div class="tw"><table><thead><tr><th>账号</th><th>结果</th><th>Sub2API ID</th></tr></thead><tbody>' + r.results.map(function (x) { var l = L[x.status] || ["", x.status]; return fmt('<tr><td class="cell"><b>{n}</b></td><td><span class="tag {c}" {!t}>{s}</span></td><td class="mono">{i}</td></tr>', { n: x.name, c: l[0], s: l[1], t: x.error ? 'title="' + esc(x.error) + '"' : "", i: x.sub2apiId == null ? "—" : "#" + x.sub2apiId }); }).join("") + "</tbody></table></div>";
       toast("同步完成", "ok");
     });
   };

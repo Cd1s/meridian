@@ -102,6 +102,18 @@ describe("AgAccountSet Gateway Routing", () => {
     expect(key.lastUsedAt).toBeNumber()
   })
 
+  it("forwards a POST body and does not depend on cloning the incoming Request", async () => {
+    const { set, requestsReceived } = setup()
+    await set.sync()
+    set.panel.data.keys.push({ id: "key_post", name: "Post", prefix: "mk-1111…", hash: hashGatewaySecret(GW_SECRET), scope: "all", accounts: [], enabled: true, createdAt: Date.now(), lastUsedAt: null, requests: 0 })
+    // A Request-like object (node-server's lightweight request is not clonable with `new Request(request, …)`).
+    const real = new Request("http://localhost/v1/messages", { method: "POST", headers: { "x-api-key": GW_SECRET, "content-type": "application/json" }, body: JSON.stringify({ hi: 1 }), duplex: "half" } as RequestInit)
+    const lightweight = Object.assign(Object.create({ get url() { return real.url }, get method() { return real.method }, get headers() { return real.headers }, get body() { return real.body }, get signal() { return real.signal } }), {}) as Request
+    const response = await set.route(lightweight)
+    expect(response.status).toBe(200)
+    expect(requestsReceived[0]).toMatchObject({ targetAccountKey: K1, path: "/v1/messages" })
+  })
+
   it("rejects disabled gateway key with 401", async () => {
     const { set } = setup()
     await set.sync()

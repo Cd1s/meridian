@@ -59,8 +59,9 @@ export interface PanelData {
 
 const NAME_REGEX = /^acc[0-9]+$/
 
-export function maskProxyUrl(proxy: string): string {
-  return proxy.replace(/(\/\/[^:/@]*:)[^@]*@/, "$1***@")
+/** Hides credentials in proxy URLs, also inside free text (error messages): everything between `//` and the last `@` of the authority. */
+export function maskProxyUrl(text: string): string {
+  return text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)([^\s/?#"']*)@/gi, (_, scheme: string, userinfo: string) => `${scheme}${userinfo.includes(":") ? `${userinfo.slice(0, userinfo.indexOf(":"))}:***` : "***"}@`)
 }
 
 export function hashGatewaySecret(secret: string): string {
@@ -102,6 +103,7 @@ export class AgPanelStore {
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         console.error(`[panelStore] Failed to read ${this.filePath}: ${msg}`)
+        try { renameSync(this.filePath, `${this.filePath}.corrupt-${Date.now()}`) } catch (renameError) { console.error(`[panelStore] Could not keep a copy of the unreadable file: ${renameError instanceof Error ? renameError.message : renameError}`) }
         data = createDefaultPanelData()
       }
     }
