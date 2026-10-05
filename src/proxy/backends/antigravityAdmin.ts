@@ -21,6 +21,7 @@ export interface AgAdminOptions {
   token: string
   baseUrl: string
   loginScript: string
+  version?: string
   sub2api?: { base: string; key: string; templateId: number }
   exec?: (file: string, args: string[]) => Promise<string>
   fetch?: typeof fetch
@@ -45,6 +46,18 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   // Each quota read makes the account run `agy -p /usage`; the panel polls every 15s, so keep results for 5 minutes.
   const quotas = new Map<string, { at: number; value: Json | null }>()
   const panel = set.panel
+
+  let defaultVersion = "unknown"
+  try {
+    const pkgPath = join(__dirname, "../../../package.json")
+    if (existsSync(pkgPath)) {
+      const parsed = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string }
+      defaultVersion = parsed.version ?? "unknown"
+    }
+  } catch (error) {
+    defaultVersion = "unknown"
+  }
+  const version = options.version ?? defaultVersion
 
   const envPath = (name: string) => join(set.dir, name, "env")
   const readEnv = (name: string) => {
@@ -398,6 +411,66 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     return { key: newKey }
   }
 
+  async function getOverview() {
+    const allNames = names()
+    const servingNames = set.names
+    const serving = allNames.filter(n => servingNames.includes(n)).length
+    const disabled = allNames.filter(n => Boolean(readEnv(n)?.disabled)).length
+    const errorCount = allNames.filter(n => Boolean(set.failures.get(n))).length
+
+    const proxies = panel.data.proxies
+    const usedUrls = new Set(allNames.map(n => readEnv(n)?.vars.ALL_PROXY).filter(Boolean))
+    const ok = proxies.filter(p => p.lastTest?.ok === true).length
+    const failed = proxies.filter(p => p.lastTest !== null && p.lastTest.ok === false).length
+    const untested = proxies.filter(p => p.lastTest === null).length
+    const unused = proxies.filter(p => !usedUrls.has(p.url)).length
+
+    const keys = panel.data.keys
+    const keysEnabled = keys.filter(k => k.enabled).length
+
+    let completed = 0, trafficFailed = 0, reused = 0
+    const healthList = await Promise.all(allNames.map(n => servingNames.includes(n) ? probe(n, "/health") : null))
+    for (const h of healthList) {
+      if (h) {
+        completed += Number(h.completed ?? 0)
+        trafficFailed += Number(h.failed ?? 0)
+        reused += Number(h.reused ?? 0)
+      }
+    }
+
+    return {
+      accounts: {
+        total: allNames.length,
+        serving,
+        error: errorCount,
+        disabled,
+      },
+      proxies: {
+        total: proxies.length,
+        ok,
+        failed,
+        untested,
+        unused,
+      },
+      keys: {
+        total: keys.length,
+        enabled: keysEnabled,
+      },
+      traffic: {
+        completed,
+        failed: trafficFailed,
+        reused,
+      },
+      pool: {
+        max: set.pool?.maxProcesses ?? null,
+      },
+      sub2api: {
+        enabled: Boolean(sub2api),
+      },
+      version,
+    }
+  }
+
   async function describe(name: string, items: Json[] | null) {
     const { vars, disabled } = readEnv(name)!
     const serving = set.names.includes(name), cached = quotas.get(name)
@@ -651,6 +724,25 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const method = request.method, parts = path.split("/").filter(Boolean).slice(1)
     const body = (method === "POST" || method === "PATCH") ? await request.json().catch(() => ({})) as Json : {}
     if (parts[0] === "reload" && method === "POST") return set.sync()
+    if (parts[0] === "session" && method === "GET") {
+      return { ok: true, version, features: { sub2api: Boolean(sub2api) } }
+    }
+    if (parts[0] === "overview" && method === "GET") {
+      return getOverview()
+    }
+    if (parts[0] === "settings" && method === "GET") {
+      return {
+        version,
+        baseUrl: options.baseUrl,
+        pool: { max: set.pool?.maxProcesses ?? null },
+        sub2api: {
+          enabled: Boolean(sub2api),
+          base: sub2api ? sub2api.base : null,
+          templateId: sub2api ? sub2api.templateId : null,
+        },
+        accountsDir: set.dir,
+      }
+    }
     if (parts[0] === "proxies") return routeProxies(method, parts.slice(1), body)
     if (parts[0] === "keys") return routeKeys(method, parts.slice(1), body)
     if (parts[0] === "accounts") {

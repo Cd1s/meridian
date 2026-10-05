@@ -447,7 +447,7 @@ export async function runAccountsCli(dir: string, start?: (config: Partial<impor
         ? { base: env.MERIDIAN_SUB2API_BASE.replace(/\/+$/, ""), key: readFileSync(env.MERIDIAN_SUB2API_KEY_FILE, "utf8").trim(), templateId: Number(env.MERIDIAN_SUB2API_TEMPLATE_ID) }
         : undefined
       const baseUrl = env.MERIDIAN_SUB2API_ACCOUNT_BASE ?? `http://${host}:${port}`
-      const app = createAgAdmin(accounts, { token, baseUrl, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api })
+      const app = createAgAdmin(accounts, { token, baseUrl, version, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api })
       admin = serve({ fetch: app.fetch, port: Number(env.MERIDIAN_ADMIN_PORT), hostname: "127.0.0.1" })
       console.log(`[admin] http://127.0.0.1:${env.MERIDIAN_ADMIN_PORT}`)
     }
