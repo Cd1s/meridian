@@ -138,6 +138,7 @@ td.act{text-align:right;white-space:nowrap;width:1%}
 .empty .ei svg{width:24px;height:24px}
 .empty b{display:block;color:var(--tx);font-size:15px;margin-bottom:4px}
 .empty .btn{margin-top:14px}
+.sortbtn{border:0;background:transparent;font:inherit;font-weight:600;color:var(--mu);cursor:pointer;padding:0}.sortbtn:hover{color:var(--tx)}
 .skel{height:14px;border-radius:6px;background:linear-gradient(90deg,var(--bd),var(--sf2),var(--bd));background-size:200% 100%;animation:sk 1.2s infinite}
 @keyframes sk{to{background-position:-200% 0}}
 .skrow{padding:18px 20px;display:flex;flex-direction:column;gap:14px}
@@ -223,7 +224,7 @@ pre.code{margin:0;padding:14px 16px;border-radius:10px;background:var(--sf2);bor
 (function () {
 "use strict";
 var KEY = "agyAdminToken", THEME = "agyAdminTheme";
-var S = { token: "", route: "dashboard", accounts: [], pool: {}, proxies: [], keys: { gateway: [], accounts: [] }, overview: null, settings: null, f: { q: "", st: "all" }, loaded: {}, timer: 0 };
+var S = { token: "", route: "dashboard", accounts: [], pool: {}, proxies: [], keys: { gateway: [], accounts: [] }, overview: null, settings: null, f: { q: "", st: "all", sort: "lat", dir: "asc" }, loaded: {}, timer: 0 };
 
 /* ---------- helpers ---------- */
 function $(s, r) { return (r || document).querySelector(s); }
@@ -345,7 +346,13 @@ function quotaRows(q, max) {
   if (ws.length > max) h += '<div class="muted xs" style="margin-top:4px">另有 ' + (ws.length - max) + " 项额度</div>";
   return h;
 }
-function latCls(ms) { return ms == null ? "" : ms < 900 ? "green" : ms < 2500 ? "yellow" : "red"; }
+function latCls(ms) { return ms == null ? "" : ms < 200 ? "green" : ms < 450 ? "yellow" : "red"; }
+function latCell(t) {
+  if (!t || !t.ok || t.latencyMs == null) return '<span class="muted">—</span>';
+  return '<span class="tag ' + latCls(t.latencyMs) + '"><b>' + t.latencyMs + ' ms</b></span>' + (t.firstMs != null && t.firstMs !== t.latencyMs ? '<div class="l2 muted" title="新建连接（含握手）耗时">首次 ' + t.firstMs + " ms</div>" : "");
+}
+function sortMark() { return S.f.sort === "lat" ? (S.f.dir === "desc" ? "▼" : "▲") : "↕"; }
+function latKey(p) { var t = p.lastTest; return t && t.ok && t.latencyMs != null ? t.latencyMs : Infinity; }
 
 /* ---------- views ---------- */
 var VIEWS = {
@@ -431,7 +438,7 @@ var VIEWS = {
     load: function () { return api("GET", "/api/proxies").then(function (r) { S.proxies = r.proxies; S.loaded.proxies = true; }); },
     shell: function () {
       return '<div class="toolbar"><div class="search">' + ic("search") + '<input class="inp" id="pq" placeholder="搜索名称、地址、备注" aria-label="搜索代理"></div><span class="sp"></span>' +
-        '<button class="btn" id="pTest">' + ic("zap") + '全部测试</button><button class="btn" id="pImp">' + ic("upload") + '批量导入</button><button class="btn primary" id="pAdd">' + ic("plus") + "添加代理</button></div>" +
+        '<span class="muted xs" id="pSum"></span><button class="btn" id="pTest">' + ic("zap") + '全部测试</button><button class="btn" id="pImp">' + ic("upload") + '批量导入</button><button class="btn primary" id="pAdd">' + ic("plus") + "添加代理</button></div>" +
         '<div class="card"><div class="tw" id="pt">' + skeleton(5) + '</div></div><div class="note info" style="margin-top:16px">' + ic("alert") + "<div>每个账号应使用独立的出口 IP，添加账号时若出口 IP 与现有账号重复会被拒绝。支持 socks5 / socks5h / http / https 协议。</div></div>";
     },
     after: function () {
@@ -442,14 +449,17 @@ var VIEWS = {
     fill: function () {
       var q = (S.f.pq || "").trim().toLowerCase(), box = $("#pt"); if (!box) return;
       var rows = S.proxies.filter(function (p) { return !q || [p.name, p.url, p.note, p.protocol].join(" ").toLowerCase().indexOf(q) >= 0; });
+      if (S.f.sort === "lat") rows = rows.slice().sort(function (a, b) { var d = latKey(a) - latKey(b); if (d !== d) d = 0; return (S.f.dir === "desc" ? -d : d) || (a.name < b.name ? -1 : 1); });
       if (!S.proxies.length) { box.innerHTML = empty("globe", "代理池是空的", "先添加代理，再用它们创建账号", '<button class="btn primary" id="pAdd2">' + ic("plus") + "添加代理</button>"); var b = $("#pAdd2"); if (b) b.onclick = function () { openProxyModal(); }; return; }
       if (!rows.length) { box.innerHTML = empty("search", "没有匹配的代理", "换个关键词试试"); return; }
-      box.innerHTML = "<table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th>出口 IP</th><th>延迟</th><th>使用账号</th><th></th></tr></thead><tbody>" + rows.map(function (p) {
+      var lats = S.proxies.map(latKey).filter(isFinite).sort(function (a, b) { return a - b; }), sum = $("#pSum");
+      if (sum) sum.textContent = lats.length ? "已测 " + lats.length + " 个 · 最快 " + lats[0] + " ms · 中位 " + lats[Math.floor(lats.length / 2)] + " ms" : "";
+      box.innerHTML = "<table><thead><tr><th>名称</th><th>地址</th><th>状态</th><th>出口 IP</th><th><button class=\"sortbtn\" data-sort=\"lat\" title=\"按延迟排序\">延迟 " + sortMark() + "</button></th><th>使用账号</th><th></th></tr></thead><tbody>" + rows.map(function (p) {
         var t = p.lastTest, st = !t ? ["", "未测试"] : t.ok ? ["green", "可用"] : ["red", "失败"], used = p.usedBy || [];
         return fmt('<tr data-id="{id}"><td class="cell"><b>{n}</b><div class="l2">{note}</div></td><td class="cell"><span class="chip">{pr}</span><div class="l2 mono">{u}</div></td><td><span class="tag {c}" {!tip}>{s}</span><div class="l2 muted">{at}</div></td>' +
           '<td class="mono">{ip}</td><td>{!lat}</td><td>{!us}</td><td class="act"><button class="btn sm" data-a="ptest">{!z}测试</button> <button class="icon-btn" data-a="pedit" aria-label="编辑">{!e}</button><button class="icon-btn" data-a="pdel" aria-label="删除" {dis}>{!d}</button></td></tr>',
           { id: p.id, n: p.name, note: p.note || "", pr: p.protocol, u: p.url, c: st[0], s: st[1], tip: t && t.error ? 'title="' + esc(t.error) + '"' : "", at: t ? rel(t.at) : "", ip: (t && t.exitIp) || "—",
-            lat: t && t.latencyMs != null ? '<span class="tag ' + latCls(t.latencyMs) + '">' + t.latencyMs + " ms</span>" : '<span class="muted">—</span>',
+            lat: latCell(t),
             us: used.length ? used.map(function (n) { return '<span class="chip">' + esc(n) + "</span>"; }).join(" ") : '<span class="muted">未使用</span>', z: ic("zap"), e: ic("edit"), d: ic("trash"), dis: used.length ? 'disabled title="被账号使用中，无法删除"' : "" });
       }).join("") + "</tbody></table>";
     }
@@ -784,7 +794,7 @@ function openImport() {
 }
 async function proxyAction(act, id, btn) {
   var p = S.proxies.filter(function (x) { return x.id === id; })[0];
-  if (act === "ptest") return busy(btn, async function () { var r = await api("POST", "/api/proxies/" + encodeURIComponent(id) + "/test"); S.proxies = S.proxies.map(function (x) { return x.id === id ? r : x; }); VIEWS.proxies.fill(); var t = r.lastTest; toast(t && t.ok ? r.name + " 可用 · " + t.exitIp + " · " + t.latencyMs + " ms" : r.name + " 测试失败：" + ((t && t.error) || "无响应"), t && t.ok ? "ok" : "err"); });
+  if (act === "ptest") return busy(btn, async function () { var r = await api("POST", "/api/proxies/" + encodeURIComponent(id) + "/test"); S.proxies = S.proxies.map(function (x) { return x.id === id ? r : x; }); VIEWS.proxies.fill(); var t = r.lastTest; toast(t && t.ok ? r.name + " 可用 · " + t.exitIp + " · " + t.latencyMs + " ms" + (t.firstMs != null && t.firstMs !== t.latencyMs ? "（首次 " + t.firstMs + " ms）" : "") : r.name + " 测试失败：" + ((t && t.error) || "无响应"), t && t.ok ? "ok" : "err"); });
   if (act === "pedit") return openProxyModal(p);
   if (act === "pdel") {
     if (!(await confirmBox("删除代理", "确定从代理池删除 " + p.name + " 吗？", "删除", true))) return;
@@ -823,6 +833,7 @@ async function keyAction(act, id, row, input) {
 /* ---------- delegated events ---------- */
 $("#view").addEventListener("click", function (e) {
   var go = e.target.closest("[data-go]"); if (go) { location.hash = "#/" + go.dataset.go; return; }
+  var so = e.target.closest("[data-sort]"); if (so) { S.f.dir = S.f.sort === "lat" && S.f.dir === "asc" ? "desc" : "asc"; S.f.sort = "lat"; VIEWS.proxies.fill(); return; }
   var b = e.target.closest("[data-a]"); if (!b || b.disabled) return; var tr = b.closest("tr"), a = b.dataset.a;
   if (!tr) return;
   if (a === "menu") { var open = b.parentNode.querySelector(".pop"); closeMenus(); if (!open) openMenu(b, tr.dataset.n); return; }
