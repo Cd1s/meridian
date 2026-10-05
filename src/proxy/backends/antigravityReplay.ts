@@ -178,6 +178,7 @@ export class AgCompletedAnswers {
   }
   put(request: AgRequest, scope: string, answer: AgCompletedAnswer, requestId?: string) {
     if (!requestId && !this.eligible(request)) return
+    if (answer.content.some(block => block.type === 'tool_use' && this.hasConsumed(scope, block.id))) return
     const input = [this.fingerprint(request)]
     if (Buffer.byteLength(JSON.stringify({ input, response: answer })) > 1024 * 1024) {
       if (requestId) throw new AntigravityError('Identified response exceeds the 1 MiB replay budget', 413)
