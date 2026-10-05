@@ -1,5 +1,93 @@
 # Upstream review handoff
 
+## Current continuation — 2026-10-04 (after #1269)
+
+The [current continuation record](BACKLOG_CONTINUATION_2026-10-04.md) supersedes
+specific earlier October 4 statuses while preserving the logs below. Root remains
+the sole queue owner; no release or community-comment authority is inferred.
+
+[Checkpoint #1269](https://github.com/rynfar/meridian/pull/1269) merged as
+`0369441786b082aadeb31689dcbce41d7e8574d9`, validated head
+`65b7793001e9982296459a7e33b85813bc2e8509`, matching tree
+`e6ea7edcea9a81aeba9dd7b13cfed32f60eef4a2`; required
+[test run 37238890010](https://github.com/rynfar/meridian/actions/runs/37238890010)
+passed. #1228 closed at unchanged `cee10174` at 22:45 UTC because its private
+SDK transcript mutation is declined; the original symptom remains unresolved.
+
+The owner approved #1270's four current-expiry fields and shared UI; #1260
+remains open with its five history fields/storage/listeners/auth logs excluded.
+The [bounded #1219 record](evidence/1219-sqlite-scope-review.md) resolves complete
+extraction, not whole-stack semantic review or SQL contract approval. #1244's
+async cleanup approval already exists; its implementation evidence stays open.
+
+Draft #1271 (`7de8cf5f`) retains safe fsync/publication durability, separate
+maintainer corrections and Nowaker credit; historical full suite is
+5,349 pass / 35 skips / 0 failures. Independent review passes, but live/native
+proof remains required; submitted-head CI passes. #1223's excluded recovery stays open.
+Draft [SSE #1273](https://github.com/rynfar/meridian/pull/1273), final `8e1bf53b`,
+retains fully tested product `bb33d26d`: 5,406 / 35 skips / 0 failures across
+19 stages. Test-only synchronization at `dabb2165` has discriminating controls
+and typecheck/build; final evidence-only commit preserves product/harness blobs.
+Native flow evidence remains open; submitted-head CI passes.
+
+E41 [#1272](https://github.com/rynfar/meridian/pull/1272) merged as `d3be0c62`
+from exact reviewed `8a08d3d4` after all six executed CI checks passed, including
+test, plus the expected changelog skip. Merge tree `56d1b172` exactly matches
+reviewed content; human authorship and blank squash body were verified. Local
+proof: 5,354 / 35 skips / 0 failures, typecheck/build and independent review.
+Original #1245/#1220 causality stays open. Approved expiry draft
+[#1275](https://github.com/rynfar/meridian/pull/1275), final `1856ee65`, retains
+fully tested executable `b386b148`: 5,374 / 35 skips / 0 failures and actual
+inactive-browser DOM retention/blur/in-flight success/failure controls on both
+pages. Visible keyboard and screen-reader proof remain unavailable; current
+native screenshot coverage is limited. Positive native/provider login and
+client/package acceptance remains open; submitted-head CI passes.
+
+Transcript enrollment's corrected harness observes the exact target-installed
+SDK and cleans setup failures. Its first full run at `ab9bb9ae` failed an
+existing third-replacement test that would discard an unfenced predecessor.
+The fixture now obtains modern locators through actual metadata registration,
+retaining every original assertion and the production guard. The necessary full
+rerun at frozen `b20a0e66` passes 5,392 / 35 skips / 0 failures across
+19 batches. Draft [#1276](https://github.com/rynfar/meridian/pull/1276) is now
+delivered at `e47fbb28` on current main `d3be0c62`, with all eight replayed
+patches and product/harness/test blobs preserved. Focused checks, typecheck and
+build pass; native/client/Windows and final-head CI remain open. The source
+stays open; this does not collect the untracked backlog.
+
+The exact submitted heads of drafts #1271 (`7de8cf5f`), #1273 (`8e1bf53b`)
+and #1275 (`1856ee65`) now have all six executed CI checks passing, including
+test, plus the expected changelog skip. Earlier CI-pending wording is superseded
+for those heads; refresh after any head/base change. Their actual affected-flow
+evidence remains open, so CI alone does not permit landing them.
+
+Sonnet draft #1267's verified local terminal head is `5a8097c3`. Default-native
+401/zero-query and round-two personal 200 followed by one `<synthetic>` query
+with zero input and normalized subscription refusal remain retained separately.
+Round three's distinct work snapshot returned usage 200, but its tiny actual
+Linux/V2/SDK/Sonnet control made one SDK query: `<synthetic>`, zero input,
+`is_error=true`, provider HTTP 400/API Error mentioning extra usage, no receipt.
+The precise entitlement cause remains unproven. Large baseline/fixed/resume
+were NOT RUN; retained rounds total two SDK query attempts and zero valid
+required-model completions. Package/client identities and each arm's 409
+installed dist files match; credentialless/syntax/privacy/content checks pass. Root verified
+terminal completion, zero owned children and removal of owned runtime/container
+with source unchanged. Native acceptance and fresh local/base/head/CI remain
+open; controller owns the requested working-login follow-up. Independent review
+approved the production/harness; local evidence head `73b2d122` clarifies actual
+package-installed Meridian V2 plugin execution through setup/config assertions,
+catalog discovery and the plugin-generated attested primary request. It records
+later controller snapshot cleanup without claiming successful inference. The
+fresh Sonnet full suite is running at frozen `73b2d122` after GC released
+the slot. Refresh active
+source/delivery evidence before integration; this checkpoint does not itself
+establish whole-stack acceptance. A single paginated post-E41 queue/discovery
+refresh at 23:38:04 UTC found the same six managed repositories and permissions,
+27 open PRs / 12 issues, unchanged contributor heads, and no coverage gaps or
+unexpected source work. Held Release Please #1202 is now `ebbc22e7`; separate
+release authorization remains absent. The continuation records exact counts
+and scope.
+
 ## Current continuation — 2026-10-04
 
 The owner authorized a managed PR/issue backlog pass after reviewing repository
