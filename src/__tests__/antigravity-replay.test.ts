@@ -134,6 +134,16 @@ describe('Antigravity completed answer storage', () => {
     expect(results[0]).toBeInstanceOf(Error)
     expect(results.slice(1).every(result => result === undefined)).toBe(true)
   })
+  it('joins eligible retries without an ID and bounds their wait', async () => {
+    const store = new AgCompletedAnswers(), body = request()
+    const release = store.claim(body, 'owner')
+    const joined = store.wait(body, 'owner', undefined, new AbortController().signal, 100)
+    release()
+    await joined
+    const held = store.claim(body, 'owner')
+    await expect(store.wait(body, 'owner', undefined, new AbortController().signal, 1)).rejects.toThrow('Timed out waiting')
+    held()
+  })
   it('reconstructs complete SSE including exact unicode, message identity, stops and usage', async () => {
     const value = { ...answer, content: [{ type: 'text' as const, text: 'x'.repeat(4095) + '🧪 café' }], stop_reason: 'stop_sequence', stop_sequence: 'END' }
     const response = replayAgAnswer(value, true, { 'x-meridian-effective-model': 'fixture-model' })

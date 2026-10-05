@@ -130,17 +130,26 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const replayOnly = request.headers.get("x-meridian-replay-only")
     if (replayOnly !== null && (replayOnly !== "true" || !requestId || !canSaveAnswer)) throw new AntigravityError("Cache-only recovery requires an identified Anthropic request with native grants disabled")
     if (requestId && !canSaveAnswer) throw new AntigravityError("Identified retries require native browser/subagent grants to be disabled")
-    await completedAnswers.wait(body, scope, requestId, request.signal)
+    await completedAnswers.wait(body, scope, requestId, request.signal, runtime.turnTimeoutMs)
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
     const saved = canSaveAnswer ? completedAnswers.get(body, scope, requestId) : undefined
-    if (saved) {
-      const calls = saved.content.filter(block => block.type === "tool_use")
+    const replaySaved = (answer: typeof saved) => {
+      if (!answer) return
+      const calls = answer.content.filter(block => block.type === "tool_use")
       if (calls.some(call => runtime.hasConsumedTool(call.id) || runtime.recoveringTools.has(call.id) || runtime.toolOwners.get(call.id)?.busy)) throw new AntigravityError("Saved tool calls are already being answered or consumed; continue with their results", 409)
-      return replayAgAnswer(saved, body.stream === true, adaptationHeaders)
+      return replayAgAnswer(answer, body.stream === true, adaptationHeaders)
+    }
+    if (saved) {
+      return replaySaved(saved)!
     }
     if (replayOnly) throw new AntigravityError("No saved response is available for this request", 404, "not_found_error")
-    const release = completedAnswers.claim(body, scope, requestId)
+    const release = await completedAnswers.claimWhenReady(body, scope, requestId, request.signal, runtime.turnTimeoutMs)
+    const savedAfterClaim = canSaveAnswer ? completedAnswers.get(body, scope, requestId) : undefined
+    if (savedAfterClaim) {
+      try { return replaySaved(savedAfterClaim)! }
+      finally { release() }
+    }
     let run: AntigravityRun
     try { run = await selectRun(body, request.signal) } catch (error) { release(); throw error }
     let completed = false, cancelledDuringResponse = false
@@ -199,7 +208,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
             // Save the whole validated batch before exposing any client action.
             // If transport loss kills its owner, completed results can use history replay.
             await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
-            if (requestId) {
+            if (canSaveAnswer && (requestId || completedAnswers.eligible(body))) {
               const output = content.filter(block => block.type === "text" || block.type === "tool_use")
               completedAnswers.put(body, scope, { ...base, content: output, stop_reason: reason, stop_sequence: null, usage }, requestId)
             }

@@ -40,21 +40,24 @@ export class AgCompletedAnswers {
   eligible(request: AgRequest) {
     return blocks(request.messages.at(-1)!).some(block => block.type === 'tool_result')
   }
-  async wait(request: AgRequest, scope: string, requestId: string | undefined, signal: AbortSignal) {
-    if (!requestId) return
+  async wait(request: AgRequest, scope: string, requestId: string | undefined, signal: AbortSignal, timeoutMs?: number) {
+    if (!requestId && !this.eligible(request)) return
     const active = this.active.get(this.key(request, scope, requestId))
     if (!active) return
     if (active.fingerprint !== this.fingerprint(request)) throw new AntigravityError('Request ID was reused with a different request', 409)
     if (active.waiters.size >= 128) throw new AntigravityError('Too many retries waiting for one request', 429, 'rate_limit_error')
     await new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
       const finish = (error?: Error) => {
         active.waiters.delete(done); signal.removeEventListener('abort', abort)
+        if (timer) clearTimeout(timer)
         if (error) reject(error); else resolve()
       }
       const done = () => finish()
       const abort = () => finish(new AntigravityError('Request cancelled', 499, 'api_error'))
       active.waiters.add(done)
       signal.addEventListener('abort', abort, { once: true })
+      if (timeoutMs !== undefined) { timer = setTimeout(() => finish(new AntigravityError('Timed out waiting for the active Antigravity response', 504, 'api_error')), timeoutMs); timer.unref() }
       if (signal.aborted) abort()
     })
   }
@@ -66,19 +69,21 @@ export class AgCompletedAnswers {
 
   claim(request: AgRequest, scope: string, requestId?: string): () => void {
     if (this.draining) throw new AntigravityError('Antigravity is shutting down', 503, 'api_error')
-    if (!requestId) return () => undefined
+    if (!requestId && !this.eligible(request)) return () => undefined
     const key = this.key(request, scope, requestId)
     if (this.active.has(key)) throw new AntigravityError('Request already active', 409)
     if (this.active.size >= 128) throw new AntigravityError('Too many identified requests', 429, 'rate_limit_error')
     const fingerprint = this.fingerprint(request)
-    const interrupted = this.state?.get('unfinished-requests', key, scope)
+    const interrupted = requestId ? this.state?.get('unfinished-requests', key, scope) : undefined
     if (interrupted) {
       if (interrupted !== fingerprint) throw new AntigravityError('Request ID was reused with a different request', 409)
       throw new AntigravityError('This request was interrupted by a service restart without a saved response. Its outcome is uncertain. Review client tool history and any external effects before starting a new turn; do not automatically retry with a new request ID.', 409)
     }
     // Refuse admission instead of evicting another unresolved recovery guard.
-    if (this.state && this.state.records('unfinished-requests').length >= 128) throw new AntigravityError('Unfinished request recovery journal is full; retained guards expire after 30 minutes', 429, 'rate_limit_error')
-    this.state?.put('unfinished-requests', key, scope, fingerprint, Date.now() + 30 * 60_000, 128, 65536)
+    if (requestId) {
+      if (this.state && this.state.records('unfinished-requests').length >= 128) throw new AntigravityError('Unfinished request recovery journal is full; retained guards expire after 30 minutes', 429, 'rate_limit_error')
+      this.state?.put('unfinished-requests', key, scope, fingerprint, Date.now() + 30 * 60_000, 128, 65536)
+    }
     const active = { fingerprint, waiters: new Set<() => void>() }
     this.active.set(key, active)
     return () => {
@@ -89,6 +94,13 @@ export class AgCompletedAnswers {
         for (const done of active.waiters) done()
       }
     }
+  }
+
+  /** Wait and claim as one event-loop admission step for implicit history retries. */
+  async claimWhenReady(request: AgRequest, scope: string, requestId: string | undefined, signal: AbortSignal, timeoutMs?: number): Promise<() => void> {
+    const key = this.key(request, scope, requestId)
+    if (this.active.has(key)) await this.wait(request, scope, requestId, signal, timeoutMs)
+    return this.claim(request, scope, requestId)
   }
 
   get(request: AgRequest, scope: string, requestId?: string): AgCompletedAnswer | undefined {
