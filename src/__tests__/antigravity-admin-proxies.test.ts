@@ -37,10 +37,16 @@ function setup(files: Record<string, string>) {
     "socks5h://new:1": "3.3.3.3",
     "http://valid:8080": "4.4.4.4",
   }
+  const ipifyOnly = new Set<string>()
   const exec = async (_file: string, args: string[]) => {
     curlCalls.push(args)
-    const proxyArg = args[4]!
-    return ips[proxyArg] ?? ""
+    const proxyArg = args[args.indexOf("-x") + 1]!
+    const ip = ips[proxyArg] ?? ""
+    if (args.includes("https://api.ipify.org")) return ip
+    if (!ip || ipifyOnly.has(proxyArg)) throw new Error(`Command failed: curl -x ${proxyArg}`)
+    // cloudflare trace x3 over one connection: the first request is the slow one
+    const body = `fl=1\nip=${ip}\nloc=TH\n`
+    return `${body}\n@@0.480\n${body}\n@@0.095\n${body}\n@@0.101\n`
   }
 
   const admin = createAgAdmin(set, {
@@ -59,7 +65,7 @@ function setup(files: Record<string, string>) {
     req(path, { method: "PATCH", body: JSON.stringify(body) }, headers)
   const del = (path: string, headers: Record<string, string> = auth) => req(path, { method: "DELETE" }, headers)
 
-  return { dir, set, admin, req, get, post, patch, del, curlCalls }
+  return { dir, set, admin, req, get, post, patch, del, curlCalls, ipifyOnly }
 }
 
 const baseAccounts = {
@@ -194,6 +200,29 @@ socks5h://u:pw@p3:1080 Another Proxy
     const savedP1 = panelJson.proxies.find((p: any) => p.id === p1.id)
     expect(savedP1.lastTest.ok).toBe(true)
     expect(savedP1.lastTest.exitIp).toBe("1.1.1.1")
+  })
+
+  it("reports the warm round trip as the latency and keeps the cold start separately", async () => {
+    const { get, post } = setup(baseAccounts)
+    const list = await (await get("/api/proxies")).json() as { proxies: AdminProxy[] }
+    const p1 = list.proxies.find(p => p.name === "acc1 proxy")!
+    const body = await (await post(`/api/proxies/${p1.id}/test`)).json() as AdminProxy
+    expect(body.lastTest).toMatchObject({ ok: true, exitIp: "1.1.1.1", latencyMs: 95, firstMs: 480 })
+    const quick = await (await post("/api/proxies/test", { url: "socks5h://new:1" })).json() as any
+    expect(quick).toMatchObject({ ok: true, exitIp: "3.3.3.3", latencyMs: 95, firstMs: 480 })
+  })
+
+  it("falls back to ipify when the trace endpoint is unreachable, and fails cleanly when neither works", async () => {
+    const { get, post, ipifyOnly } = setup(baseAccounts)
+    const list = await (await get("/api/proxies")).json() as { proxies: AdminProxy[] }
+    const p1 = list.proxies.find(p => p.name === "acc1 proxy")!
+    ipifyOnly.add("socks5h://u:pw@p1:1")
+    const viaFallback = await (await post(`/api/proxies/${p1.id}/test`)).json() as AdminProxy
+    expect(viaFallback.lastTest?.ok).toBe(true)
+    expect(viaFallback.lastTest?.exitIp).toBe("1.1.1.1")
+    expect(viaFallback.lastTest?.firstMs).toBeGreaterThanOrEqual(1)
+    const dead = await (await post("/api/proxies/test", { url: "socks5h://nothing:1" })).json() as any
+    expect(dead).toMatchObject({ ok: false, exitIp: null })
   })
 
   it("tests all proxies with concurrency limit 4", async () => {

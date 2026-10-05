@@ -8,7 +8,10 @@ export type ProxyProtocol = "socks5" | "socks5h" | "http" | "https"
 export interface ProxyTestResult {
   ok: boolean
   exitIp: string | null
+  /** Round trip through the proxy on a warm connection: what long-lived real traffic pays. Falls back to the cold time when only one request could be measured. */
   latencyMs: number | null
+  /** Cold start: new connection + handshakes. Absent in results saved by older versions. */
+  firstMs?: number | null
   at: number
   error: string | null
 }

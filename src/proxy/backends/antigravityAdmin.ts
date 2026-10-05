@@ -169,20 +169,31 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     }
   }
 
+  /**
+   * One curl, three requests over the same connection: the first pays the handshakes, the next two show what a warm connection costs.
+   * cloudflare's trace answers with the exit IP and is much faster than ipify; ipify stays as a fallback.
+   */
   async function testProxyUrl(proxyUrl: string): Promise<ProxyTestResult> {
     const at = Date.now()
     const start = Date.now()
+    const trace = "https://www.cloudflare.com/cdn-cgi/trace"
     try {
-      const out = await exec("curl", ["-s", "-m", "15", "-x", proxyUrl, "https://api.ipify.org"])
-      const ip = out.trim()
-      const latencyMs = Math.max(1, Date.now() - start)
-      if (/^[0-9a-fA-F.:]{3,45}$/.test(ip)) {
-        return { ok: true, exitIp: ip, latencyMs, at, error: null }
+      let ip: string | null = null, firstMs: number | null = null, warmMs: number | null = null
+      try {
+        const out = await exec("curl", ["-s", "-m", "15", "-x", proxyUrl, "-w", "\n@@%{time_total}\n", trace, trace, trace])
+        const times = [...out.matchAll(/@@([0-9.]+)/g)].map(match => Math.max(1, Math.round(Number(match[1]) * 1000)))
+        const found = /^ip=([0-9a-fA-F.:]{3,45})$/m.exec(out)?.[1]
+        if (found && times.length >= 1) { ip = found; firstMs = times[0]!; warmMs = times.length > 1 ? Math.min(...times.slice(1)) : null }
+        else if (/^[0-9a-fA-F.:]{3,45}$/.test(out.trim())) { ip = out.trim(); firstMs = Math.max(1, Date.now() - start) }
+      } catch { ip = null }
+      if (!ip) {
+        const out = (await exec("curl", ["-s", "-m", "15", "-x", proxyUrl, "https://api.ipify.org"])).trim()
+        if (/^[0-9a-fA-F.:]{3,45}$/.test(out)) { ip = out; firstMs = Math.max(1, Date.now() - start) }
       }
-      return { ok: false, exitIp: null, latencyMs, at, error: "Proxy did not return an exit IP" }
+      if (ip) return { ok: true, exitIp: ip, latencyMs: warmMs ?? firstMs, firstMs, at, error: null }
+      return { ok: false, exitIp: null, latencyMs: Math.max(1, Date.now() - start), firstMs: null, at, error: "Proxy did not return an exit IP" }
     } catch (error) {
-      const latencyMs = Math.max(1, Date.now() - start)
-      return { ok: false, exitIp: null, latencyMs, at, error: safeError(error) }
+      return { ok: false, exitIp: null, latencyMs: Math.max(1, Date.now() - start), firstMs: null, at, error: safeError(error) }
     }
   }
 
@@ -296,7 +307,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
         if (method !== "POST") fail(405, "Method not allowed")
         const validated = validateProxyUrl(body.url)
         const res = await testProxyUrl(validated.url)
-        return { ok: res.ok, exitIp: res.exitIp, latencyMs: res.latencyMs, error: res.error }
+        return { ok: res.ok, exitIp: res.exitIp, latencyMs: res.latencyMs, firstMs: res.firstMs ?? null, error: res.error }
       }
       const id = sub
       const proxy = panel.data.proxies.find(p => p.id === id) ?? fail(404, `Unknown proxy ${id}`)
