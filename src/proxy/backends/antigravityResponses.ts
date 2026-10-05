@@ -50,6 +50,25 @@ export class AgResponseStore {
     // Serialization isolates forks and prevents callers from mutating saved history.
     return JSON.parse(json) as { input: unknown[]; response: Record<string, unknown>; events?: AgResponseEvent[] }
   }
+  invalidateToolUses(scope: string, toolIds: string[]): string[] {
+    const ids = new Set(toolIds)
+    const invalidated: string[] = []
+    this.prune()
+    for (const [id, entry] of this.entries) {
+      if (entry.scope !== scope) continue
+      const json = entry.json ?? this.state?.get(this.kind, id, scope)
+      if (!json) continue
+      const response = (JSON.parse(json) as { response?: { content?: unknown } }).response
+      if (!Array.isArray(response?.content)) continue
+      const consumed = response.content.some(block => {
+        if (typeof block !== 'object' || block === null) return false
+        const candidate = block as { type?: unknown; id?: unknown }
+        return candidate.type === 'tool_use' && typeof candidate.id === 'string' && ids.has(candidate.id)
+      })
+      if (consumed) { this.remove(id); invalidated.push(id) }
+    }
+    return invalidated
+  }
   delete(id: string, scope: string) {
     this.get(id, scope)
     this.remove(id)

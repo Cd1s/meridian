@@ -95,7 +95,16 @@ describe('Antigravity completed answer storage', () => {
     store.markConsumed('owner', ['original-call'])
     for (let i = 0; i < 4096; i++) store.markConsumed('owner', [`other-${i}`])
     expect(store.consumedMemorySize).toBeLessThanOrEqual(4096)
-    expect(store.isConsumed('owner', store.get(body, 'owner')!)).toBe(true)
+    expect(store.get(body, 'owner')).toBeUndefined()
+  })
+  it('invalidates a no-state saved tool answer when its consumed marker would otherwise be evicted', () => {
+    const store = new AgCompletedAnswers(), body = request('no-state-original')
+    const saved = { ...answer, content: [{ type: 'tool_use' as const, id: 'no-state-original', name: 'lookup', input: {} }] }
+    store.put(body, 'owner', saved)
+    store.markConsumed('owner', ['no-state-original'])
+    for (let i = 0; i < 4096; i++) store.markConsumed('owner', [`no-state-other-${i}`])
+    expect(store.get(body, 'owner')).toBeUndefined()
+    expect(store.isConsumedRequest(body, 'owner')).toBe(true)
   })
   it('expires and clears the bounded consumed-tool memory index while durable state remains authoritative', () => {
     const now = spyOn(Date, 'now').mockReturnValue(1_000_000)

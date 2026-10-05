@@ -132,6 +132,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const replayOnly = request.headers.get("x-meridian-replay-only")
     if (replayOnly !== null && (replayOnly !== "true" || !requestId || !canSaveAnswer)) throw new AntigravityError("Cache-only recovery requires an identified Anthropic request with native grants disabled")
     if (requestId && !canSaveAnswer) throw new AntigravityError("Identified retries require native browser/subagent grants to be disabled")
+    if (canSaveAnswer && completedAnswers.isConsumedRequest(body, scope, requestId)) throw new AntigravityError("Saved tool calls are already consumed or being answered; continue with their results", 409)
     if (canSaveAnswer) await completedAnswers.wait(body, scope, requestId, request.signal, runtime.turnTimeoutMs)
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")

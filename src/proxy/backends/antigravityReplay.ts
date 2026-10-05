@@ -31,6 +31,8 @@ export class AgCompletedAnswers {
   private readonly store: AgResponseStore
   private readonly active = new Map<string, { fingerprint: string; waiters: Set<() => void> }>()
   private readonly consumedSavedTools = new Map<string, number>()
+  private readonly consumedAnswerKeys = new Map<string, number>()
+  private consumedNextExpiry?: number
   constructor(private readonly state?: AgState) {
     this.store = new AgResponseStore({ entries: 128, bytes: 16 * 1024 * 1024, entryBytes: 1024 * 1024, ttlMs: 30 * 60_000 }, undefined, state, 'completed-answers')
   }
@@ -129,20 +131,48 @@ export class AgCompletedAnswers {
     return this.consumedSavedTools.has(key) || !!this.state?.get('completed-answer-consumed', key, scope)
   }
   private pruneConsumedMemory(now = Date.now()): void {
-    for (const [key, expires] of this.consumedSavedTools) if (expires <= now) this.consumedSavedTools.delete(key)
+    if (this.consumedNextExpiry !== undefined && this.consumedNextExpiry > now) return
+    let next: number | undefined
+    for (const [key, expires] of this.consumedSavedTools) {
+      if (expires <= now) this.consumedSavedTools.delete(key)
+      else if (next === undefined || expires < next) next = expires
+    }
+    this.consumedNextExpiry = next
   }
   get consumedMemorySize(): number { this.pruneConsumedMemory(); return this.consumedSavedTools.size }
   isConsumed(scope: string, answer: AgCompletedAnswer): boolean {
     return answer.content.some(block => block.type === 'tool_use' && this.hasConsumed(scope, block.id))
   }
+  private answerKeyConsumed(scope: string, key: string): boolean {
+    const expires = this.consumedAnswerKeys.get(`${scope}\0${key}`)
+    if (expires === undefined) return false
+    if (expires <= Date.now()) { this.consumedAnswerKeys.delete(`${scope}\0${key}`); return false }
+    return true
+  }
+  isConsumedRequest(request: AgRequest, scope: string, requestId?: string): boolean {
+    return this.answerKeyConsumed(scope, this.key(request, scope, requestId))
+  }
   markConsumed(scope: string, toolIds: string[]): void {
     const expires = Date.now() + 30 * 60_000
     this.pruneConsumedMemory()
+    const invalidatedAnswers = this.store.invalidateToolUses(scope, toolIds)
+    if (!this.state) {
+      const expiresAnswers = Date.now() + 30 * 60_000
+      for (const answerKey of invalidatedAnswers) {
+        this.consumedAnswerKeys.set(`${scope}\0${answerKey}`, expiresAnswers)
+        while (this.consumedAnswerKeys.size > 128) this.consumedAnswerKeys.delete(this.consumedAnswerKeys.keys().next().value!)
+      }
+    }
     for (const id of toolIds) {
       const key = createHash('sha256').update(scope).update('\0').update(id).digest('hex')
       this.consumedSavedTools.delete(key)
       this.consumedSavedTools.set(key, expires)
-      while (this.consumedSavedTools.size > 4096) this.consumedSavedTools.delete(this.consumedSavedTools.keys().next().value!)
+      if (this.consumedNextExpiry === undefined || expires < this.consumedNextExpiry) this.consumedNextExpiry = expires
+      while (this.consumedSavedTools.size > 4096) {
+        const oldest = this.consumedSavedTools.keys().next().value!
+        if (this.consumedSavedTools.get(oldest) === this.consumedNextExpiry) this.consumedNextExpiry = undefined
+        this.consumedSavedTools.delete(oldest)
+      }
       this.state?.put('completed-answer-consumed', key, scope, 'true', expires, 100_000, 16 * 1024 * 1024)
     }
   }
@@ -155,7 +185,7 @@ export class AgCompletedAnswers {
     }
     this.store.put(this.key(request, scope, requestId), scope, input, { ...answer })
   }
-  clear() { this.store.clear(); this.consumedSavedTools.clear() }
+  clear() { this.store.clear(); this.consumedSavedTools.clear(); this.consumedAnswerKeys.clear(); this.consumedNextExpiry = undefined }
 }
 
 /** Reconstruct protocol events lazily, without retaining a second response buffer. */
