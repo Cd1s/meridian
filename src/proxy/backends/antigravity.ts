@@ -17,6 +17,7 @@ import { hasValidApiKey } from "../auth"
 import { headerSettingsResponse, healthHostname } from "../../headerSettings"
 import { AntigravityRuntime, type AntigravityRun } from "./antigravityRuntime"
 import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequest, type AgBlock, type AgResult, type AgRequest } from "./antigravityProtocol"
+import { agAccountHash, agLogRequest, agLoggedRequest } from "./antigravityRequestLog"
 
 function errorResponse(error: unknown): Response {
   const e = error instanceof AntigravityError ? error : new AntigravityError(error instanceof Error ? error.message : String(error), 503, "api_error")
@@ -42,6 +43,7 @@ async function readBody(request: Request): Promise<unknown> {
 
 export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage> } {
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
+  const accountHash = agAccountHash(runtime.options.env)
   const responses = new AgResponseStore(undefined, undefined, runtime.state)
   const completedAnswers = new AgCompletedAnswers(runtime.state)
   const responseJobs = new AgResponseJobs(responses)
@@ -239,6 +241,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           }
           const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
           runtime.record(metric)
+          agLogRequest({ ...metric, stream: body.stream === true, isToolResultContinuation: suffix.flatMap(blocks).some(block => block.type === "tool_result") }, accountHash)
           await runtime.plugins.observe("onTelemetry", metric, request.signal)
         } finally {
           completed = true
@@ -371,8 +374,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           return Response.json(current.response, { headers: { 'cache-control': 'no-store' } })
         }
       }
-      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agOpenai(request, await readBody(request), path === "/v1/responses", request => messages(request, false), responses, responseJobs)
-      if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await messages(request)
+      if (request.method === "POST" && ["/v1/chat/completions", "/v1/responses"].includes(path)) return await agLoggedRequest(request, accountHash, async () => agOpenai(request, await readBody(request), path === "/v1/responses", request => messages(request, false), responses, responseJobs))
+      if (request.method === "POST" && ["/v1/messages", "/messages"].includes(path)) return await agLoggedRequest(request, accountHash, () => messages(request))
       return errorResponse(new AntigravityError("Endpoint unavailable on the Antigravity backend", 404, "not_found_error"))
     } catch (error) { return errorResponse(error) }
   }
