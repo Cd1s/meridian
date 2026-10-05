@@ -18,6 +18,7 @@ import { join } from "node:path"
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk"
 import { isForwardedDenial } from "../src/proxy/passthroughDenial.ts"
 import { readSessionStoreSnapshot, setSessionStoreDir } from "../src/proxy/sessionStore.ts"
+import { parseAssistantResponse, replayAssistantBlocks } from "./lib/e41-assistant-response.ts"
 
 process.env.MERIDIAN_PASSTHROUGH = "1"
 process.env.OPENCODE_CLAUDE_PROVIDER_DEBUG = "1"
@@ -59,27 +60,7 @@ const short = s => (typeof s === "string" && s.length > 10 ? s.slice(-8) : Strin
 
 /** Parse either response shape into assistant content blocks plus usage. */
 async function assistantBlocks(res) {
-  const text = await res.text()
-  if (!STREAM) { const body = JSON.parse(text); return { blocks: body.content ?? [], usage: body.usage ?? {} } }
-  const blocks = []
-  let usage = {}
-  for (const line of text.split("\n")) {
-    if (!line.startsWith("data:")) continue
-    let ev
-    try { ev = JSON.parse(line.slice(5)) } catch { continue }
-    if (ev.type === "message_start") usage = { ...usage, ...(ev.message?.usage ?? {}) }
-    if (ev.type === "message_delta" && ev.usage) usage = { ...usage, ...ev.usage }
-    if (ev.type === "content_block_start") blocks[ev.index] = { ...ev.content_block, ...(ev.content_block.type === "tool_use" ? { _json: "" } : {}) }
-    if (ev.type === "content_block_delta") {
-      const b = blocks[ev.index]
-      if (ev.delta.type === "text_delta") b.text = (b.text ?? "") + ev.delta.text
-      if (ev.delta.type === "input_json_delta") b._json += ev.delta.partial_json
-    }
-  }
-  return { usage, blocks: blocks.filter(Boolean).map(b => {
-    if (b.type === "tool_use") { const { _json, ...rest } = b; return { ...rest, input: _json ? JSON.parse(_json) : (b.input ?? {}) } }
-    return b
-  }) }
+  return parseAssistantResponse(await res.text(), STREAM)
 }
 
 /** One line of prompt-cache accounting: what was read from cache vs paid for. */
@@ -156,7 +137,7 @@ for (let turn = 1; turn <= MAX_TURNS; turn++) {
   checkCache(`turn ${turn}`, usage, lineage)
   if (res.status !== 200) { say(`  body: ${JSON.stringify(blocks).slice(0, 300)}`); break }
 
-  messages.push({ role: "assistant", content: blocks.map(({ type, id, name, input, text }) => type === "tool_use" ? { type, id, name, input } : { type, text }) })
+  messages.push({ role: "assistant", content: replayAssistantBlocks(blocks) })
   if (calls.length === 0) { finalText = text; break }
   toolCallBatchSizes.push(calls.length)
 

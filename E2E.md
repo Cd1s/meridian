@@ -4489,6 +4489,18 @@ PROBE_PARALLEL=1 bun scripts/e2e-passthrough-turns.mjs
 PROBE_PARALLEL=1 bun scripts/e2e-passthrough-turns.mjs --stream
 ```
 
+Before interpreting a signed-thinking run, the offline fidelity control can
+check JSON replay, streaming thinking/signature deltas, and redacted data:
+
+```bash
+bun scripts/e2e-e41-thinking-fidelity.mjs
+```
+
+It compares the original parser/projection with E41's shared response helper
+using owned synthetic blocks and makes no model calls. It establishes harness
+fidelity, while the live matrix still establishes SDK history and caching.
+See the [evidence and remaining #1245/#1220 cache gate](docs/maintenance/evidence/e41-thinking-fidelity.md).
+
 **Pass criteria** (asserted, non-zero exit on any):
 
 - Chain mode returns three batches of one call; parallel mode returns one batch
