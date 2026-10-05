@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -81,6 +81,51 @@ describe('Antigravity completed answer storage', () => {
     expect(store.get(request('large'), 'owner')).toBeUndefined()
     expect(store.get(request('1'), 'owner')).toEqual(answer)
   })
+  it('keeps a consumed saved tool answer non-replayable after the runtime ledger churns', () => {
+    const durable = new Map<string, string>()
+    const state = {
+      records: () => [],
+      get: (kind: string, id: string, scope: string) => durable.get(`${kind}:${scope}:${id}`),
+      put: (kind: string, id: string, scope: string, value: string) => { durable.set(`${kind}:${scope}:${id}`, value) },
+      delete: (kind: string, id: string, scope: string) => { durable.delete(`${kind}:${scope}:${id}`) },
+    } as unknown as AgState
+    const store = new AgCompletedAnswers(state), body = request('original-call')
+    const saved = { ...answer, content: [{ type: 'tool_use' as const, id: 'original-call', name: 'lookup', input: {} }] }
+    store.put(body, 'owner', saved)
+    store.markConsumed('owner', ['original-call'])
+    for (let i = 0; i < 4096; i++) store.markConsumed('owner', [`other-${i}`])
+    expect(store.consumedMemorySize).toBeLessThanOrEqual(4096)
+    expect(store.get(body, 'owner')).toBeUndefined()
+  })
+  it('invalidates a no-state saved tool answer when its consumed marker would otherwise be evicted', () => {
+    const store = new AgCompletedAnswers(), body = request('no-state-original')
+    const saved = { ...answer, content: [{ type: 'tool_use' as const, id: 'no-state-original', name: 'lookup', input: {} }] }
+    store.markConsumed('owner', ['no-state-original'])
+    store.put(body, 'owner', saved)
+    for (let i = 0; i < 4096; i++) store.markConsumed('owner', [`no-state-other-${i}`])
+    expect(store.get(body, 'owner')).toBeUndefined()
+  })
+  it('expires and clears the bounded consumed-tool memory index while durable state remains authoritative', () => {
+    const now = spyOn(Date, 'now').mockReturnValue(1_000_000)
+    try {
+      const state = new AgState(join(directory(), 'state.sqlite')); cleanup.push(() => state.close())
+      const store = new AgCompletedAnswers(state), saved = { ...answer, content: [{ type: 'tool_use' as const, id: 'expires-call', name: 'lookup', input: {} }] }
+      store.put(request('expires-call'), 'owner', saved)
+      store.markConsumed('owner', ['expires-call'])
+      expect(store.consumedMemorySize).toBe(1)
+      now.mockReturnValue(1_000_000 + 1)
+      expect(store.consumedMemorySize).toBe(1)
+      expect(store.isConsumed('owner', saved)).toBe(true)
+      now.mockReturnValue(1_000_000 + 30 * 60_000 + 1)
+      expect(store.consumedMemorySize).toBe(0)
+      expect(store.isConsumed('owner', saved)).toBe(false)
+      now.mockReturnValue(1_000_000)
+      store.markConsumed('owner', ['expires-call'])
+      store.clear()
+      expect(store.consumedMemorySize).toBe(0)
+      expect(store.isConsumed('owner', saved)).toBe(true)
+    } finally { now.mockRestore() }
+  })
   it('retains bounded durable snapshots across restart without exposing them as Responses', () => {
     const path = join(directory(), 'state.sqlite')
     let state = new AgState(path)
@@ -134,6 +179,27 @@ describe('Antigravity completed answer storage', () => {
     expect(results[0]).toBeInstanceOf(Error)
     expect(results.slice(1).every(result => result === undefined)).toBe(true)
   })
+  it('joins eligible retries without an ID and bounds their wait', async () => {
+    const store = new AgCompletedAnswers(), body = request()
+    const release = store.claim(body, 'owner')
+    const joined = store.wait(body, 'owner', undefined, new AbortController().signal, 100)
+    release()
+    await joined
+    const held = store.claim(body, 'owner')
+    await expect(store.wait(body, 'owner', undefined, new AbortController().signal, 1)).rejects.toThrow('Timed out waiting')
+    held()
+  })
+  it('returns persistent unfinished-request conflicts immediately from claimWhenReady', async () => {
+    const state = new AgState(join(directory(), 'state.sqlite')); cleanup.push(() => state.close())
+    const body = request(), original = new AgCompletedAnswers(state)
+    original.claim(body, 'owner', 'unfinished')
+    const store = new AgCompletedAnswers(state), started = Date.now()
+    await expect(store.claimWhenReady(body, 'owner', 'unfinished', new AbortController().signal, 30)).rejects.toThrow('outcome is uncertain')
+    expect(Date.now() - started).toBeLessThan(100)
+    const changedStarted = Date.now()
+    await expect(store.claimWhenReady({ ...body, model: 'changed' }, 'owner', 'unfinished', new AbortController().signal, 30)).rejects.toThrow('different request')
+    expect(Date.now() - changedStarted).toBeLessThan(100)
+  })
   it('reconstructs complete SSE including exact unicode, message identity, stops and usage', async () => {
     const value = { ...answer, content: [{ type: 'text' as const, text: 'x'.repeat(4095) + '🧪 café' }], stop_reason: 'stop_sequence', stop_sequence: 'END' }
     const response = replayAgAnswer(value, true, { 'x-meridian-effective-model': 'fixture-model' })
@@ -148,6 +214,21 @@ describe('Antigravity completed answer storage', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('Antigravity completed answer HTTP recovery', () => {
+  for (const mode of ['store:false', 'native browser', 'native subagents']) it(`skips answer wait and claim for concurrent implicit retries with ${mode}`, async () => {
+    const runtime = new AntigravityRuntime({ executable: fileURLToPath(new URL('./fixtures/agy-cli.cjs', import.meta.url)), reuseConversations: false, allowToolBridge: true, allowNativeBrowser: mode === 'native browser', allowNativeSubagents: mode === 'native subagents' })
+    const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: 'antigravity' }, runtime)
+    cleanup.push(server.closeBackend)
+    const wait = spyOn(AgCompletedAnswers.prototype, 'wait'), claim = spyOn(AgCompletedAnswers.prototype, 'claimWhenReady')
+    try {
+      const body = mode === 'store:false' ? { model: 'fixture-model', messages: [{ role: 'user', content: 'lookup' }], tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }], store: false } : request()
+      const send = () => server.app.fetch(new Request(`http://local/v1/${mode === 'store:false' ? 'chat/completions' : 'messages'}`, { method: 'POST', body: JSON.stringify(body) }))
+      const responses = await Promise.all([send(), send()])
+      await Promise.all(responses.map(response => response.text()))
+      expect(wait).not.toHaveBeenCalled()
+      expect(claim).not.toHaveBeenCalled()
+    } finally { wait.mockRestore(); claim.mockRestore() }
+  })
+
   it('joins identified-request telemetry cleanup before closing durable state', async () => {
     const statePath = join(directory(), 'state.sqlite')
     let entered!: () => void, release!: () => void, closed = false

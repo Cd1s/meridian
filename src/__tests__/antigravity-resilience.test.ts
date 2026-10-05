@@ -85,20 +85,35 @@ describe.skipIf(process.platform === 'win32')('Antigravity resilience', () => {
 })
 
 describeKnownRed('known-red: Antigravity resilience (MERIDIAN_RESILIENCE_STRICT=1)', () => {
-  it('answers a tool_result retry storm with one execution and a deterministic active-turn conflict', async () => {
-    const { send, runtime } = fixture()
-    const request = initial('Get receipt')
-    const first = await (await send(request)).json() as Reply
-    const body = followup(request, first, 'STORM')
-    const [a, b] = await Promise.all([send(body), send(body)])
-    const texts = await Promise.all([a.text(), b.text()])
-    expect([a.status, b.status].sort(), texts.join(' || ')).toEqual([200, 409])
-    const success = a.status === 200 ? texts[0]! : texts[1]!
-    const conflict = a.status === 409 ? texts[0]! : texts[1]!
-    expect(success).toContain('STORM')
-    expect(conflict).toContain('active response')
-    expect(runtime.completed).toBe(1)
-    expect(runtime.runs.size).toBe(0)
+  it('answers a tool_result retry storm once for non-streaming and streaming callers', async () => {
+    for (const stream of [false, true]) {
+      const { send, runtime } = fixture()
+      const request = initial('Get receipt')
+      const first = await (await send(request)).json() as Reply
+      const body = { ...followup(request, first, 'STORM'), ...(stream ? { stream: true } : {}) }
+      const [a, b] = await Promise.all([send(body), send(body)])
+      const texts = await Promise.all([a.text(), b.text()])
+      expect([a.status, b.status].sort(), texts.join(' || ')).toEqual([200, 200])
+      expect(texts.every(text => text.includes('STORM'))).toBe(true)
+      if (stream) expect(texts.every(text => text.includes('event: message_stop'))).toBe(true)
+      expect(runtime.completed).toBe(1)
+      expect(runtime.runs.size).toBe(0)
+    }
+  })
+
+  it('answers four identical concurrent retries without duplicate tool execution', async () => {
+    for (const stream of [false, true]) {
+      const { send, runtime } = fixture()
+      const request = initial('Get receipt')
+      const first = await (await send(request)).json() as Reply
+      const body = { ...followup(request, first, 'FOUR'), ...(stream ? { stream: true } : {}) }
+      const responses = await Promise.all([send(body), send(body), send(body), send(body)])
+      expect(responses.map(response => response.status).sort()).toEqual([200, 200, 200, 200])
+      expect(runtime.completed).toBe(1)
+      expect(runtime.runs.size).toBe(0)
+      const texts = await Promise.all(responses.map(response => response.text()))
+      expect(texts.every(text => text.includes('FOUR'))).toBe(true)
+    }
   })
 
   it('recovers when the client aborts mid-stream and replays the same tool_result', async () => {

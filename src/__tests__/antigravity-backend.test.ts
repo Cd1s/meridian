@@ -429,7 +429,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect((await replacement.send(continuation)).headers.get("x-meridian-response-replayed")).toBe("true")
     expect((await replacement.send({ ...request, messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "unknown", content: "orphan" }] }] })).status).toBe(400)
   })
-  it("claims a recovered result before preflight and releases the claim on refusal", async () => {
+  it("coalesces concurrent recovered results before preflight", async () => {
     const { send, runtime } = fixture()
     const request = { ...initial(), messages: [
       { role: "user", content: "Use the completed lookup" },
@@ -438,7 +438,9 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     ] }
     const first = send(request)
     await new Promise(resolve => setTimeout(resolve, 5))
-    expect((await send(request)).status).toBe(409)
+    const concurrent = await send(request)
+    expect(concurrent.status).toBe(200)
+    expect((await decode(concurrent)).content).toEqual([{ type: "text", text: "recovered" }])
     expect((await decode(await first)).content).toEqual([{ type: "text", text: "recovered" }])
     expect(runtime.recoveringTools.size).toBe(0)
     const failed = { ...request, model: "unknown", messages: request.messages.map(m => ({ ...m, content: typeof m.content === "string" ? m.content : m.content.map(b => ({ ...b, ...("id" in b ? { id: "unconsumed" } : { tool_use_id: "unconsumed" }) })) })) }
@@ -730,7 +732,9 @@ describe("Antigravity client plugin context changes", () => {
     try {
       await ready
       expect(runtime.recoveringTools.has(id)).toBe(true)
-      expect((await send(updated)).status).toBe(409)
+      const concurrent = send(updated)
+      release()
+      expect((await concurrent).status).toBe(503)
     } finally { release() }
     expect((await pending).status).toBe(503)
     expect(runtime.recoveringTools.has(id)).toBe(false)
@@ -789,7 +793,7 @@ describe("Antigravity interrupted tool-result continuations", () => {
     expect(saved.headers.get("x-meridian-response-replayed")).toBe("true")
     expect((await decode(saved)).content[0]?.text).toBe("COMPLETED_ONCE")
   })
-  it("waits for cancellation cleanup and admits only one simultaneous exact retry", async () => {
+  it("waits for cancellation cleanup and coalesces simultaneous exact retries", async () => {
     const { send, runtime } = fixture()
     const request = { ...initial(), messages: [
       { role: "user", content: "lookup" },
@@ -807,11 +811,10 @@ describe("Antigravity interrupted tool-result continuations", () => {
     release()
     await joining
     const responses = await Promise.all([first, second])
-    expect(responses.map(response => response.status).sort()).toEqual([200, 409])
-    const success = responses.find(response => response.status === 200)!
-    expect((await decode(success)).content[0]?.text).toBe("once")
+    expect(responses.map(response => response.status).sort()).toEqual([200, 200])
+    expect((await Promise.all(responses.map(decode))).every(value => value.content[0]?.text === "once")).toBe(true)
   })
-  it("does not replay an interrupted response once another client tool was emitted", async () => {
+  it("replays an interrupted response when another client tool was emitted", async () => {
     const { send, runtime } = fixture()
     const request = initial("NEXT_TOOL")
     const first = await decode(await send(request))
@@ -830,7 +833,10 @@ describe("Antigravity interrupted tool-result continuations", () => {
     await reader.cancel()
     await Promise.all([...runtime.runs.values()].map(async run => { run.abort(new Error("fixture cleanup")); await run.settled }))
     expect(runtime.canRetryContinuation(parseAgRequest(continuation))).toBe(false)
-    expect((await send(continuation)).status).toBe(409)
+    const replay = await send(continuation)
+    expect(replay.status).toBe(200)
+    expect(replay.headers.get("x-meridian-response-replayed")).toBe("true")
+    expect(await replay.text()).toContain('"type":"tool_use"')
   })
   it("does not make cancelled native-capability requests replayable", () => {
     for (const options of [{ allowNativeBrowser: true }, { allowNativeSubagents: true }]) {
