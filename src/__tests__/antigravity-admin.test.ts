@@ -3,8 +3,9 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createAgAdmin } from "../proxy/backends/antigravityAdmin"
+import { createAgAdmin, parseEligibility } from "../proxy/backends/antigravityAdmin"
 import { AgAccountSet } from "../proxy/backends/antigravityAccounts"
+import { maskProxyUrl } from "../proxy/backends/antigravityPanelStore"
 import type { ProxyConfig } from "../proxy/types"
 
 const cleanup: Array<() => unknown> = []
@@ -13,9 +14,10 @@ const TOKEN = "admin-token-0123456789"
 const auth = { authorization: `Bearer ${TOKEN}` }
 const jwt = (email: string) => `h.${Buffer.from(JSON.stringify({ email })).toString("base64url")}.s`
 const K1 = "secret-key-acc1-0123456789", K2 = "secret-key-acc2-0123456789"
+const OK_AGY = "Usage: 5h 20%", BAD_AGY = "error: Eligibility check failed: not eligible. Verify your account to continue.\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/signin/continue?plt=X\n"
 const sub2 = (data: unknown) => Response.json({ code: 0, message: "ok", data })
 
-function setup(files: Record<string, string>, options: { sub2: boolean } = { sub2: false }) {
+function setup(files: Record<string, string>, options: { sub2: boolean; agy?: string } = { sub2: false }) {
   const dir = mkdtempSync(join(tmpdir(), "meridian-admin-"))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   for (const [name, text] of Object.entries(files)) { mkdirSync(join(dir, name)); writeFileSync(join(dir, name, "env"), text) }
@@ -34,9 +36,10 @@ function setup(files: Record<string, string>, options: { sub2: boolean } = { sub
   const calls: Array<{ url: string; method: string; body?: any }> = []
   const sub2Items: any[] = [{ id: 7, name: "x", status: "active", notes: "Antigravity Meridian acc1 (port 34610)" }, { id: 8, name: "y", status: "active", notes: "Antigravity Meridian acc10" }]
   const fakeFetch = (async (input: any, init: any = {}) => {
-    const url = String(input), method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined
+    const url = String(input).replace("http://s2/api/v1/", "http://s2/"), method = init.method ?? "GET", body = init.body ? JSON.parse(init.body) : undefined
     calls.push({ url, method, body })
     if (url.startsWith("http://s2/admin/accounts?")) return sub2({ items: sub2Items })
+    if (url.endsWith("/admin/groups/all")) return sub2([{ id: 9, name: "antigravity", platform: "anthropic", status: "active" }, { id: 1, name: "default", platform: "anthropic", status: "active" }])
     if (url === "http://s2/admin/accounts/1001") return sub2({ concurrency: 4, priority: 3, group_ids: [9], credentials: { model_mapping: { a: "b" } } })
     if (url === "http://s2/admin/accounts" && method === "POST") return sub2({ id: 99 })
     if (url.startsWith("http://s2/admin/accounts/") && method === "PUT") return sub2({})
@@ -53,6 +56,7 @@ const d=dir+"/"+name+"/.gemini/antigravity-cli";fs.mkdirSync(d,{recursive:true})
 console.log("LOGIN_RESULT=\\x1b[1mok\\x1b[0m");console.log("TOKEN_SAVED="+(fs.readFileSync(fifo,"utf8").startsWith("bad")?"no":"yes"))},50)`)
   const admin = createAgAdmin(set, {
     token: TOKEN, baseUrl: "http://127.0.0.1:3451", loginScript: script, exec, fetch: fakeFetch, fifoPath: () => fifo,
+    agyCheck: async () => options.agy ?? BAD_AGY,
     sub2api: options.sub2 ? { base: "http://s2", key: "s2key", templateId: 1001 } : undefined,
     spawn: name => spawn(process.execPath, [script, name], { env: { ...process.env, D: dir, F: fifo } }),
   })
@@ -132,13 +136,13 @@ describe("Antigravity admin API", () => {
     expect(calls.filter(c => c.method === "PUT").at(-1)?.body).toEqual({ status: "active" })
   })
   it("logs in, takes the code and creates the Sub2API account from the template", async () => {
-    const { post, calls, dir, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true })
+    const { post, calls, dir, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true, agy: OK_AGY })
     sub2Items.length = 0
     expect(await (await post("/api/accounts/acc1/code", { code: "x" })).json()).toEqual({ error: "No login in progress" })
     expect(await (await post("/api/accounts/acc1/login")).json()).toEqual({ url: "https://auth.example/x" })
     expect((await post("/api/accounts/acc1/code", { code: "has space" })).status).toBe(400)
     const result = await (await post("/api/accounts/acc1/code", { code: "4/abc" })).json() as any
-    expect(result).toEqual({ email: "new@x.com", serving: true, error: null, sub2apiId: 99 })
+    expect(result).toEqual({ email: "new@x.com", serving: true, error: null, sub2apiId: 99, sub2apiStatus: "active", eligible: true, message: null, verifyUrl: null })
     expect(calls.find(c => c.method === "POST")?.body).toEqual({
       name: "new@x.com", platform: "anthropic", type: "apikey", concurrency: 4, priority: 3, group_ids: [9], notes: "Antigravity Meridian acc1",
       credentials: { base_url: "http://127.0.0.1:3451", api_key: K1, model_mapping: { a: "b" } },
@@ -153,5 +157,105 @@ describe("Antigravity admin API", () => {
     expect(((await response.json()) as any).error).toBe("Login failed: ok")
     // One code per login: a retry must start a new login instead of writing into a FIFO nobody reads.
     expect((await post("/api/accounts/acc1/code", { code: "again" })).status).toBe(409)
+  })
+  it("parses agy's eligibility error into the verification link", () => {
+    const out = "error: Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/signin/continue?sarp=1&plt=AAA&flowName=GlifWebSignIn\n"
+    expect(parseEligibility(out)).toEqual({ eligible: false, message: "Your current account is not eligible for Antigravity. Verify your account to continue.", verifyUrl: "https://accounts.google.com/signin/continue?sarp=1&plt=AAA&flowName=GlifWebSignIn" })
+    expect(parseEligibility("Usage: 5h 20%")).toEqual({ eligible: true, message: null, verifyUrl: null })
+  })
+  it("keeps an unverified account out of Sub2API and activates it once verified", async () => {
+    const { post, calls, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true })
+    sub2Items.length = 0
+    await post("/api/accounts/acc1/login")
+    const result = await (await post("/api/accounts/acc1/code", { code: "4/abc" })).json() as any
+    expect(result).toMatchObject({ eligible: false, verifyUrl: "https://accounts.google.com/signin/continue?plt=X", sub2apiId: null, sub2apiStatus: "pending" })
+    expect(calls.some(c => c.method === "POST")).toBe(false)
+    const again = await (await post("/api/accounts/acc1/verify")).json() as any
+    expect(again).toMatchObject({ eligible: false, sub2apiStatus: "pending" })
+    const ok = setup({ acc1: base.acc1 }, { sub2: true, agy: OK_AGY })
+    ok.sub2Items.length = 0
+    expect(await (await ok.post("/api/accounts/acc1/verify")).json()).toMatchObject({ eligible: true, sub2apiId: 99, sub2apiStatus: "active" })
+  })
+  it("deactivates an existing Sub2API mirror when the account turns out unverified", async () => {
+    const { post, calls } = setup(base, { sub2: true })
+    expect(await (await post("/api/accounts/acc1/verify")).json()).toMatchObject({ eligible: false, sub2apiId: 7, sub2apiStatus: "inactive" })
+    expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "http://s2/admin/accounts/7", body: { status: "inactive" } })
+  })
+  it("saves Sub2API settings after verifying them, never returns the key, and mirrors into the chosen group", async () => {
+    const { req, post, calls, sub2Items, dir } = setup({ acc1: base.acc1 }, { sub2: false, agy: OK_AGY })
+    sub2Items.length = 0
+    expect(((await (await req("/api/sub2api")).json()) as any).enabled).toBe(false)
+    expect((await post("/api/sub2api/test", { base: "ftp://x", key: "k" })).status).toBe(400)
+    expect((await req("/api/sub2api", { method: "PUT", body: JSON.stringify({ base: "http://s2", key: "S2-SECRET-KEY", groupIds: [999] }) })).status).toBe(400)
+    const saved = await (await req("/api/sub2api", { method: "PUT", body: JSON.stringify({ base: "http://s2/", key: "S2-SECRET-KEY", groupIds: [9], concurrency: 3, priority: 2 }) })).text()
+    expect(saved).not.toContain("S2-SECRET-KEY")
+    expect(JSON.parse(saved)).toMatchObject({ enabled: true, source: "panel", hasKey: true, groupIds: [9], base: "http://s2/api/v1" })
+    expect(readFileSync(join(dir, "panel.json"), "utf8")).toContain("S2-SECRET-KEY")
+    expect(statSync(join(dir, "panel.json")).mode & 0o777).toBe(0o600)
+    expect(((await (await req("/api/sub2api")).text()))).not.toContain("S2-SECRET-KEY")
+    await post("/api/accounts/acc1/login")
+    const result = await (await post("/api/accounts/acc1/code", { code: "4/abc" })).json() as any
+    expect(result).toMatchObject({ eligible: true, sub2apiStatus: "active" })
+    expect(calls.find(c => c.method === "POST" && c.url.endsWith("/admin/accounts"))?.body).toMatchObject({ group_ids: [9], concurrency: 3, priority: 2, notes: "Antigravity Meridian acc1" })
+    expect(await (await req("/api/sub2api", { method: "DELETE" })).json()).toMatchObject({ enabled: false })
+  })
+  it("syncs every logged-in account to Sub2API in one call", async () => {
+    const { req, post, sub2Items } = setup(base, { sub2: true, agy: OK_AGY })
+    sub2Items.length = 0
+    const out = await (await post("/api/sub2api/sync")).json() as any
+    expect(out.results.map((r: any) => r.name)).toEqual(["acc1", "acc2"])
+    expect(out.results.every((r: any) => r.status === "not-logged-in")).toBe(true)
+    expect((await req("/api/sub2api/sync", { method: "GET" })).status).toBe(404)
+  })
+  it("never puts a proxy password into returned errors", async () => {
+    const { post } = setup(base)
+    const created = await (await post("/api/proxies", { url: "socks5h://leak:topsecret@dead:1" })).json() as any
+    const id = created.id as string
+    const tested = await (await post(`/api/proxies/${id}/test`)).text()
+    expect(tested).not.toContain("topsecret")
+    expect(maskProxyUrl("Command failed: curl -x socks5://u:pa@ss@h:1 https://x")).toBe("Command failed: curl -x socks5://u:***@h:1 https://x")
+    expect(maskProxyUrl("see http://TOKEN@h/x")).toBe("see http://***@h/x")
+  })
+  it("treats an agy that cannot run as not eligible and keeps the account out of Sub2API", async () => {
+    const { post, calls, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true, agy: "Eligibility check failed: could not run agy (timeout)" })
+    sub2Items.length = 0
+    const result = await (await post("/api/accounts/acc1/verify")).json() as any
+    expect(result.eligible).toBe(false)
+    expect(calls.some(c => c.method === "POST")).toBe(false)
+  })
+  it("refuses to verify an account that is disabled or not logged in", async () => {
+    const { post, dir } = setup(base, { sub2: true, agy: OK_AGY })
+    expect((await post("/api/accounts/acc1/verify")).status).toBe(409)
+    renameSync(join(dir, "acc2", "env"), join(dir, "acc2", "env.disabled"))
+    expect((await post("/api/accounts/acc2/verify")).status).toBe(409)
+  })
+  it("will not send a stored Sub2API admin key to a different address", async () => {
+    const { req, post } = setup(base, { sub2: true })
+    expect((await req("/api/sub2api/test", { method: "POST", body: JSON.stringify({ base: "https://attacker.example" }) })).status).toBe(400)
+    expect((await post("/api/sub2api/test", { base: "https://attacker.example", key: "their-own-key" })).status).toBe(200)
+  })
+  it("deleting an account removes it from gateway key scopes and its number is not reused", async () => {
+    const { post, req, dir } = setup(base)
+    const key = await (await post("/api/keys", { name: "k", accounts: ["acc2"] })).json() as any
+    expect((await req("/api/accounts/acc2", { method: "DELETE" })).status).toBe(200)
+    const keys = await (await req("/api/keys")).json() as any
+    expect(keys.gateway.find((k: any) => k.id === key.key.id).accounts).toEqual([])
+    const created = await (await post("/api/accounts", { proxy: "socks5h://new:1" })).json() as any
+    expect(created.name).toBe("acc3")
+    expect(existsSync(join(dir, "_deleted"))).toBe(true)
+  })
+  it("writes a rotated account key atomically and keeps the file private", async () => {
+    const { post, dir } = setup(base)
+    await post("/api/accounts/acc1/key/rotate")
+    expect(statSync(join(dir, "acc1", "env")).mode & 0o777).toBe(0o600)
+    expect(readFileSync(join(dir, "acc1", "env"), "utf8")).toMatch(/MERIDIAN_API_KEY=cheek-meridian-acc1-[0-9a-f]{24}/)
+    expect(readFileSync(join(dir, "acc1", "env"), "utf8")).toContain("ALL_PROXY=socks5h://u:pw@p1:1")
+  })
+  it("verify endpoint runs the account check and reports the link", async () => {
+    const { post } = setup(base)
+    const response = await post("/api/accounts/acc1/verify")
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ sub2apiId: null, sub2apiStatus: "off", eligible: false, message: "not eligible. Verify your account to continue.", verifyUrl: "https://accounts.google.com/signin/continue?plt=X" })
+    expect((await post("/api/accounts/acc9/verify")).status).toBe(404)
   })
 })
