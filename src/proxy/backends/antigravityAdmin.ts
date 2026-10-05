@@ -1,7 +1,7 @@
 // Fork patch: admin API for multi-account mode (list, add, log in, disable accounts; mirror them into Sub2API).
 import { execFile, spawn, type ChildProcess } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs"
+import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { hasValidApiKey } from "../auth"
@@ -286,27 +286,185 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const [health, status] = await Promise.all([probe(name, "/health"), serving && !fresh ? probe(name, "/providers/status") : null])
     if (status) quotas.set(name, { at: Date.now(), value: status.providers?.find((p: Json) => p.id === "antigravity")?.accounts?.[0] ?? null })
     const quota = serving ? quotas.get(name)?.value : undefined
+
+    let createdAt: number | null = null
+    try {
+      const st = statSync(join(set.dir, name))
+      createdAt = Math.round(st.birthtimeMs || st.ctimeMs)
+    } catch (error) {
+      createdAt = null
+    }
+
+    const matchedProxy = vars.ALL_PROXY ? panel.data.proxies.find(p => p.url === vars.ALL_PROXY) : undefined
+
     return {
-      name, email: email(name), proxy: mask(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? ""), disabled, serving, error: set.failures.get(name) ?? null,
+      name,
+      label: panel.data.labels[name] ?? "",
+      email: email(name),
+      proxyId: matchedProxy?.id ?? null,
+      proxy: mask(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? ""),
+      disabled,
+      serving,
+      error: set.failures.get(name) ?? null,
       sub2apiId: items ? findSub2(items, name)?.id ?? null : null,
+      createdAt,
       health: health && Object.fromEntries(["completed", "failed", "reused", "prewarmed", "processes", "activeProcesses", "spareReady"].map(key => [key, health[key]])),
       quota: quota ? { fetchedAt: quota.fetchedAt ?? null, error: quota.error ?? null, windows: quota.windows ?? [] } : null,
     }
   }
+
   async function create(body: Json) {
-    const proxy = String(body.proxy ?? "").trim()
-    let url: URL
-    try { url = new URL(proxy) } catch (error) { return fail(400, "Invalid proxy URL") }
-    if (!["socks5:", "socks5h:", "http:", "https:"].includes(url.protocol) || /[\s"'$`\\]/.test(proxy)) fail(400, "Proxy must be a socks5, socks5h, http or https URL")
+    let proxyUrl = ""
+    let proxyId: string | null = null
+
+    if (body.proxyId) {
+      const p = panel.data.proxies.find(p => p.id === body.proxyId) ?? fail(404, `Unknown proxy ${body.proxyId}`)
+      proxyUrl = p.url
+      proxyId = p.id
+    } else if (body.proxy) {
+      const validated = validateProxyUrl(body.proxy)
+      proxyUrl = validated.url
+      let p = panel.data.proxies.find(p => p.url === proxyUrl)
+      if (!p) {
+        p = {
+          id: `px_${randomBytes(4).toString("hex")}`,
+          name: `${validated.protocol} proxy`,
+          url: proxyUrl,
+          protocol: validated.protocol,
+          note: "",
+          lastTest: null,
+          createdAt: Date.now(),
+        }
+        panel.data.proxies.push(p)
+        panel.save()
+      }
+      proxyId = p.id
+    } else {
+      fail(400, "proxy or proxyId is required")
+    }
+
     const others = names().map(name => readEnv(name)!.vars)
-    const [ip, ...used] = await Promise.all([exitIp(proxy), ...others.map(vars => exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "").catch(() => null))])
+    const [ip, ...used] = await Promise.all([exitIp(proxyUrl), ...others.map(vars => exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "").catch(() => null))])
     if (used.includes(ip!)) fail(409, `Exit IP ${ip} is already used by another account`)
+
     const number = Math.max(0, ...names().map(name => Number(name.slice(3)))) + 1, name = `acc${number}`
     mkdirSync(join(set.dir, name), { recursive: true, mode: 0o700 })
-    const lines = [`ALL_PROXY=${proxy}`, `HTTP_PROXY=${proxy}`, `HTTPS_PROXY=${proxy}`, `MERIDIAN_API_KEY=cheek-meridian-${name}-${randomBytes(12).toString("hex")}`]
+    const lines = [`ALL_PROXY=${proxyUrl}`, `HTTP_PROXY=${proxyUrl}`, `HTTPS_PROXY=${proxyUrl}`, `MERIDIAN_API_KEY=cheek-meridian-${name}-${randomBytes(12).toString("hex")}`]
     writeFileSync(envPath(name), lines.join("\n") + "\n", { mode: 0o600 })
+
+    if (body.label !== undefined) {
+      panel.data.labels[name] = String(body.label).trim()
+      panel.save()
+    }
+
+    if (body.proxyId !== undefined || "proxyId" in body || body.label !== undefined || "label" in body) {
+      return { name, exitIp: ip, proxyId }
+    }
     return { name, exitIp: ip }
   }
+
+  async function patchAccount(name: string, body: Json) {
+    existing(name)
+    if (body.label !== undefined) {
+      panel.data.labels[name] = String(body.label).trim()
+      panel.save()
+    }
+    if (body.proxyId !== undefined || body.proxy !== undefined) {
+      let newProxyUrl = ""
+      if (body.proxyId) {
+        const p = panel.data.proxies.find(p => p.id === body.proxyId) ?? fail(404, `Unknown proxy ${body.proxyId}`)
+        newProxyUrl = p.url
+      } else {
+        const validated = validateProxyUrl(body.proxy)
+        newProxyUrl = validated.url
+        let p = panel.data.proxies.find(p => p.url === newProxyUrl)
+        if (!p) {
+          p = {
+            id: `px_${randomBytes(4).toString("hex")}`,
+            name: `${name} proxy`,
+            url: newProxyUrl,
+            protocol: validated.protocol,
+            note: "",
+            lastTest: null,
+            createdAt: Date.now(),
+          }
+          panel.data.proxies.push(p)
+          panel.save()
+        }
+      }
+      const ip = await exitIp(newProxyUrl)
+      const others = names().filter(n => n !== name).map(n => readEnv(n)!.vars)
+      const used = await Promise.all(others.map(v => exitIp(v.ALL_PROXY ?? v.HTTPS_PROXY ?? "").catch(() => null)))
+      if (used.includes(ip)) fail(409, `Exit IP ${ip} is already used by another account`)
+
+      const file = [envPath(name), `${envPath(name)}.disabled`].find(existsSync)!
+      const text = readFileSync(file, "utf8")
+      const lines = text.split("\n")
+      const newLines = lines.map(line => {
+        const trimmed = line.trim()
+        if (trimmed.startsWith("ALL_PROXY=") || trimmed.startsWith("export ALL_PROXY=")) return `ALL_PROXY=${newProxyUrl}`
+        if (trimmed.startsWith("HTTP_PROXY=") || trimmed.startsWith("export HTTP_PROXY=")) return `HTTP_PROXY=${newProxyUrl}`
+        if (trimmed.startsWith("HTTPS_PROXY=") || trimmed.startsWith("export HTTPS_PROXY=")) return `HTTPS_PROXY=${newProxyUrl}`
+        return line
+      })
+      writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
+      await set.sync()
+    }
+    const items = sub2api ? await sub2Accounts().catch(() => null) : null
+    return describe(name, items)
+  }
+
+  async function deleteAccount(name: string) {
+    existing(name)
+    logins.get(name)?.child.kill()
+    logins.delete(name)
+    const deletedDir = join(set.dir, "_deleted")
+    mkdirSync(deletedDir, { recursive: true, mode: 0o700 })
+    const ts = Date.now()
+    renameSync(join(set.dir, name), join(deletedDir, `${name}-${ts}`))
+    delete panel.data.labels[name]
+    panel.save()
+    await set.sync()
+    await setStatus(name, "inactive")
+    return { ok: true }
+  }
+
+  async function testAccount(name: string) {
+    const { vars } = existing(name)
+    if (!set.names.includes(name)) {
+      const err = set.failures.get(name) ?? "Account is not serving"
+      return { ok: false, latencyMs: null, exitIp: null, health: null, quota: null, error: err }
+    }
+    const start = Date.now()
+    let ip: string | null = null
+    let testError: string | null = null
+    try {
+      ip = await exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "")
+    } catch (error) {
+      testError = error instanceof Error ? error.message : String(error)
+    }
+    const latencyMs = Math.max(1, Date.now() - start)
+    quotas.delete(name)
+    const [health, status] = await Promise.all([
+      probe(name, "/health"),
+      probe(name, "/providers/status"),
+    ])
+    if (status) {
+      quotas.set(name, { at: Date.now(), value: status.providers?.find((p: Json) => p.id === "antigravity")?.accounts?.[0] ?? null })
+    }
+    const quota = quotas.get(name)?.value
+    const healthData = health ? Object.fromEntries(["completed", "failed", "reused", "prewarmed", "processes", "activeProcesses", "spareReady"].map(k => [k, health[k]])) : null
+    const quotaData = quota ? { fetchedAt: quota.fetchedAt ?? null, error: quota.error ?? null, windows: quota.windows ?? [] } : null
+    return {
+      ok: testError === null && health !== null,
+      latencyMs,
+      exitIp: ip,
+      health: healthData,
+      quota: quotaData,
+      error: testError,
+    }
+  }
+
   async function login(name: string) {
     logins.get(name)?.child.kill()
     const child = options.spawn?.(name) ?? spawn("python3", [options.loginScript, name], { env: { ...process.env, MERIDIAN_AGY_ACCOUNTS_DIR: set.dir } })
@@ -382,12 +540,22 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     }
     if (parts.length === 1 && method === "POST") return create(body)
     const [, name = "", action] = parts
-    const { vars } = existing(name)
-    if (method !== "POST") fail(405, "Method not allowed")
-    if (action === "ip") return { exitIp: await exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "") }
-    if (action === "login") return login(name)
-    if (action === "code") return submitCode(name, body.code)
-    if (action === "disable" || action === "enable") return toggle(name, action === "disable")
+    existing(name)
+    if (parts.length === 2) {
+      if (method === "PATCH") return patchAccount(name, body)
+      if (method === "DELETE") return deleteAccount(name)
+      fail(405, "Method not allowed")
+    }
+    if (parts.length === 3) {
+      const { vars } = existing(name)
+      if (method !== "POST") fail(405, "Method not allowed")
+      if (action === "ip") return { exitIp: await exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "") }
+      if (action === "login") return login(name)
+      if (action === "code") return submitCode(name, body.code)
+      if (action === "disable" || action === "enable") return toggle(name, action === "disable")
+      if (action === "test") return testAccount(name)
+      return fail(404, "Not found")
+    }
     return fail(404, "Not found")
   }
   return {
@@ -405,3 +573,4 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     },
   }
 }
+
