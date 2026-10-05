@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import type { ProxyConfig } from "../types"
 import { AgProcessPool } from "./antigravityRuntime"
+import { AgPanelStore } from "./antigravityPanelStore"
 
 export interface AgAccount {
   name: string
@@ -73,12 +74,14 @@ const denied = () => Response.json({ type: "error", error: { type: "authenticati
 
 export class AgAccountSet {
   readonly pool?: AgProcessPool
+  readonly panel: AgPanelStore
   private readonly running = new Map<string, { account: AgAccount; backend: AgBackend }>()
   // Keyed by key digest so the routing table never holds raw keys as map keys.
   private readonly byKey = new Map<string, string>()
   private syncing: Promise<unknown> = Promise.resolve()
   constructor(readonly dir: string, readonly base: Partial<ProxyConfig>, readonly start: Start, poolSize?: number) {
     this.pool = poolSize === undefined ? undefined : new AgProcessPool(poolSize)
+    this.panel = new AgPanelStore(this.dir)
   }
   /** Last start error per account that is not serving; retried on the next sync. */
   readonly failures = new Map<string, string>()
@@ -145,6 +148,7 @@ export class AgAccountSet {
     return entry?.backend.fetch(new Request(`http://accounts.local${path}`, { headers: { "x-api-key": entry.account.apiKey } }))
   }
   async close(): Promise<void> {
+    this.panel.flush()
     await this.syncing
     const backends = [...this.running.values()].map(entry => entry.backend)
     this.running.clear()

@@ -13,6 +13,10 @@ export interface ProxyTestResult {
   error: string | null
 }
 
+export interface AdminProxy extends PanelProxy {
+  usedBy: string[]
+}
+
 export interface PanelProxy {
   id: string
   name: string

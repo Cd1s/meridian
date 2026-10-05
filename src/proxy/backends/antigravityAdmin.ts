@@ -7,6 +7,12 @@ import { promisify } from "node:util"
 import { hasValidApiKey } from "../auth"
 import { agAdminPageHtml } from "./antigravityAdminPage"
 import { parseAgEnvFile, type AgAccountSet } from "./antigravityAccounts"
+import {
+  maskProxyUrl,
+  type PanelProxy,
+  type ProxyProtocol,
+  type ProxyTestResult,
+} from "./antigravityPanelStore"
 
 type Json = Record<string, any>
 export interface AgAdminOptions {
@@ -23,7 +29,7 @@ class HttpError extends Error { constructor(readonly status: number, message: st
 const NAME = /^acc[0-9]+$/
 const run = promisify(execFile)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-const mask = (proxy: string) => proxy.replace(/(\/\/[^:/@]*:)[^@]*@/, "$1***@")
+const mask = (proxy: string) => maskProxyUrl(proxy)
 const strip = (text: string) => text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)?/g, "")
 const fail = (status: number, message: string): never => { throw new HttpError(status, message) }
 
@@ -36,6 +42,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   const logins = new Map<string, { child: ChildProcess; out: string; codeSent?: boolean }>()
   // Each quota read makes the account run `agy -p /usage`; the panel polls every 15s, so keep results for 5 minutes.
   const quotas = new Map<string, { at: number; value: Json | null }>()
+  const panel = set.panel
 
   const envPath = (name: string) => join(set.dir, name, "env")
   const readEnv = (name: string) => {
@@ -56,13 +63,13 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       const file = JSON.parse(readFileSync(join(set.dir, name, ".gemini/antigravity-cli/antigravity-oauth-token"), "utf8"))
       const jwt = file.id_token ?? file.token?.id_token
       return JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString()).email ?? null
-    } catch { return null }
+    } catch (error) { return null }
   }
   const probe = async (name: string, path: string) => {
     try {
       const response = await set.request(name, path)
       return response?.ok ? await response.json() as Json : null
-    } catch { return null }
+    } catch (error) { return null }
   }
 
   const s2 = async (path: string, init: { method?: string; body?: unknown } = {}): Promise<Json> => {
@@ -78,6 +85,198 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const found = findSub2(await sub2Accounts(), name)
     if (found && found.status !== status) await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { status } })
     return found?.id ?? null
+  }
+
+  function validateProxyUrl(rawUrl: unknown): { url: string; protocol: ProxyProtocol } {
+    const proxy = String(rawUrl ?? "").trim()
+    let parsed: URL
+    try { parsed = new URL(proxy) } catch (error) { return fail(400, "Invalid proxy URL") }
+    if (!["socks5:", "socks5h:", "http:", "https:"].includes(parsed.protocol) || /[\s"'$`\\]/.test(proxy)) {
+      fail(400, "Proxy must be a socks5, socks5h, http or https URL")
+    }
+    const protocol = parsed.protocol.slice(0, -1) as ProxyProtocol
+    return { url: proxy, protocol }
+  }
+
+  function describeProxy(p: PanelProxy) {
+    const accountVars = names().map(name => ({ name, proxy: readEnv(name)?.vars.ALL_PROXY }))
+    const usedBy = accountVars.filter(a => a.proxy === p.url).map(a => a.name)
+    return {
+      id: p.id,
+      name: p.name,
+      url: mask(p.url),
+      protocol: p.protocol,
+      note: p.note,
+      usedBy,
+      lastTest: p.lastTest,
+      createdAt: p.createdAt,
+    }
+  }
+
+  async function testProxyUrl(proxyUrl: string): Promise<ProxyTestResult> {
+    const at = Date.now()
+    const start = Date.now()
+    try {
+      const out = await exec("curl", ["-s", "-m", "15", "-x", proxyUrl, "https://api.ipify.org"])
+      const ip = out.trim()
+      const latencyMs = Math.max(1, Date.now() - start)
+      if (/^[0-9a-fA-F.:]{3,45}$/.test(ip)) {
+        return { ok: true, exitIp: ip, latencyMs, at, error: null }
+      }
+      return { ok: false, exitIp: null, latencyMs, at, error: "Proxy did not return an exit IP" }
+    } catch (error) {
+      const latencyMs = Math.max(1, Date.now() - start)
+      const message = error instanceof Error ? error.message : String(error)
+      return { ok: false, exitIp: null, latencyMs, at, error: message }
+    }
+  }
+
+  async function testAllProxies() {
+    const proxies = panel.data.proxies
+    let index = 0
+    const workers = Array.from({ length: Math.min(4, proxies.length) }, async () => {
+      while (index < proxies.length) {
+        const i = index++
+        const p = proxies[i]!
+        p.lastTest = await testProxyUrl(p.url)
+      }
+    })
+    await Promise.all(workers)
+    panel.save()
+    return { proxies: proxies.map(describeProxy) }
+  }
+
+  async function updateAccountsProxy(oldUrl: string, newUrl: string) {
+    let changed = false
+    for (const name of names()) {
+      const file = [envPath(name), `${envPath(name)}.disabled`].find(existsSync)
+      if (!file) continue
+      const text = readFileSync(file, "utf8")
+      const vars = parseAgEnvFile(text)
+      if (vars.ALL_PROXY === oldUrl) {
+        const lines = text.split("\n")
+        const newLines = lines.map(line => {
+          const trimmed = line.trim()
+          if (trimmed.startsWith("ALL_PROXY=") || trimmed.startsWith("export ALL_PROXY=")) return `ALL_PROXY=${newUrl}`
+          if (trimmed.startsWith("HTTP_PROXY=") || trimmed.startsWith("export HTTP_PROXY=")) return `HTTP_PROXY=${newUrl}`
+          if (trimmed.startsWith("HTTPS_PROXY=") || trimmed.startsWith("export HTTPS_PROXY=")) return `HTTPS_PROXY=${newUrl}`
+          return line
+        })
+        writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
+        changed = true
+      }
+    }
+    if (changed) {
+      await set.sync()
+    }
+  }
+
+  async function routeProxies(method: string, parts: string[], body: Json): Promise<unknown> {
+    if (parts.length === 0) {
+      if (method === "GET") return { proxies: panel.data.proxies.map(describeProxy) }
+      if (method === "POST") {
+        const validated = validateProxyUrl(body.url)
+        if (panel.data.proxies.some(p => p.url === validated.url)) fail(409, "Proxy URL already exists")
+        const proxy: PanelProxy = {
+          id: `px_${randomBytes(4).toString("hex")}`,
+          name: body.name ? String(body.name).trim() : `${validated.protocol} proxy`,
+          url: validated.url,
+          protocol: validated.protocol,
+          note: body.note ? String(body.note).trim() : "",
+          lastTest: null,
+          createdAt: Date.now(),
+        }
+        panel.data.proxies.push(proxy)
+        panel.save()
+        return describeProxy(proxy)
+      }
+      fail(405, "Method not allowed")
+    }
+    if (parts.length === 1) {
+      const sub = parts[0]!
+      if (sub === "import") {
+        if (method !== "POST") fail(405, "Method not allowed")
+        const text = String(body.text ?? "")
+        const added: PanelProxy[] = []
+        const skipped: Array<{ line: string; reason: string }> = []
+        for (const rawLine of text.split("\n")) {
+          const line = rawLine.trim()
+          if (!line || line.startsWith("#")) continue
+          const match = line.match(/^(\S+)(?:\s+(.*))?$/)
+          if (!match) continue
+          const rawUrl = match[1]!
+          const customName = match[2]?.trim()
+          let validated: { url: string; protocol: ProxyProtocol }
+          try {
+            validated = validateProxyUrl(rawUrl)
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Invalid proxy URL"
+            skipped.push({ line, reason: message })
+            continue
+          }
+          if (panel.data.proxies.some(p => p.url === validated.url) || added.some(p => p.url === validated.url)) {
+            skipped.push({ line, reason: "Proxy URL already exists" })
+            continue
+          }
+          const proxy: PanelProxy = {
+            id: `px_${randomBytes(4).toString("hex")}`,
+            name: customName || `${validated.protocol} proxy`,
+            url: validated.url,
+            protocol: validated.protocol,
+            note: "",
+            lastTest: null,
+            createdAt: Date.now(),
+          }
+          panel.data.proxies.push(proxy)
+          added.push(proxy)
+        }
+        if (added.length > 0) panel.save()
+        return { added: added.map(describeProxy), skipped }
+      }
+      if (sub === "test-all") {
+        if (method !== "POST") fail(405, "Method not allowed")
+        return testAllProxies()
+      }
+      if (sub === "test") {
+        if (method !== "POST") fail(405, "Method not allowed")
+        const validated = validateProxyUrl(body.url)
+        const res = await testProxyUrl(validated.url)
+        return { ok: res.ok, exitIp: res.exitIp, latencyMs: res.latencyMs, error: res.error }
+      }
+      const id = sub
+      const proxy = panel.data.proxies.find(p => p.id === id) ?? fail(404, `Unknown proxy ${id}`)
+      if (method === "PATCH") {
+        if (body.name !== undefined) proxy.name = String(body.name).trim()
+        if (body.note !== undefined) proxy.note = String(body.note).trim()
+        if (body.url !== undefined) {
+          const validated = validateProxyUrl(body.url)
+          if (panel.data.proxies.some(p => p.id !== id && p.url === validated.url)) fail(409, "Proxy URL already exists")
+          const oldUrl = proxy.url
+          proxy.url = validated.url
+          proxy.protocol = validated.protocol
+          await updateAccountsProxy(oldUrl, validated.url)
+        }
+        panel.save()
+        return describeProxy(proxy)
+      }
+      if (method === "DELETE") {
+        const usedBy = names().filter(name => readEnv(name)?.vars.ALL_PROXY === proxy.url)
+        if (usedBy.length > 0) fail(409, `Proxy is in use by account(s): ${usedBy.join(", ")}`)
+        panel.data.proxies = panel.data.proxies.filter(p => p.id !== id)
+        panel.save()
+        return { ok: true }
+      }
+      fail(405, "Method not allowed")
+    }
+    if (parts.length === 2 && parts[1] === "test") {
+      if (method !== "POST") fail(405, "Method not allowed")
+      const id = parts[0]!
+      const proxy = panel.data.proxies.find(p => p.id === id) ?? fail(404, `Unknown proxy ${id}`)
+      proxy.lastTest = await testProxyUrl(proxy.url)
+      panel.save()
+      return describeProxy(proxy)
+    }
+    fail(404, "Not found")
   }
 
   async function describe(name: string, items: Json[] | null) {
@@ -97,7 +296,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   async function create(body: Json) {
     const proxy = String(body.proxy ?? "").trim()
     let url: URL
-    try { url = new URL(proxy) } catch { return fail(400, "Invalid proxy URL") }
+    try { url = new URL(proxy) } catch (error) { return fail(400, "Invalid proxy URL") }
     if (!["socks5:", "socks5h:", "http:", "https:"].includes(url.protocol) || /[\s"'$`\\]/.test(proxy)) fail(400, "Proxy must be a socks5, socks5h, http or https URL")
     const others = names().map(name => readEnv(name)!.vars)
     const [ip, ...used] = await Promise.all([exitIp(proxy), ...others.map(vars => exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "").catch(() => null))])
@@ -138,7 +337,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     if (entry.codeSent) fail(409, "A code was already submitted for this login; start a new login to retry")
     // Non-blocking open: a blocking write to a FIFO nobody reads would pin a libuv thread forever.
     let fd: number
-    try { fd = openSync(fifo(name), constants.O_WRONLY | constants.O_NONBLOCK) } catch { return fail(409, "Login is not ready for a code") }
+    try { fd = openSync(fifo(name), constants.O_WRONLY | constants.O_NONBLOCK) } catch (error) { return fail(409, "Login is not ready for a code") }
     try { writeSync(fd, `${code}\n`) } finally { closeSync(fd) }
     entry.codeSent = true
     const saved = await until(entry, /TOKEN_SAVED=(yes|no)/, 40_000)
@@ -173,8 +372,9 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
 
   async function route(request: Request, path: string): Promise<unknown> {
     const method = request.method, parts = path.split("/").filter(Boolean).slice(1)
-    const body = method === "POST" ? await request.json().catch(() => ({})) as Json : {}
+    const body = (method === "POST" || method === "PATCH") ? await request.json().catch(() => ({})) as Json : {}
     if (parts[0] === "reload" && method === "POST") return set.sync()
+    if (parts[0] === "proxies") return routeProxies(method, parts.slice(1), body)
     if (parts[0] !== "accounts") fail(404, "Not found")
     if (parts.length === 1 && method === "GET") {
       const items = sub2api ? await sub2Accounts().catch(() => null) : null
