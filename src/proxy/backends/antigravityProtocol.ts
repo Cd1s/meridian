@@ -102,6 +102,16 @@ export function normalizeAgRequest(value: unknown): unknown {
     delete request.tool_choice
     actions.push("tool_choice→auto")
   }
+  if (Array.isArray(request.messages)) {
+    const lastMessage = request.messages.at(-1)
+    if (isRecord(lastMessage) && lastMessage.role === "assistant") {
+      const hasToolUse = Array.isArray(lastMessage.content) && lastMessage.content.some(content => isRecord(content) && content.type === "tool_use")
+      if (!hasToolUse) {
+        request.messages = [...request.messages, { role: "user", content: [{ type: "text", text: "Continue." }] }]
+        actions.push("appended user continue")
+      }
+    }
+  }
   if (actions.length) console.warn(`[antigravity] normalized request: ${actions.join("; ")}`.slice(0, 300))
   return request
 }
