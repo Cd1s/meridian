@@ -3,6 +3,8 @@ import { AgResponseStore } from './antigravityResponses'
 import { AntigravityError, blocks, contractKey, historyKey, stable, type AgRequest, type AgCall } from './antigravityProtocol'
 import type { AgState } from './antigravityState'
 
+class AgAdmissionRace extends AntigravityError {}
+
 export interface AgCompletedAnswer {
   id: string
   type: string
@@ -28,7 +30,7 @@ export class AgCompletedAnswers {
   private draining?: Promise<void>
   private readonly store: AgResponseStore
   private readonly active = new Map<string, { fingerprint: string; waiters: Set<() => void> }>()
-  private readonly consumedSavedTools = new Set<string>()
+  private readonly consumedSavedTools = new Map<string, number>()
   constructor(private readonly state?: AgState) {
     this.store = new AgResponseStore({ entries: 128, bytes: 16 * 1024 * 1024, entryBytes: 1024 * 1024, ttlMs: 30 * 60_000 }, undefined, state, 'completed-answers')
   }
@@ -72,7 +74,7 @@ export class AgCompletedAnswers {
     if (this.draining) throw new AntigravityError('Antigravity is shutting down', 503, 'api_error')
     if (!requestId && !this.eligible(request)) return () => undefined
     const key = this.key(request, scope, requestId)
-    if (this.active.has(key)) throw new AntigravityError('Request already active', 409)
+    if (this.active.has(key)) throw new AgAdmissionRace('Request already active', 409)
     if (this.active.size >= 128) throw new AntigravityError('Too many identified requests', 429, 'rate_limit_error')
     const fingerprint = this.fingerprint(request)
     const interrupted = requestId ? this.state?.get('unfinished-requests', key, scope) : undefined
@@ -98,7 +100,7 @@ export class AgCompletedAnswers {
   }
 
   /** Wait and claim as one event-loop admission step for implicit history retries. */
-  async claimWhenReady(request: AgRequest, scope: string, requestId: string | undefined, signal: AbortSignal, timeoutMs?: number): Promise<() => void> {
+  async claimWhenReady(request: AgRequest, scope: string, requestId: string | undefined, signal: AbortSignal, timeoutMs: number): Promise<() => void> {
     const key = this.key(request, scope, requestId)
     const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs
     while (true) {
@@ -108,7 +110,7 @@ export class AgCompletedAnswers {
       if (this.active.has(key)) await this.wait(request, scope, requestId, signal, remaining)
       try { return this.claim(request, scope, requestId) }
       catch (error) {
-        if (!(error instanceof AntigravityError) || error.status !== 409) throw error
+        if (!(error instanceof AgAdmissionRace)) throw error
       }
     }
   }
@@ -122,17 +124,26 @@ export class AgCompletedAnswers {
     } catch (error) { if (!(error instanceof AntigravityError) || error.status !== 404) throw error }
   }
   private hasConsumed(scope: string, id: string): boolean {
+    this.pruneConsumedMemory()
     const key = createHash('sha256').update(scope).update('\0').update(id).digest('hex')
     return this.consumedSavedTools.has(key) || !!this.state?.get('completed-answer-consumed', key, scope)
   }
+  private pruneConsumedMemory(now = Date.now()): void {
+    for (const [key, expires] of this.consumedSavedTools) if (expires <= now) this.consumedSavedTools.delete(key)
+  }
+  get consumedMemorySize(): number { this.pruneConsumedMemory(); return this.consumedSavedTools.size }
   isConsumed(scope: string, answer: AgCompletedAnswer): boolean {
     return answer.content.some(block => block.type === 'tool_use' && this.hasConsumed(scope, block.id))
   }
   markConsumed(scope: string, toolIds: string[]): void {
+    const expires = Date.now() + 30 * 60_000
+    this.pruneConsumedMemory()
     for (const id of toolIds) {
       const key = createHash('sha256').update(scope).update('\0').update(id).digest('hex')
-      this.consumedSavedTools.add(key)
-      this.state?.put('completed-answer-consumed', key, scope, 'true', Date.now() + 30 * 60_000, 100_000, 16 * 1024 * 1024)
+      this.consumedSavedTools.delete(key)
+      this.consumedSavedTools.set(key, expires)
+      while (this.consumedSavedTools.size > 4096) this.consumedSavedTools.delete(this.consumedSavedTools.keys().next().value!)
+      this.state?.put('completed-answer-consumed', key, scope, 'true', expires, 100_000, 16 * 1024 * 1024)
     }
   }
   put(request: AgRequest, scope: string, answer: AgCompletedAnswer, requestId?: string) {
@@ -144,7 +155,7 @@ export class AgCompletedAnswers {
     }
     this.store.put(this.key(request, scope, requestId), scope, input, { ...answer })
   }
-  clear() { this.store.clear() }
+  clear() { this.store.clear(); this.consumedSavedTools.clear() }
 }
 
 /** Reconstruct protocol events lazily, without retaining a second response buffer. */
