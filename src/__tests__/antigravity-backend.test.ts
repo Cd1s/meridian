@@ -30,6 +30,106 @@ const initial = (content = "Get receipt") => ({ model: "fixture-model", max_toke
 afterEach(async () => { for (const close of closing.splice(0)) await close() })
 
 describe("Antigravity request contract", () => {
+  it("normalizes every Meridian-incompatible effort spelling before validation", () => {
+    const expected: Record<string, "low" | "medium" | "high" | undefined> = {
+      low: "low", LOW: "low", medium: "medium", HIGH: "high", xhigh: "high", XHIGH: "high", max: "high", minimal: "low", none: "low", unsupported: undefined,
+    }
+    for (const [input, effort] of Object.entries(expected)) {
+      const request = parseAgRequest({ ...initial(), model: "gemini-fixture-low", output_config: { effort: input } })
+      expect(request.output_config?.effort).toBe(effort)
+      if (effort === undefined) expect(request.output_config).toBeUndefined()
+    }
+  })
+
+  it("repairs missing schemas, preserves valid schemas, and removes server tools", () => {
+    const valid = { name: "valid", input_schema: { type: "object", properties: { q: { type: "string" } } } }
+    const request = parseAgRequest({
+      ...initial(),
+      tools: [
+        valid,
+        { name: "ordinary_missing" },
+        { name: "apply_patch", type: "custom", format: "freeform" },
+        { name: "web", type: "web_search_20250305" },
+        { name: "bash", type: "bash_20250124" },
+      ],
+    })
+    expect(request.tools).toEqual([
+      valid,
+      { name: "ordinary_missing", input_schema: { type: "object", properties: {} } },
+      { name: "apply_patch", description: 'Freeform tool: put the entire payload in the `input` string; do not wrap it in JSON.\n\nInput format: "freeform"', input_schema: { type: "object", properties: { input: { type: "string", description: "Put the complete raw text in input; do not wrap it in JSON." } }, required: ["input"], additionalProperties: false } },
+    ])
+  })
+
+  it("normalizes a large catalog without rejecting tools.421", () => {
+    const tools = Array.from({ length: 422 }, (_, index) => ({ name: `tool_${index}`, ...(index === 421 ? {} : { input_schema: { type: "object", properties: {} } }) }))
+    const request = parseAgRequest({ ...initial(), tools })
+    expect(request.tools).toHaveLength(422)
+    expect(request.tools[421]?.input_schema).toEqual({ type: "object", properties: {} })
+  })
+
+  it("leaves explicitly invalid schemas for validation, including server tools", () => {
+    for (const input_schema of ["bad", [], null]) {
+      for (const type of [undefined, "web_search_20250305"]) {
+        expect(() => parseAgRequest({ ...initial(), tools: [{ name: "malformed", type, input_schema }] })).toThrow("tools.0.input_schema")
+      }
+    }
+  })
+
+  it("falls back to auto when a removed server tool was forced", () => {
+    const serverTool = { name: "web", type: "web_search_20250305" }
+    const request = parseAgRequest({ ...initial(), tools: [tool, serverTool], tool_choice: { type: "tool", name: "web" } })
+    expect(request.tool_choice).toBeUndefined()
+    expect(request.tools).toEqual([tool])
+    expect(parseAgRequest({ ...initial(), tools: [tool, serverTool], tool_choice: { type: "tool", name: "lookup" } }).tool_choice).toEqual({ type: "tool", name: "lookup" })
+    for (const tools of [[], [serverTool]]) {
+      for (const tool_choice of [{ type: "any" }, { type: "tool", name: "web" }]) {
+        expect(parseAgRequest({ ...initial(), tools, tool_choice }).tool_choice).toBeUndefined()
+      }
+    }
+    expect(() => parseAgRequest({ ...initial(), tools: [tool, serverTool], tool_choice: { type: "tool", name: "unknown" } })).toThrow("unknown tool")
+    expect(parseAgRequest({ ...initial(), tools: undefined, tool_choice: { type: "any" } }).tool_choice).toBeUndefined()
+    expect(parseAgRequest({ ...initial(), tools: undefined, tool_choice: { type: "tool", name: "lookup" } }).tool_choice).toBeUndefined()
+  })
+
+  it("preserves format and grammar in bounded freeform descriptions", () => {
+    const grammar = { syntax: "lark", definition: "start: WORD" }
+    for (const extension of [{ format: grammar }, { grammar }, { format: "text", grammar }]) {
+      const source = { ...initial(), tools: [{ name: "patch", type: "custom", description: "Apply patch", ...extension }] }
+      const snapshot = JSON.stringify(source)
+      const repaired = parseAgRequest(source).tools[0]!
+      expect(repaired.description).toContain("Apply patch")
+      expect(repaired.description).toContain("start: WORD")
+      expect(repaired.description).toContain("do not wrap it in JSON")
+      expect(repaired.input_schema).toHaveProperty("additionalProperties", false)
+      expect(JSON.stringify(source)).toBe(snapshot)
+    }
+    const long = parseAgRequest({ ...initial(), tools: [{ name: "patch", type: "custom", format: { definition: "x".repeat(4000) } }] }).tools[0]!
+    expect(long.description?.length).toBe(2000)
+  })
+
+  it("logs one bounded line even with hostile effort and 400 missing schemas", () => {
+    const lines: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(" ")) }
+    try {
+      parseAgRequest({ ...initial(), output_config: { effort: "xhigh\r\n\t\u0000\u001b\u007f" + "Z".repeat(100) } })
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).not.toMatch(/[\x00-\x1f\x7f]/)
+      expect(lines[0]).not.toContain("Z".repeat(36))
+      lines.length = 0
+      parseAgRequest({ ...initial(), tools: Array.from({ length: 400 }, (_, i) => ({ name: `tool_${i}` })) })
+      expect(lines).toHaveLength(1)
+      expect(lines[0]?.length).toBeLessThanOrEqual(300)
+      expect(lines[0]).toContain("added schema ×400")
+      expect(lines[0]).not.toContain("tool_0")
+      lines.length = 0
+      parseAgRequest({ ...initial(), tools: [{ name: "raw", type: "custom" }, { name: "web", type: "web_search_20250305" }] })
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain("freeform schema ×1")
+      expect(lines[0]).toContain("removed server tools ×1")
+    } finally { console.warn = originalWarn }
+  })
+
   for (const count of [129, 256]) it(`preserves all ${count} client tool definitions`, () => {
     const tools = Array.from({ length: count }, (_, index) => ({ ...tool, name: `lookup_${index + 1}` }))
     const request = parseAgRequest({ ...initial(), tools, tool_choice: { type: "tool", name: `lookup_${count}` } })

@@ -36,6 +36,75 @@ const block = z.discriminatedUnion("type", [textBlock, imageBlock, documentBlock
 const message = z.object({ role: z.enum(["user", "assistant"]), content: z.union([z.string(), z.array(block)]) })
 const outputFormat = z.object({ type: z.literal("json_schema"), schema: z.record(z.string(), z.unknown()) }).strict()
 const agThinkingDisplays = new Set(["summarized", "omitted"])
+const serverToolType = /^(web_search_|web_fetch_|bash_|text_editor_|computer_|code_execution_)/i
+const effortAliases = new Map<string, "low" | "medium" | "high">([
+  ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "high"], ["max", "high"], ["minimal", "low"], ["none", "low"],
+])
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value)
+const logValue = (value: unknown): string => String(value).replace(/[\x00-\x1f\x7f\u2028\u2029]/g, "").slice(0, 40)
+
+/** Repair known client/Anthropic extensions before the strict Meridian contract is parsed. */
+export function normalizeAgRequest(value: unknown): unknown {
+  if (!isRecord(value)) return value
+  const request = { ...value }
+  const actions: string[] = []
+  if (isRecord(request.output_config) && "effort" in request.output_config) {
+    const raw = request.output_config.effort
+    const normalized = typeof raw === "string" ? effortAliases.get(raw.toLowerCase()) : undefined
+    const outputConfig = { ...request.output_config }
+    if (normalized) {
+      outputConfig.effort = normalized
+      if (raw !== normalized) actions.push(`effort:${logValue(raw)}→${normalized}`)
+    } else {
+      delete outputConfig.effort
+      actions.push(`effort:${logValue(raw)}→removed`)
+    }
+    if (Object.keys(outputConfig).length) request.output_config = outputConfig
+    else delete request.output_config
+  }
+  const removedNames = new Set<unknown>()
+  if (Array.isArray(request.tools)) {
+    const tools: unknown[] = []
+    let added = 0, freeform = 0, removed = 0
+    for (const rawTool of request.tools) {
+      // Only omitted schemas are adapted; explicitly malformed schemas must still fail validation.
+      if (!isRecord(rawTool) || rawTool.input_schema !== undefined) { tools.push(rawTool); continue }
+      const type = typeof rawTool.type === "string" ? rawTool.type : ""
+      if (serverToolType.test(type)) {
+        removedNames.add(rawTool.name)
+        removed++
+        continue
+      }
+      const freeText = type.toLowerCase() === "custom" || "format" in rawTool
+      const input_schema = freeText
+        ? { type: "object", properties: { input: { type: "string", description: "Put the complete raw text in input; do not wrap it in JSON." } }, required: ["input"], additionalProperties: false }
+        : { type: "object", properties: {} }
+      if (freeText) {
+        const parts = [typeof rawTool.description === "string" ? rawTool.description : "", "Freeform tool: put the entire payload in the `input` string; do not wrap it in JSON."]
+        for (const key of ["format", "grammar"] as const) {
+          if (rawTool[key] !== undefined) parts.push(`Input ${key}: ${JSON.stringify(rawTool[key])}`)
+        }
+        tools.push({ ...rawTool, input_schema, description: parts.filter(Boolean).join("\n\n").slice(0, 2000) })
+        freeform++
+      } else {
+        tools.push({ ...rawTool, input_schema })
+        added++
+      }
+    }
+    request.tools = tools
+    if (added) actions.push(`added schema ×${added}`)
+    if (freeform) actions.push(`freeform schema ×${freeform}`)
+    if (removed) actions.push(`removed server tools ×${removed}`)
+  }
+  const choice = request.tool_choice
+  const toolList = Array.isArray(request.tools) ? request.tools : []
+  if (isRecord(choice) && ((choice.type === "tool" && (removedNames.has(choice.name) || !toolList.length)) || (!toolList.length && choice.type === "any"))) {
+    delete request.tool_choice
+    actions.push("tool_choice→auto")
+  }
+  if (actions.length) console.warn(`[antigravity] normalized request: ${actions.join("; ")}`.slice(0, 300))
+  return request
+}
 /** agy renders only summarized/omitted; API-side display values and the nested adaptive form fall back to agy's default instead of failing the turn. */
 function agThinking(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value
@@ -86,7 +155,7 @@ export function agEffortFallback(model: string, models: readonly string[]): { mo
   return effort && { model: `${slug[1]}-${effort}`, effort }
 }
 export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): AgRequest {
-  const parsed = schema.safeParse(value)
+  const parsed = schema.safeParse(normalizeAgRequest(value))
   if (!parsed.success) throw new AntigravityError("Antigravity supports text, images, documents and adapted media; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
   const request = parsed.data
   if (request.thinking?.type === "enabled") {
