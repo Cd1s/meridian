@@ -2,7 +2,7 @@ name: Upstream sync
 
 # Hourly, free, no AI: a no-op run is one git command. When rynfar/meridian has new commits it merges
 # them into the production branch, runs typecheck + Antigravity tests, merges via PR, and notifies Telegram.
-# Conflicts or failed checks open an `upstream-sync-failed` issue for the Paseo Hub repair agent.
+# Conflicts or failed checks open an `meridian-sync-failed` issue for the Paseo Hub repair agent.
 on:
   schedule:
     - cron: "17 * * * *"
@@ -145,9 +145,9 @@ jobs:
 
           Run: $RUN_URL
           Production branch: $PROD. Upstream: rynfar/meridian main. Do not deploy; repair via PR into $PROD."
-          existing=$(gh issue list --label upstream-sync-failed --state open --json number --jq '.[0].number // empty')
+          existing=$(gh issue list --label meridian-sync-failed --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"
           else
-            gh issue create --title "Upstream sync failed" --label upstream-sync-failed --body "$body"
+            gh issue create --title "Upstream sync failed" --label meridian-sync-failed --body "$body"
           fi
