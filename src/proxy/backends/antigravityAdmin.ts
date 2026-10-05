@@ -27,6 +27,8 @@ export interface AgAdminOptions {
   fetch?: typeof fetch
   spawn?: (name: string) => ChildProcess
   fifoPath?: (name: string) => string
+  /** Runs agy once as the account and returns its combined output (the eligibility check runs on first use). */
+  agyCheck?: (name: string) => Promise<string>
 }
 class HttpError extends Error { constructor(readonly status: number, message: string) { super(message) } }
 const NAME = /^acc[0-9]+$/
@@ -35,6 +37,14 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const mask = (proxy: string) => maskProxyUrl(proxy)
 const strip = (text: string) => text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)?/g, "")
 const fail = (status: number, message: string): never => { throw new HttpError(status, message) }
+/** agy's "Eligibility check failed" error: the Google verification link it asks the user to open, if any. */
+export function parseEligibility(output: string): { eligible: boolean; message: string | null; verifyUrl: string | null } {
+  const text = output.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\r/g, "")
+  if (!/Eligibility check failed|not eligible|verify your account/i.test(text)) return { eligible: true, message: null, verifyUrl: null }
+  const url = /https:\/\/[^\s"'<>\x00-\x1f]+/.exec(text.slice(text.search(/verify your account in your browser/i) >= 0 ? text.search(/verify your account in your browser/i) : 0))?.[0] ?? null
+  const message = /Eligibility check failed:\s*([^\n]+)/i.exec(text)?.[1]?.trim() ?? "Account is not eligible"
+  return { eligible: false, message, verifyUrl: url }
+}
 
 export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
   const { token, sub2api } = options
@@ -621,6 +631,20 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     return { ok: true }
   }
 
+  /** Runs agy once as the account: a new account that is not yet verified answers with Google's verification link. */
+  const agyCheck = options.agyCheck ?? (async (name: string) => {
+    const home = join(set.dir, name), tmp = join(home, ".tmp"), { vars } = existing(name)
+    mkdirSync(tmp, { recursive: true, mode: 0o700 })
+    const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: tmp, TERM: "dumb",
+      XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state") }
+    for (const [key, value] of Object.entries(vars)) if (!key.startsWith("MERIDIAN_")) env[key] = value
+    try { const { stdout, stderr } = await run("agy", ["-p", "/usage"], { env, timeout: 45_000 }); return `${stdout}\n${stderr}` }
+    catch (error) { const e = error as { stdout?: string; stderr?: string; message?: string }; return `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.stdout || e.stderr ? "" : e.message ?? ""}` }
+  })
+  async function verify(name: string) {
+    const { vars } = existing(name)
+    return reconcile(name, vars.MERIDIAN_API_KEY ?? "", email(name))
+  }
   async function testAccount(name: string) {
     const { vars } = existing(name)
     if (!set.names.includes(name)) {
@@ -695,7 +719,17 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     logins.delete(name)
     await set.sync()
     const { vars } = existing(name), address = email(name)
-    return { email: address, serving: set.names.includes(name), error: set.failures.get(name) ?? null, sub2apiId: await mirror(name, vars.MERIDIAN_API_KEY ?? "", address) }
+    return { email: address, serving: set.names.includes(name), error: set.failures.get(name) ?? null, ...await reconcile(name, vars.MERIDIAN_API_KEY ?? "", address) }
+  }
+  /** Checks eligibility, then makes Sub2API follow it: eligible accounts are mirrored and active; an unverified one never serves traffic. */
+  async function reconcile(name: string, apiKey: string, address: string | null) {
+    const eligibility = parseEligibility(await agyCheck(name))
+    let sub2apiId: number | null = null, sub2apiStatus: "active" | "inactive" | "pending" | "off" = sub2api ? "pending" : "off"
+    if (sub2api) {
+      if (eligibility.eligible) { sub2apiId = await mirror(name, apiKey, address); sub2apiStatus = "active" }
+      else { sub2apiId = await setStatus(name, "inactive"); sub2apiStatus = sub2apiId == null ? "pending" : "inactive" }
+    }
+    return { sub2apiId, sub2apiStatus, ...eligibility }
   }
   async function mirror(name: string, apiKey: string, address: string | null) {
     if (!sub2api) return null
@@ -769,6 +803,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
         if (action === "code") return submitCode(name, body.code)
         if (action === "disable" || action === "enable") return toggle(name, action === "disable")
         if (action === "test") return testAccount(name)
+        if (action === "verify") return verify(name)
         return fail(404, "Not found")
       }
       if (parts.length === 4 && action === "key" && subAction === "rotate") {

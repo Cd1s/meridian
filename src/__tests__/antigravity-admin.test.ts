@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createAgAdmin } from "../proxy/backends/antigravityAdmin"
+import { createAgAdmin, parseEligibility } from "../proxy/backends/antigravityAdmin"
 import { AgAccountSet } from "../proxy/backends/antigravityAccounts"
 import type { ProxyConfig } from "../proxy/types"
 
@@ -13,9 +13,10 @@ const TOKEN = "admin-token-0123456789"
 const auth = { authorization: `Bearer ${TOKEN}` }
 const jwt = (email: string) => `h.${Buffer.from(JSON.stringify({ email })).toString("base64url")}.s`
 const K1 = "secret-key-acc1-0123456789", K2 = "secret-key-acc2-0123456789"
+const OK_AGY = "Usage: 5h 20%", BAD_AGY = "error: Eligibility check failed: not eligible. Verify your account to continue.\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/signin/continue?plt=X\n"
 const sub2 = (data: unknown) => Response.json({ code: 0, message: "ok", data })
 
-function setup(files: Record<string, string>, options: { sub2: boolean } = { sub2: false }) {
+function setup(files: Record<string, string>, options: { sub2: boolean; agy?: string } = { sub2: false }) {
   const dir = mkdtempSync(join(tmpdir(), "meridian-admin-"))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   for (const [name, text] of Object.entries(files)) { mkdirSync(join(dir, name)); writeFileSync(join(dir, name, "env"), text) }
@@ -53,6 +54,7 @@ const d=dir+"/"+name+"/.gemini/antigravity-cli";fs.mkdirSync(d,{recursive:true})
 console.log("LOGIN_RESULT=\\x1b[1mok\\x1b[0m");console.log("TOKEN_SAVED="+(fs.readFileSync(fifo,"utf8").startsWith("bad")?"no":"yes"))},50)`)
   const admin = createAgAdmin(set, {
     token: TOKEN, baseUrl: "http://127.0.0.1:3451", loginScript: script, exec, fetch: fakeFetch, fifoPath: () => fifo,
+    agyCheck: async () => options.agy ?? BAD_AGY,
     sub2api: options.sub2 ? { base: "http://s2", key: "s2key", templateId: 1001 } : undefined,
     spawn: name => spawn(process.execPath, [script, name], { env: { ...process.env, D: dir, F: fifo } }),
   })
@@ -132,13 +134,13 @@ describe("Antigravity admin API", () => {
     expect(calls.filter(c => c.method === "PUT").at(-1)?.body).toEqual({ status: "active" })
   })
   it("logs in, takes the code and creates the Sub2API account from the template", async () => {
-    const { post, calls, dir, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true })
+    const { post, calls, dir, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true, agy: OK_AGY })
     sub2Items.length = 0
     expect(await (await post("/api/accounts/acc1/code", { code: "x" })).json()).toEqual({ error: "No login in progress" })
     expect(await (await post("/api/accounts/acc1/login")).json()).toEqual({ url: "https://auth.example/x" })
     expect((await post("/api/accounts/acc1/code", { code: "has space" })).status).toBe(400)
     const result = await (await post("/api/accounts/acc1/code", { code: "4/abc" })).json() as any
-    expect(result).toEqual({ email: "new@x.com", serving: true, error: null, sub2apiId: 99 })
+    expect(result).toEqual({ email: "new@x.com", serving: true, error: null, sub2apiId: 99, sub2apiStatus: "active", eligible: true, message: null, verifyUrl: null })
     expect(calls.find(c => c.method === "POST")?.body).toEqual({
       name: "new@x.com", platform: "anthropic", type: "apikey", concurrency: 4, priority: 3, group_ids: [9], notes: "Antigravity Meridian acc1",
       credentials: { base_url: "http://127.0.0.1:3451", api_key: K1, model_mapping: { a: "b" } },
@@ -153,5 +155,35 @@ describe("Antigravity admin API", () => {
     expect(((await response.json()) as any).error).toBe("Login failed: ok")
     // One code per login: a retry must start a new login instead of writing into a FIFO nobody reads.
     expect((await post("/api/accounts/acc1/code", { code: "again" })).status).toBe(409)
+  })
+  it("parses agy's eligibility error into the verification link", () => {
+    const out = "error: Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/signin/continue?sarp=1&plt=AAA&flowName=GlifWebSignIn\n"
+    expect(parseEligibility(out)).toEqual({ eligible: false, message: "Your current account is not eligible for Antigravity. Verify your account to continue.", verifyUrl: "https://accounts.google.com/signin/continue?sarp=1&plt=AAA&flowName=GlifWebSignIn" })
+    expect(parseEligibility("Usage: 5h 20%")).toEqual({ eligible: true, message: null, verifyUrl: null })
+  })
+  it("keeps an unverified account out of Sub2API and activates it once verified", async () => {
+    const { post, calls, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true })
+    sub2Items.length = 0
+    await post("/api/accounts/acc1/login")
+    const result = await (await post("/api/accounts/acc1/code", { code: "4/abc" })).json() as any
+    expect(result).toMatchObject({ eligible: false, verifyUrl: "https://accounts.google.com/signin/continue?plt=X", sub2apiId: null, sub2apiStatus: "pending" })
+    expect(calls.some(c => c.method === "POST")).toBe(false)
+    const again = await (await post("/api/accounts/acc1/verify")).json() as any
+    expect(again).toMatchObject({ eligible: false, sub2apiStatus: "pending" })
+    const ok = setup({ acc1: base.acc1 }, { sub2: true, agy: OK_AGY })
+    ok.sub2Items.length = 0
+    expect(await (await ok.post("/api/accounts/acc1/verify")).json()).toMatchObject({ eligible: true, sub2apiId: 99, sub2apiStatus: "active" })
+  })
+  it("deactivates an existing Sub2API mirror when the account turns out unverified", async () => {
+    const { post, calls } = setup(base, { sub2: true })
+    expect(await (await post("/api/accounts/acc1/verify")).json()).toMatchObject({ eligible: false, sub2apiId: 7, sub2apiStatus: "inactive" })
+    expect(calls.find(c => c.method === "PUT")).toMatchObject({ url: "http://s2/admin/accounts/7", body: { status: "inactive" } })
+  })
+  it("verify endpoint runs the account check and reports the link", async () => {
+    const { post } = setup(base)
+    const response = await post("/api/accounts/acc1/verify")
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ sub2apiId: null, sub2apiStatus: "off", eligible: false, message: "not eligible. Verify your account to continue.", verifyUrl: "https://accounts.google.com/signin/continue?plt=X" })
+    expect((await post("/api/accounts/acc9/verify")).status).toBe(404)
   })
 })
