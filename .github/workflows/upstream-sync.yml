@@ -5,7 +5,7 @@ name: Upstream sync
 # Conflicts or failed checks open an `meridian-sync-failed` issue for the Paseo Hub repair agent.
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "29 * * * *"
   workflow_dispatch:
 
 permissions:
