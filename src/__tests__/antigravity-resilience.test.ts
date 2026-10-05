@@ -101,6 +101,21 @@ describeKnownRed('known-red: Antigravity resilience (MERIDIAN_RESILIENCE_STRICT=
     }
   })
 
+  it('answers four identical concurrent retries without duplicate tool execution', async () => {
+    for (const stream of [false, true]) {
+      const { send, runtime } = fixture()
+      const request = initial('Get receipt')
+      const first = await (await send(request)).json() as Reply
+      const body = { ...followup(request, first, 'FOUR'), ...(stream ? { stream: true } : {}) }
+      const responses = await Promise.all([send(body), send(body), send(body), send(body)])
+      expect(responses.map(response => response.status).sort()).toEqual([200, 200, 200, 200])
+      expect(runtime.completed).toBe(1)
+      expect(runtime.runs.size).toBe(0)
+      const texts = await Promise.all(responses.map(response => response.text()))
+      expect(texts.every(text => text.includes('FOUR'))).toBe(true)
+    }
+  })
+
   it('recovers when the client aborts mid-stream and replays the same tool_result', async () => {
     const { send } = fixture()
     const request = initial('SLOW_ANSWER')

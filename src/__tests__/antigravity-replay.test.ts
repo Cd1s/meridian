@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -81,6 +81,14 @@ describe('Antigravity completed answer storage', () => {
     expect(store.get(request('large'), 'owner')).toBeUndefined()
     expect(store.get(request('1'), 'owner')).toEqual(answer)
   })
+  it('keeps a consumed saved tool answer non-replayable after the runtime ledger churns', () => {
+    const store = new AgCompletedAnswers(), body = request('original-call')
+    const saved = { ...answer, content: [{ type: 'tool_use' as const, id: 'original-call', name: 'lookup', input: {} }] }
+    store.put(body, 'owner', saved)
+    store.markConsumed('owner', ['original-call'])
+    for (let i = 0; i < 4096; i++) store.markConsumed('owner', [`other-${i}`])
+    expect(store.isConsumed('owner', store.get(body, 'owner')!)).toBe(true)
+  })
   it('retains bounded durable snapshots across restart without exposing them as Responses', () => {
     const path = join(directory(), 'state.sqlite')
     let state = new AgState(path)
@@ -158,6 +166,21 @@ describe('Antigravity completed answer storage', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('Antigravity completed answer HTTP recovery', () => {
+  for (const mode of ['store:false', 'native browser', 'native subagents']) it(`skips answer wait and claim for concurrent implicit retries with ${mode}`, async () => {
+    const runtime = new AntigravityRuntime({ executable: fileURLToPath(new URL('./fixtures/agy-cli.cjs', import.meta.url)), reuseConversations: false, allowToolBridge: true, allowNativeBrowser: mode === 'native browser', allowNativeSubagents: mode === 'native subagents' })
+    const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: 'antigravity' }, runtime)
+    cleanup.push(server.closeBackend)
+    const wait = spyOn(AgCompletedAnswers.prototype, 'wait'), claim = spyOn(AgCompletedAnswers.prototype, 'claimWhenReady')
+    try {
+      const body = mode === 'store:false' ? { model: 'fixture-model', messages: [{ role: 'user', content: 'lookup' }], tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } } }], store: false } : request()
+      const send = () => server.app.fetch(new Request(`http://local/v1/${mode === 'store:false' ? 'chat/completions' : 'messages'}`, { method: 'POST', body: JSON.stringify(body) }))
+      const responses = await Promise.all([send(), send()])
+      await Promise.all(responses.map(response => response.text()))
+      expect(wait).not.toHaveBeenCalled()
+      expect(claim).not.toHaveBeenCalled()
+    } finally { wait.mockRestore(); claim.mockRestore() }
+  })
+
   it('joins identified-request telemetry cleanup before closing durable state', async () => {
     const statePath = join(directory(), 'state.sqlite')
     let entered!: () => void, release!: () => void, closed = false

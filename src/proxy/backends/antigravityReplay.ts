@@ -28,6 +28,7 @@ export class AgCompletedAnswers {
   private draining?: Promise<void>
   private readonly store: AgResponseStore
   private readonly active = new Map<string, { fingerprint: string; waiters: Set<() => void> }>()
+  private readonly consumedSavedTools = new Set<string>()
   constructor(private readonly state?: AgState) {
     this.store = new AgResponseStore({ entries: 128, bytes: 16 * 1024 * 1024, entryBytes: 1024 * 1024, ttlMs: 30 * 60_000 }, undefined, state, 'completed-answers')
   }
@@ -99,8 +100,17 @@ export class AgCompletedAnswers {
   /** Wait and claim as one event-loop admission step for implicit history retries. */
   async claimWhenReady(request: AgRequest, scope: string, requestId: string | undefined, signal: AbortSignal, timeoutMs?: number): Promise<() => void> {
     const key = this.key(request, scope, requestId)
-    if (this.active.has(key)) await this.wait(request, scope, requestId, signal, timeoutMs)
-    return this.claim(request, scope, requestId)
+    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs
+    while (true) {
+      if (this.get(request, scope, requestId)) return () => undefined
+      const remaining = deadline === undefined ? undefined : deadline - Date.now()
+      if (remaining !== undefined && remaining <= 0) throw new AntigravityError('Timed out waiting for the active Antigravity response', 504, 'api_error')
+      if (this.active.has(key)) await this.wait(request, scope, requestId, signal, remaining)
+      try { return this.claim(request, scope, requestId) }
+      catch (error) {
+        if (!(error instanceof AntigravityError) || error.status !== 409) throw error
+      }
+    }
   }
 
   get(request: AgRequest, scope: string, requestId?: string): AgCompletedAnswer | undefined {
@@ -110,6 +120,20 @@ export class AgCompletedAnswers {
       if ((requestId || saved.input.length) && saved.input[0] !== this.fingerprint(request)) throw new AntigravityError('Request ID was reused with a different request', 409)
       return saved.response as unknown as AgCompletedAnswer
     } catch (error) { if (!(error instanceof AntigravityError) || error.status !== 404) throw error }
+  }
+  private hasConsumed(scope: string, id: string): boolean {
+    const key = createHash('sha256').update(scope).update('\0').update(id).digest('hex')
+    return this.consumedSavedTools.has(key) || !!this.state?.get('completed-answer-consumed', key, scope)
+  }
+  isConsumed(scope: string, answer: AgCompletedAnswer): boolean {
+    return answer.content.some(block => block.type === 'tool_use' && this.hasConsumed(scope, block.id))
+  }
+  markConsumed(scope: string, toolIds: string[]): void {
+    for (const id of toolIds) {
+      const key = createHash('sha256').update(scope).update('\0').update(id).digest('hex')
+      this.consumedSavedTools.add(key)
+      this.state?.put('completed-answer-consumed', key, scope, 'true', Date.now() + 30 * 60_000, 100_000, 16 * 1024 * 1024)
+    }
   }
   put(request: AgRequest, scope: string, answer: AgCompletedAnswer, requestId?: string) {
     if (!requestId && !this.eligible(request)) return
