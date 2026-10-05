@@ -78,6 +78,7 @@ export class AgAccountSet {
   private readonly running = new Map<string, { account: AgAccount; backend: AgBackend }>()
   // Keyed by key digest so the routing table never holds raw keys as map keys.
   private readonly byKey = new Map<string, string>()
+  private readonly rrIndex = new Map<string, number>()
   private syncing: Promise<unknown> = Promise.resolve()
   constructor(readonly dir: string, readonly base: Partial<ProxyConfig>, readonly start: Start, poolSize?: number) {
     this.pool = poolSize === undefined ? undefined : new AgProcessPool(poolSize)
@@ -133,13 +134,53 @@ export class AgAccountSet {
       antigravity: { ...this.base.antigravity, env: account.env, statePath: account.statePath, pool: this.pool },
     })
   }
-  /** The shared listener: the request's API key picks the account. */
+  /** The shared listener: the request's API key picks the account, or routes via gateway keys. */
   route(request: Request): Promise<Response> {
     const key = agRequestKey(request.headers)
     const name = key ? this.byKey.get(digest(key)) : undefined
     const entry = name ? this.running.get(name) : undefined
     if (entry) return entry.backend.fetch(request)
-    if (!key && ["/health", "/readyz", "/livez"].includes(new URL(request.url).pathname)) return Promise.resolve(Response.json({ status: "healthy", backend: "antigravity", accounts: this.running.size, failed: this.failures.size }))
+
+    if (!key && ["/health", "/readyz", "/livez"].includes(new URL(request.url).pathname)) {
+      return Promise.resolve(Response.json({ status: "healthy", backend: "antigravity", accounts: this.running.size, failed: this.failures.size }))
+    }
+
+    if (key) {
+      const keyHash = digest(key)
+      const gwKey = this.panel.data.keys.find(k => k.hash === keyHash)
+      if (gwKey && gwKey.enabled) {
+        const runningNames = [...this.running.keys()].sort()
+        const eligible = (gwKey.scope === "accounts"
+          ? runningNames.filter(n => gwKey.accounts.includes(n))
+          : runningNames)
+        if (eligible.length === 0) {
+          return Promise.resolve(Response.json({
+            type: "error",
+            error: {
+              type: "api_error",
+              message: "No serving account",
+            },
+          }, { status: 503 }))
+        }
+        const idx = this.rrIndex.get(gwKey.id) ?? 0
+        const selectedName = eligible[idx % eligible.length]!
+        this.rrIndex.set(gwKey.id, idx + 1)
+
+        gwKey.requests += 1
+        gwKey.lastUsedAt = Date.now()
+        this.panel.saveThrottled()
+
+        const selectedEntry = this.running.get(selectedName)!
+        const headers = new Headers(request.headers)
+        headers.set("x-api-key", selectedEntry.account.apiKey)
+        if (headers.has("authorization")) {
+          headers.set("authorization", `Bearer ${selectedEntry.account.apiKey}`)
+        }
+        const forwarded = new Request(request, { headers })
+        return selectedEntry.backend.fetch(forwarded)
+      }
+    }
+
     return Promise.resolve(denied())
   }
   /** Calls one account's backend in-process with its own key (admin panel). */
@@ -149,6 +190,7 @@ export class AgAccountSet {
   }
   async close(): Promise<void> {
     this.panel.flush()
+    this.rrIndex.clear()
     await this.syncing
     const backends = [...this.running.values()].map(entry => entry.backend)
     this.running.clear()
