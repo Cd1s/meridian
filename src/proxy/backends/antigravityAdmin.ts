@@ -8,7 +8,9 @@ import { hasValidApiKey } from "../auth"
 import { agAdminPageHtml } from "./antigravityAdminPage"
 import { parseAgEnvFile, type AgAccountSet } from "./antigravityAccounts"
 import {
+  hashGatewaySecret,
   maskProxyUrl,
+  type PanelGatewayKey,
   type PanelProxy,
   type ProxyProtocol,
   type ProxyTestResult,
@@ -110,6 +112,20 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       usedBy,
       lastTest: p.lastTest,
       createdAt: p.createdAt,
+    }
+  }
+
+  function describeGatewayKey(k: PanelGatewayKey) {
+    return {
+      id: k.id,
+      name: k.name,
+      prefix: k.prefix,
+      scope: k.scope,
+      accounts: k.accounts,
+      enabled: k.enabled,
+      createdAt: k.createdAt,
+      lastUsedAt: k.lastUsedAt,
+      requests: k.requests,
     }
   }
 
@@ -277,6 +293,109 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       return describeProxy(proxy)
     }
     fail(404, "Not found")
+  }
+
+  async function routeKeys(method: string, parts: string[], body: Json): Promise<unknown> {
+    if (parts.length === 0) {
+      if (method === "GET") {
+        return {
+          gateway: panel.data.keys.map(describeGatewayKey),
+          accounts: names().map(name => {
+            const key = readEnv(name)?.vars.MERIDIAN_API_KEY ?? ""
+            const prefix = key.length > 7 ? `${key.slice(0, 7)}…` : key
+            return { account: name, prefix }
+          }),
+        }
+      }
+      if (method === "POST") {
+        const keyName = String(body.name ?? "").trim()
+        if (!keyName) fail(400, "Name is required")
+        const accountsList = Array.isArray(body.accounts) ? body.accounts.filter(a => typeof a === "string" && a.trim()) : []
+        const scope: "all" | "accounts" = accountsList.length > 0 ? "accounts" : "all"
+        const secret = `mk-${randomBytes(16).toString("hex")}`
+        const hash = hashGatewaySecret(secret)
+        const prefix = `${secret.slice(0, 7)}…`
+        const id = `key_${randomBytes(4).toString("hex")}`
+        const keyEntry: PanelGatewayKey = {
+          id,
+          name: keyName,
+          prefix,
+          hash,
+          scope,
+          accounts: accountsList,
+          enabled: true,
+          createdAt: Date.now(),
+          lastUsedAt: null,
+          requests: 0,
+        }
+        panel.data.keys.push(keyEntry)
+        panel.save()
+        return { key: describeGatewayKey(keyEntry), secret }
+      }
+      fail(405, "Method not allowed")
+    }
+    if (parts.length === 1) {
+      const id = parts[0]!
+      const key = panel.data.keys.find(k => k.id === id) ?? fail(404, `Unknown gateway key ${id}`)
+      if (method === "PATCH") {
+        if (body.name !== undefined) key.name = String(body.name).trim()
+        if (body.enabled !== undefined) key.enabled = Boolean(body.enabled)
+        if (body.accounts !== undefined) {
+          const list = Array.isArray(body.accounts) ? body.accounts.filter(a => typeof a === "string" && a.trim()) : []
+          key.accounts = list
+          key.scope = list.length > 0 ? "accounts" : "all"
+        }
+        panel.save()
+        return describeGatewayKey(key)
+      }
+      if (method === "DELETE") {
+        panel.data.keys = panel.data.keys.filter(k => k.id !== id)
+        panel.save()
+        return { ok: true }
+      }
+      fail(405, "Method not allowed")
+    }
+    fail(404, "Not found")
+  }
+
+  async function rotateAccountKey(name: string) {
+    existing(name)
+    const newKey = `cheek-meridian-${name}-${randomBytes(12).toString("hex")}`
+    const file = [envPath(name), `${envPath(name)}.disabled`].find(existsSync)!
+    const text = readFileSync(file, "utf8")
+    const lines = text.split("\n")
+    const newLines = lines.map(line => {
+      const trimmed = line.trim()
+      if (trimmed.startsWith("MERIDIAN_API_KEY=") || trimmed.startsWith("export MERIDIAN_API_KEY=")) {
+        return `MERIDIAN_API_KEY=${newKey}`
+      }
+      return line
+    })
+    if (!newLines.some(l => l.startsWith("MERIDIAN_API_KEY="))) {
+      newLines.push(`MERIDIAN_API_KEY=${newKey}`)
+    }
+    writeFileSync(file, newLines.join("\n"), { mode: 0o600 })
+    await set.sync()
+
+    if (sub2api) {
+      const items = await sub2Accounts().catch(() => [])
+      const found = findSub2(items, name)
+      if (found) {
+        const detail = await s2(`/admin/accounts/${found.id}`)
+        const currentCredentials = (typeof detail.credentials === "object" && detail.credentials !== null) ? detail.credentials : {}
+        await s2(`/admin/accounts/${found.id}`, {
+          method: "PUT",
+          body: {
+            credentials: {
+              ...currentCredentials,
+              api_key: newKey,
+            },
+          },
+        })
+      }
+    }
+
+    return { key: newKey }
   }
 
   async function describe(name: string, items: Json[] | null) {
@@ -533,30 +652,40 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const body = (method === "POST" || method === "PATCH") ? await request.json().catch(() => ({})) as Json : {}
     if (parts[0] === "reload" && method === "POST") return set.sync()
     if (parts[0] === "proxies") return routeProxies(method, parts.slice(1), body)
-    if (parts[0] !== "accounts") fail(404, "Not found")
-    if (parts.length === 1 && method === "GET") {
-      const items = sub2api ? await sub2Accounts().catch(() => null) : null
-      return { accounts: await Promise.all(names().map(name => describe(name, items))), pool: { max: set.pool?.maxProcesses ?? null } }
-    }
-    if (parts.length === 1 && method === "POST") return create(body)
-    const [, name = "", action] = parts
-    existing(name)
-    if (parts.length === 2) {
-      if (method === "PATCH") return patchAccount(name, body)
-      if (method === "DELETE") return deleteAccount(name)
-      fail(405, "Method not allowed")
-    }
-    if (parts.length === 3) {
+    if (parts[0] === "keys") return routeKeys(method, parts.slice(1), body)
+    if (parts[0] === "accounts") {
+      if (parts.length === 1 && method === "GET") {
+        const items = sub2api ? await sub2Accounts().catch(() => null) : null
+        return { accounts: await Promise.all(names().map(name => describe(name, items))), pool: { max: set.pool?.maxProcesses ?? null } }
+      }
+      if (parts.length === 1 && method === "POST") return create(body)
+      const [, name = "", action, subAction] = parts
       const { vars } = existing(name)
-      if (method !== "POST") fail(405, "Method not allowed")
-      if (action === "ip") return { exitIp: await exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "") }
-      if (action === "login") return login(name)
-      if (action === "code") return submitCode(name, body.code)
-      if (action === "disable" || action === "enable") return toggle(name, action === "disable")
-      if (action === "test") return testAccount(name)
+      if (parts.length === 2) {
+        if (method === "PATCH") return patchAccount(name, body)
+        if (method === "DELETE") return deleteAccount(name)
+        fail(405, "Method not allowed")
+      }
+      if (parts.length === 3) {
+        if (action === "key") {
+          if (method !== "GET") fail(405, "Method not allowed")
+          return { key: vars.MERIDIAN_API_KEY ?? "" }
+        }
+        if (method !== "POST") fail(405, "Method not allowed")
+        if (action === "ip") return { exitIp: await exitIp(vars.ALL_PROXY ?? vars.HTTPS_PROXY ?? "") }
+        if (action === "login") return login(name)
+        if (action === "code") return submitCode(name, body.code)
+        if (action === "disable" || action === "enable") return toggle(name, action === "disable")
+        if (action === "test") return testAccount(name)
+        return fail(404, "Not found")
+      }
+      if (parts.length === 4 && action === "key" && subAction === "rotate") {
+        if (method !== "POST") fail(405, "Method not allowed")
+        return rotateAccountKey(name)
+      }
       return fail(404, "Not found")
     }
-    return fail(404, "Not found")
+    fail(404, "Not found")
   }
   return {
     async fetch(request: Request): Promise<Response> {
@@ -573,4 +702,3 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     },
   }
 }
-
