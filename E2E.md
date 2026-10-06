@@ -7311,8 +7311,29 @@ sensitive-file cleanup if disk publication remains stuck after child exit.
 
 ## Operator-managed Claude executable selection
 
-For PATH/override/package resolver changes, run the actual Linux OpenCode
-consumer gate in `scripts/e2e-claude-path-opencode.mjs`. Pin OpenCode 1.18.34,
+For cold-start probe timing that preserves executable preference and the
+override/package contract, run the actual native version gate:
+
+```sh
+bun scripts/e2e-claude-version-cold-start.mjs \
+  --baseline-models /absolute/unchanged-main/src/proxy/models.ts \
+  --fixed-models src/proxy/models.ts \
+  --claude /absolute/installed/claude --output /absolute/owned/evidence
+```
+
+This macOS gate compares fresh async and sync resolvers with a controlled delay
+before the real installed `claude --version`, plus fast and nonzero-exit
+controls. Each Bun process receives its fixture PATH before startup. The
+baseline and relative imports must come from unchanged main with the same
+lockfile-installed dependencies available. Use a new output directory per run
+so earlier logs and invocation markers remain intact. It makes no auth, SDK, client or
+model request. Record the exact native version and retained first failures;
+the controlled delay does not reproduce natural memory pressure or prove
+Linux/Windows behavior. See [#1286 timing evidence](docs/maintenance/evidence/1286-claude-cold-start.md).
+
+For changes to installation preference, explicit overrides or package/version
+compatibility, run the actual Linux OpenCode consumer gate in
+`scripts/e2e-claude-path-opencode.mjs`. Pin OpenCode 1.18.34,
 opencode-with-claude 1.10.1 and SDK 0.2.141. Compare a cached Claude 2.1.268
 package with a healthy mise-managed 2.1.288 using actual Opus 5.5. Require the
 baseline version refusal, fixed exact output receipt, native model, identical

@@ -1,5 +1,18 @@
 # Upstream review handoff
 
+## Current continuation — 2026-10-06 (delivery)
+
+[The current delivery record](BACKLOG_DELIVERY_2026-10-06.md) records #1223's
+unchanged-head closure and #1286's authored integration with startup/profile
+timing corrections. It supersedes earlier recommendations to retain #1223's
+excluded recovery as an open PR; the underlying crash problem remains unresolved.
+#1286's actual native timing proof and independent review pass; typecheck/build
+pass. Its full local run retains an unchanged store benchmark failure, with
+byte-identical baseline/current checks and the remaining stages completed.
+Final-head CI, including `test`, and exact-head integration remain pending.
+Other historical dispositions below remain qualified by
+their own recorded scopes and dates.
+
 ## Current continuation — 2026-10-04 (complete SQLite review)
 
 The [new review checkpoint](BACKLOG_SQLITE_REVIEW_2026-10-04.md) records #1274's

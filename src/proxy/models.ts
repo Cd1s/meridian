@@ -26,6 +26,26 @@ const execFile = promisify(execFileCallback)
  */
 const STUB_SIZE_THRESHOLD = 4096
 
+/**
+ * Shared time budget for finding Claude on PATH and probing its candidates
+ * before falling back to a packaged binary.
+ *
+ * A working installation answers in well under a second when its pages are
+ * resident, but it is a ~220 MB binary: on a host under memory pressure they
+ * are evicted while it sits idle, and a cold start was measured paging itself
+ * back in for 15-40 s. A 2 s budget made the page cache pick the installation
+ * - one start ran the operator's `claude`, the next the bundled one, often a
+ * different Claude Code version - and keeping both binaries resident deepened
+ * the pressure behind the race. A broken installation or unrelated shim
+ * answers with an error or the wrong output, judged the moment it arrives;
+ * a candidate that never answers consumes the remaining lookup budget.
+ */
+// Share this budget across the lookup and every candidate. Desktop startup
+// waits 60 s for health; leave room for the remaining auth/identity checks.
+const CLAUDE_PROBE_TIMEOUT_MS = 45_000
+/** A PATH candidate that answered this slowly is still used, and the wait is logged. */
+const CLAUDE_PROBE_SLOW_MS = 5_000
+
 export type ClaudeModel = "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]" | "haiku" | "fable" | "fable[1m]"
 
 /**
@@ -706,8 +726,12 @@ type ResolverDeps = {
   statSync: (p: string) => { size: number }
   exec: (cmd: string) => Promise<{ stdout: string }>
   execLookupSync?: (command: string, args: string[]) => string
-  probeClaude?: (candidate: string) => Promise<boolean>
-  probeClaudeSync?: (candidate: string) => boolean
+  probeClaude?: (candidate: string, timeoutMs?: number) => Promise<ClaudeProbeResult>
+  probeClaudeSync?: (candidate: string, timeoutMs?: number) => ClaudeProbeResult
+  /** Monotonic clock; injectable for aggregate-budget controls. */
+  now?: () => number
+  /** Reports a PATH candidate passed over or slow to answer; silent when absent. */
+  warn?: (message: string) => void
   resolvePackage: (specifier: string) => string
   envGet: (name: string) => string | undefined
   platform: NodeJS.Platform
@@ -715,37 +739,99 @@ type ResolverDeps = {
   isBun: boolean
 }
 
+/** What `claude --version` established about a `claude` found on PATH. */
+type ClaudeProbeResult =
+  | { usable: true; elapsedMs?: number }
+  | { usable: false; reason: string }
+
 const DEFAULT_DEPS: ResolverDeps = {
   existsSync,
   statSync: (p) => statSync(p),
   exec: (cmd) => exec(cmd, { windowsHide: true, timeout: 2000, maxBuffer: 64 * 1024 }),
+  // `env` is explicit because Bun 1.3's execFileSync otherwise hands the child
+  // the environment the process started with, so the sync resolver could search
+  // a different PATH than the async one.
   execLookupSync: (command, args) => execFileSync(command, args, {
     encoding: "utf8", windowsHide: true, timeout: 2000, maxBuffer: 64 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"], env: process.env,
   }),
-  probeClaude: async candidate => {
-    try {
-      const { stdout } = await execFile(candidate, ["--version"], { encoding: "utf8", windowsHide: true, timeout: 2000, maxBuffer: 16 * 1024 })
-      return isClaudeVersionOutput(stdout)
-    } catch {
-      return false
-    }
-  },
-  probeClaudeSync: candidate => {
-    try {
-      return isClaudeVersionOutput(execFileSync(candidate, ["--version"], {
-        encoding: "utf8", windowsHide: true, timeout: 2000, maxBuffer: 16 * 1024,
-        stdio: ["ignore", "pipe", "pipe"],
-      }))
-    } catch {
-      return false
-    }
-  },
+  probeClaude: (candidate, timeoutMs) => probeClaudeVersion(candidate, timeoutMs),
+  probeClaudeSync: (candidate, timeoutMs) => probeClaudeVersionSync(candidate, timeoutMs),
+  warn: message => console.warn(message),
   resolvePackage: (specifier) => fileURLToPath(import.meta.resolve(specifier)),
   envGet: (name) => process.env[name],
   platform: process.platform,
   arch: process.arch,
   isBun: typeof process.versions.bun !== "undefined",
+}
+
+/**
+ * Ask a PATH candidate for `--version`. Only its answer, or no answer within
+ * `timeoutMs`, decides: a cold installation is slow, not broken.
+ */
+export async function probeClaudeVersion(candidate: string, timeoutMs = CLAUDE_PROBE_TIMEOUT_MS): Promise<ClaudeProbeResult> {
+  const startedAt = Date.now()
+  try {
+    const { stdout } = await execFile(candidate, ["--version"], { encoding: "utf8", windowsHide: true, timeout: timeoutMs, maxBuffer: 16 * 1024 })
+    return judgeVersionOutput(stdout, Date.now() - startedAt)
+  } catch (err) {
+    return { usable: false, reason: describeProbeFailure(err, timeoutMs) }
+  }
+}
+
+/** `probeClaudeVersion` for the synchronous CLI resolver. */
+export function probeClaudeVersionSync(candidate: string, timeoutMs = CLAUDE_PROBE_TIMEOUT_MS): ClaudeProbeResult {
+  const startedAt = Date.now()
+  try {
+    const stdout = execFileSync(candidate, ["--version"], {
+      encoding: "utf8", windowsHide: true, timeout: timeoutMs, maxBuffer: 16 * 1024,
+      stdio: ["ignore", "pipe", "pipe"], env: process.env,
+    })
+    return judgeVersionOutput(stdout, Date.now() - startedAt)
+  } catch (err) {
+    return { usable: false, reason: describeProbeFailure(err, timeoutMs) }
+  }
+}
+
+function judgeVersionOutput(stdout: string, elapsedMs: number): ClaudeProbeResult {
+  if (isClaudeVersionOutput(stdout)) return { usable: true, elapsedMs }
+  const firstLine = stdout.trim().split(/\r?\n/)[0]
+  return {
+    usable: false,
+    reason: firstLine ? `\`--version\` printed "${firstLine.slice(0, 80)}", which is not a Claude Code version` : "`--version` printed nothing",
+  }
+}
+
+/** Why a candidate gave no usable answer to `--version`, in terms an operator can act on. */
+function describeProbeFailure(err: unknown, timeoutMs: number): string {
+  const e = err as { killed?: boolean; code?: unknown; status?: unknown; signal?: unknown; message?: unknown } | null
+  // execFile kills at its timeout and leaves `code` empty; execFileSync reports ETIMEDOUT.
+  if (e?.code === "ETIMEDOUT" || (e?.killed === true && e.code == null)) return `no answer to \`--version\` within ${timeoutMs / 1000}s`
+  const exitCode = typeof e?.code === "number" ? e.code : e?.status
+  if (typeof exitCode === "number") return `\`--version\` exited with code ${exitCode}`
+  if (typeof e?.signal === "string") return `\`--version\` was terminated by ${e.signal}`
+  if (typeof e?.code === "string") return `it could not be run (${e.code})`
+  return String(e?.message ?? err).split("\n")[0]!.slice(0, 200)
+}
+
+/**
+ * Whether to keep a PATH candidate. Passing one over moves the proxy to
+ * another installation, and possibly another Claude Code version, so it is
+ * always said, with the reason.
+ */
+function keepPathCandidate(candidate: string, result: ClaudeProbeResult, deps: ResolverDeps): boolean {
+  if (!result.usable) {
+    deps.warn?.(
+      `[PROXY] Not using the claude found on PATH at ${candidate}: ${result.reason}. ` +
+      "Falling back to the next Claude Code installation; set MERIDIAN_CLAUDE_PATH to choose one explicitly.",
+    )
+    return false
+  }
+  const elapsedMs = result.elapsedMs ?? 0
+  if (elapsedMs >= CLAUDE_PROBE_SLOW_MS) {
+    deps.warn?.(`[PROXY] The claude found on PATH at ${candidate} took ${(elapsedMs / 1000).toFixed(1)}s to answer \`--version\`, likely a cold start; using it.`)
+  }
+  return true
 }
 
 /**
@@ -830,10 +916,18 @@ function tryPlatformPackage(deps: ResolverDeps): string | null {
  */
 async function tryPathLookup(deps: ResolverDeps): Promise<string | null> {
   const cmd = deps.platform === "win32" ? "where claude" : "which claude"
+  const now = deps.now ?? (() => performance.now())
+  const deadline = now() + CLAUDE_PROBE_TIMEOUT_MS
   try {
     const { stdout } = await deps.exec(cmd)
     for (const candidate of existingPathCandidates(stdout, deps)) {
-      if (!deps.probeClaude || await deps.probeClaude(candidate)) return candidate
+      if (!deps.probeClaude) return candidate
+      const remainingMs = Math.max(0, Math.floor(deadline - now()))
+      if (remainingMs === 0) {
+        warnProbeBudgetExhausted(candidate, deps)
+        break
+      }
+      if (keepPathCandidate(candidate, await deps.probeClaude(candidate, remainingMs), deps)) return candidate
     }
   } catch {
     // No `claude` on PATH (or `where`/`which` not available).
@@ -854,16 +948,28 @@ function existingPathCandidates(stdout: string, deps: ResolverDeps): string[] {
 
 function tryPathLookupSync(deps: ResolverDeps): string | null {
   if (!deps.execLookupSync) return null
+  const now = deps.now ?? (() => performance.now())
+  const deadline = now() + CLAUDE_PROBE_TIMEOUT_MS
   try {
     const stdout = deps.execLookupSync(deps.platform === "win32" ? "where" : "which", ["claude"])
     for (const candidate of existingPathCandidates(stdout, deps)) {
-      if (!deps.probeClaudeSync || deps.probeClaudeSync(candidate)) return candidate
+      if (!deps.probeClaudeSync) return candidate
+      const remainingMs = Math.max(0, Math.floor(deadline - now()))
+      if (remainingMs === 0) {
+        warnProbeBudgetExhausted(candidate, deps)
+        break
+      }
+      if (keepPathCandidate(candidate, deps.probeClaudeSync(candidate, remainingMs), deps)) return candidate
     }
     return null
   } catch {
     // A missing/failed lookup must still allow the packaged fallback.
     return null
   }
+}
+
+function warnProbeBudgetExhausted(candidate: string, deps: ResolverDeps): void {
+  deps.warn?.(`[PROXY] Not probing the claude found on PATH at ${candidate}: the ${CLAUDE_PROBE_TIMEOUT_MS / 1000}s PATH lookup/probe budget is exhausted. Falling back to the next Claude Code installation; set MERIDIAN_CLAUDE_PATH to choose one explicitly.`)
 }
 
 /**
