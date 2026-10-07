@@ -100,11 +100,17 @@ jobs:
           COUNT: ${{ steps.detect.outputs.count }}
         run: |
           git push -q -u origin "$BRANCH"
-          url=$(gh pr create --base "$PROD" --head "$BRANCH" \
-            --title "sync: merge rynfar/meridian main ($COUNT commits)" \
-            --body "Automated upstream sync by GitHub Actions ($COUNT new upstream commits). Merge was conflict-free; typecheck and the Antigravity/replay suites (strict resilience group included) passed. Merged into the production branch only; not deployed.")
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-          gh pr merge "$url" --merge
+          # REST, not `gh pr create`/`gh pr merge`: the workflow token is refused for GraphQL mutations on this repo
+          # ("Resource not accessible by integration"), while the REST endpoints work.
+          body="Automated upstream sync by GitHub Actions ($COUNT new upstream commits). Merge was conflict-free; typecheck and the Antigravity/replay suites (strict resilience group included) passed. Merged into the production branch only; nothing is deployed."
+          number=$(gh api -X POST "repos/$GITHUB_REPOSITORY/pulls" -f title="sync: merge rynfar/meridian main ($COUNT commits)" -f head="$BRANCH" -f base="$PROD" -f body="$body" --jq .number)
+          echo "url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${number}" >> "$GITHUB_OUTPUT"
+          merged=false
+          for attempt in 1 2 3 4 5 6; do
+            if gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$number/merge" -f merge_method=merge --jq .merged > "$RUNNER_TEMP/merged.txt" 2> "$RUNNER_TEMP/merge-err.txt"; then merged=$(cat "$RUNNER_TEMP/merged.txt"); break; fi
+            sleep 5   # GitHub computes mergeability asynchronously right after the PR is created
+          done
+          [ "$merged" = true ] || { cat "$RUNNER_TEMP/merge-err.txt"; echo "::error::PR #$number was created but could not be merged"; exit 1; }
           git push origin --delete "$BRANCH" || true
 
       - name: Notify result
@@ -124,6 +130,9 @@ jobs:
           elif [ "$CONFLICT" = true ]; then
             title="Meridian 上游同步：需人工审"
             body=$(printf '合并有冲突，已开 issue 交给 Hub 修复 agent。\n冲突文件：%s\n运行：%s' "$(head -5 "$RUNNER_TEMP/conflicts.txt" | tr '\n' ' ')" "$RUN_URL")
+          elif [ "$CHECKS" = "success" ]; then
+            title="Meridian 上游同步：失败（检查已通过，合并步骤出错）"
+            body=$(printf '测试和类型检查通过，但创建或合并 PR 失败，已开 issue 交给 Hub 修复 agent。\n运行：%s' "$RUN_URL")
           else
             title="Meridian 上游同步：失败"
             body=$(printf '检查未通过（%s），已开 issue 交给 Hub 修复 agent。\n运行：%s' "$CHECKS" "$RUN_URL")
@@ -137,17 +146,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CONFLICT: ${{ steps.merge.outputs.conflict }}
+          CHECKS: ${{ steps.checks.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           reason="checks failed after a conflict-free merge"
+          [ "${CHECKS:-}" = success ] && reason="checks passed but creating or merging the sync PR failed"
           [ "$CONFLICT" = true ] && reason="merge conflicts: $(head -10 "$RUNNER_TEMP/conflicts.txt" | tr '\n' ' ')"
           body="Upstream sync failed ($reason).
 
           Run: $RUN_URL
           Production branch: $PROD. Upstream: rynfar/meridian main. Do not deploy; repair via PR into $PROD."
-          existing=$(gh issue list --label meridian-sync-failed --state open --json number --jq '.[0].number // empty')
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues?labels=meridian-sync-failed&state=open" --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$existing/comments" -f body="$body" --silent
           else
-            gh issue create --title "Upstream sync failed" --label meridian-sync-failed --body "$body"
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="Upstream sync failed" -f body="$body" -f "labels[]=meridian-sync-failed" --silent
           fi
