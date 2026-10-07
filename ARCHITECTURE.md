@@ -195,6 +195,9 @@ src/
 │   ├── errors.ts              ← Error classification (SDK errors → HTTP responses)
 │   ├── retryAfter.ts          ← Retry-After computation for 429/503/529 (PURE)
 │   ├── models.ts              ← Model mapping, Claude executable resolution
+│   ├── authStatusProcess.ts   ← Bounded auth/resolver children and explicit process/pipe joins
+│   ├── claudeResolverOwnership.ts ← Independent leases for shared async resolver custody
+│   ├── authStatusOwnership.ts ← Per-instance ownership of shared auth-status refreshes
 │   ├── buildInfo.ts           ← Build provenance: source detection, semver compare (PURE)
 │   ├── localBuildInfo.ts      ← Local build comparisons and public forge links (PURE)
 │   ├── buildRuntime.ts        ← Immutable runtime identity and independent disk status
@@ -312,6 +315,10 @@ server.ts (HTTP layer)
 7. **`query.ts` builds SDK options through the adapter interface**, never importing tool constants directly.
 
 8. **`sessionTree.ts` holds only live-request bookkeeping.** No HTTP, no I/O, no logging: the caller supplies each entry's abort handle and owns the eviction and telemetry discipline that follows an abort. It must not import from `server.ts`, `session/`, or `adapter.ts`.
+
+`operationalLog.ts` owns the existing process-wide operational stderr silence
+policy. Server orchestration and lifecycle queue logging use it without importing
+each other; diagnostic entries remain available to silent embedding hosts.
 
 ## Agent Adapter Pattern
 
@@ -509,8 +516,16 @@ An SDK writer lease is released once its writer has been joined. If the lifecycl
 FIFO with at most 256 waiting callers. Local waiting does not consume the
 two-second external-lock acquisition budget; only the head creates a durable
 candidate. A holder stalled for 60 seconds rejects queued/new callers without
-unlocking or abandoning its transaction. Capacity and stalled-holder errors are
+unlocking or abandoning its transaction. A stall deadline that runs more than a
+second late was delayed by a blocked event loop, which delayed the holder too, so
+it grants one additional window. The second deadline rejects waiters even if it
+is late; the holder still owns the lock until its actual completion. Capacity and
+stalled-holder errors are
 distinct, defined in the dependency-leaf `session/lifecycleErrors.ts`.
+A turn whose model already answered does not fail on any of these lock errors
+at terminal publication: they are raised before the transaction runs, so the
+turn invalidates its unchanged pre-turn mapping and the next turn replays. A
+durable priority attempt still requires its atomic publication.
 Request admission signals remove queued work and cancel external acquisition,
 but a running durable callback always finishes before returning ownership.
 Cleanup never receives the canceled admission signal. Publication callbacks
@@ -573,3 +588,19 @@ Both render the same manager snapshot and use the same lifecycle/profile actions
 category preferences, burst thresholds and persisted cooldown timestamps prevent
 per-request alerts. Recovery exhaustion is critical; individual child exits remain
 in the in-app history.
+
+## Auth-status refresh lifetime
+
+Auth-status caches remain shared by profile/default context. Each proxy instance
+owns only the refreshes its routes or keepalive requested; closing one owner
+does not cancel a sibling's shared check. The last owner cancels and joins its
+check through the existing shutdown path. An independent direct caller retains
+its own ownership until the bounded process finishes. Caller patience is five
+seconds, while the process deadline is ninety seconds.
+
+`authStatusProcess.ts` records callback, exit, close and both captured pipe
+closures independently. Cancellation uses the exact owned child handle, with
+bounded TERM/KILL escalation. Missing settlement rejects cleanup and retains
+the single-flight slot; neither a settled result promise nor `exitCode` alone
+proves the child joined. Cache expiry never detaches an in-flight check. The
+existing `ProxyInstance.close()` and `closeBackend()` signatures are unchanged.
