@@ -1,5 +1,70 @@
 # Upstream review handoff
 
+## Current continuation — 2026-10-07
+
+Pi continuation #1290/#1289 was delivered by [#1296](https://github.com/rynfar/meridian/pull/1296),
+merged `133bb918e02c7cf3a3a2ed4fb212df47a1c6895b` with the exact validated tree,
+verified contributor credit, and unchanged source/issue closure.
+[Meridian 1.80.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.80.0)
+is published from `c2052aac759c74d8ab0910809009b478ddfce243` through the normal
+Release Please workflow. npm integrity/provenance, versioned Docker platforms,
+mac-arm64 desktop assets and fresh registry-installed actual Pi/Opus behavior
+are verified; complete receipts and runnable harness are in
+[release PR #1202](https://github.com/rynfar/meridian/pull/1202).
+
+[Source #1295](https://github.com/rynfar/meridian/pull/1295) was delivered by
+[#1298](https://github.com/rynfar/meridian/pull/1298), normally squash-merged as
+`097530c824c7c2096c82b89de85fd6550479b603`. Landed tree
+`b5c452be66706875bc848b9887e29ca6f403cb38` equals the validated tree;
+Nowaker credit is verified and unchanged source `9d932c846afbb19b92d1a8f516772b3cd2552491`
+was closed. [Qualified local and live proof](evidence/1295-live.md) covers actual
+Linux JSON/SSE before/after, all four E41 modes, concurrent publication lifetime,
+real/recurrent timer controls and built native OpenCode with both plugins.
+Required final-head CI passed; the closed PR's final body retains the receipt.
+
+Current delivery: [source #1285](https://github.com/rynfar/meridian/pull/1285),
+unchanged `08ddd8b061a2d271f8af397b83baf2a33f4deb4c`. The authored incorporation
+is `b67c2f8a6e20aaa3e0ee0b7aa0ea792f1d09351b`, with separate maintainer
+ownership/resolver/diagnostic corrections. Tested executable `065e7c7f620f871774a4fe0caa2497950818fd6e`
+passes npm **5,433 / 35 skip / 0 fail**, standalone typecheck/build, both same-native
+baseline REDs, eight actual source controls and seven independently installed
+package controls. [Durable proof and limitations](evidence/1285-auth-status.md)
+include the committed auth-only harness, Darwin arm64 CLI 2.1.284/SDK 0.2.141
+identity, joined cleanup and retained first failures. Independent scoped review
+accepts the production, source/package proof, final local checks and documents
+with no remaining material finding. Required delivery-head CI remains before
+credited integration and fresh unchanged-source closure. This auth-only flow makes no model/client claim;
+older whole-OS/controller holds are separate.
+
+[Transcript source #1261](https://github.com/rynfar/meridian/pull/1261) remains
+deferred at unchanged `7475d08c652332aa1b9b23cbc525024bef83ab28`, despite green CI:
+[the concrete review](evidence/1261-transcript-sweep-review.md) retains pin/lease,
+admission-race and destructive-child join findings. Revisit a corrected ownership,
+pin/admission/join design with real affected-flow proof. Its watcher is removed.
+Other historical Sonnet/MCP/SQLite/backlog holds retain their own scopes;
+preparation completion does not grant their outstanding live acceptance.
+
+## Current continuation — 2026-10-06 (delivery)
+
+[The current delivery record](BACKLOG_DELIVERY_2026-10-06.md) records #1223's
+unchanged-head closure and #1286's authored integration with startup/profile
+timing corrections. It supersedes earlier recommendations to retain #1223's
+excluded recovery as an open PR; the underlying crash problem remains unresolved.
+#1286's actual native timing proof and independent review pass; typecheck/build
+pass. Its full local run retains an unchanged store benchmark failure, with
+byte-identical baseline/current checks and the remaining stages completed.
+Delivery [PR #1287](https://github.com/rynfar/meridian/pull/1287) passed all
+executed final-head checks, including `test`, and merged as
+`ca6a5c0a4eddb87da52d83993f8f9e105712f0f6`. Its tree matches the validated
+head exactly, human contributor credit is present, and unchanged source #1286
+was closed as incorporated. The current focused delivery is #1290/#1289;
+its production review corrections, actual Pi/Opus and four-mode E41 evidence
+are complete. Final evidence review and final-head CI remain before merge;
+#1295 is being corrected in parallel. See the linked delivery record and
+its durable evidence receipts.
+Other historical dispositions below remain qualified by
+their own recorded scopes and dates.
+
 ## Current continuation — 2026-10-04 (complete SQLite review)
 
 The [new review checkpoint](BACKLOG_SQLITE_REVIEW_2026-10-04.md) records #1274's
