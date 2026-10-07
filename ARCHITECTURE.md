@@ -195,6 +195,9 @@ src/
 │   ├── errors.ts              ← Error classification (SDK errors → HTTP responses)
 │   ├── retryAfter.ts          ← Retry-After computation for 429/503/529 (PURE)
 │   ├── models.ts              ← Model mapping, Claude executable resolution
+│   ├── authStatusProcess.ts   ← Bounded auth/resolver children and explicit process/pipe joins
+│   ├── claudeResolverOwnership.ts ← Independent leases for shared async resolver custody
+│   ├── authStatusOwnership.ts ← Per-instance ownership of shared auth-status refreshes
 │   ├── buildInfo.ts           ← Build provenance: source detection, semver compare (PURE)
 │   ├── localBuildInfo.ts      ← Local build comparisons and public forge links (PURE)
 │   ├── buildRuntime.ts        ← Immutable runtime identity and independent disk status
@@ -585,3 +588,19 @@ Both render the same manager snapshot and use the same lifecycle/profile actions
 category preferences, burst thresholds and persisted cooldown timestamps prevent
 per-request alerts. Recovery exhaustion is critical; individual child exits remain
 in the in-app history.
+
+## Auth-status refresh lifetime
+
+Auth-status caches remain shared by profile/default context. Each proxy instance
+owns only the refreshes its routes or keepalive requested; closing one owner
+does not cancel a sibling's shared check. The last owner cancels and joins its
+check through the existing shutdown path. An independent direct caller retains
+its own ownership until the bounded process finishes. Caller patience is five
+seconds, while the process deadline is ninety seconds.
+
+`authStatusProcess.ts` records callback, exit, close and both captured pipe
+closures independently. Cancellation uses the exact owned child handle, with
+bounded TERM/KILL escalation. Missing settlement rejects cleanup and retains
+the single-flight slot; neither a settled result promise nor `exitCode` alone
+proves the child joined. Cache expiry never detaches an in-flight check. The
+existing `ProxyInstance.close()` and `closeBackend()` signatures are unchanged.

@@ -98,8 +98,11 @@ Claude CLI, delaying only `auth status` by two seconds. Five concurrent warm
 `/health` probes must answer within one second while a single refresh remains
 in flight; `/v1/models` must also answer during that refresh. It asserts healthy
 actual login and that fresh probes do not start another subprocess. Disposable
-configuration/session/work directories and read-only credentials isolate state.
-No authentication payload is fabricated. On an unchanged pre-fix checkout,
+configuration/session/work directories isolate Meridian's own files. The
+read-only flag disables Meridian writers, but does not fence the official CLI's
+credential rotation. This legacy gate needs a separately admitted task-owned
+credential/OS boundary before another live run. The contributor cold-start
+prototype below has the same hold. No authentication payload is fabricated. On an unchanged pre-fix checkout,
 the same harness with `--expect-blocking` must exhibit the two-second stall.
 
 Verified macOS arm64 with Claude Code 2.1.284: baseline five probes 2258 ms
@@ -108,6 +111,61 @@ each; fixed probes 2–4 ms, one real refresh. Adjacent actual headless OpenCode
 See [durable evidence](docs/maintenance/evidence/1197-auth-refresh.md).
 This demonstrates a controlled auth-subprocess delay, not a reproduction of
 the contributor's entire overloaded Linux deployment or Windows behavior.
+
+## Auth-status cold start
+
+`scripts/e2e-auth-status-cold-start.mjs` is the retained contributor prototype,
+not an admitted live gate. Do not run it against a default owner credential
+store. Before execution, prepare and review a narrowly scoped task-owned
+supported credential configuration and a fixture that records native child
+exit/close/both-pipe joins, snapshot preservation and owned cleanup. The
+prototype alone does not establish those facts; Meridian's readonly flag also
+does not fence native credential rotation. No generic controller or capture
+platform is supplied by this production port.
+
+Its intended assertion covers a freshly started proxy whose
+first `claude auth status` is slower than any caller waits: the gate forwards
+to the installed Claude CLI, delaying only `auth status` by eight seconds. The
+first `/health` must answer `degraded` before the delay ends, the delayed check
+must run to completion, and the next `/health` must answer healthy from it, with
+one auth subprocess in total. These are the prototype's intended assertions;
+the independently verified native gate below now covers source/package cold,
+stale and owner controls within its recorded Mac scope.
+On an unchanged pre-fix checkout, `--expect-killed` must show the check killed
+before it answered and the proxy still degraded.
+
+Contributor-reported Linux x64 with Claude Code 2.1.284: baseline first probe degraded at
+5159 ms, check killed, second probe still degraded; fixed first probe degraded
+at 5127 ms, check answered at 8.7 s, second probe healthy in 85 ms, one real
+auth subprocess.
+
+These are not independently repeated artifacts. The source PR body names CLI
+2.1.289 for its Linux delay run, while its submitted E2E note names 2.1.284;
+the discrepancy remains open. The reported macOS arm64 memory-pressure runs
+use 2.1.284. A controlled native delay is not a reproduction of host paging.
+This auth-only flow needs no model generation and makes no client/catalog or
+whole-OS custody claim. Existing frozen auth398 evidence retains its narrower
+static/copied scope and unimplemented native boundary holds.
+
+### Independently verified native auth gate
+
+[scripts/e2e-auth-status-native.mjs](scripts/e2e-auth-status-native.mjs) is the
+escrowed actual-native gate for #1285. It selects the independently verified
+Darwin arm64 Claude CLI 2.1.284 by hash, uses Bun 1.3.11/SDK 0.2.141, pauses only
+the exact auth child for eight seconds and records process/pipe joins. The real
+health/list routes exercise parsed auth status; no SDK generation is allowed.
+
+Use a new private task directory and supported access-only input; the token stays
+in a private file, not the command line. The [durable command and result record](docs/maintenance/evidence/1285-auth-status.md)
+contains both same-assertion baseline REDs, eight source PASS controls and seven
+independently installed package PASS controls. These include both cache slots,
+real 61-second expiry, sibling/last-owner closure and absent-token diagnostics;
+the independent direct-user case is source-only. Temporary input was removed
+only after the current observed roles joined. The original prototype, first
+harness failures and non-reproduced HTTP-close timeout remain explicitly qualified.
+This proves controlled Mac auth delay, not memory paging, Linux/Windows, owner
+store enrichment, provider entitlement, coding-client/model behavior or whole-OS
+custody. Refresh actual CI/source status before merging.
 
 ## Local build provenance
 
