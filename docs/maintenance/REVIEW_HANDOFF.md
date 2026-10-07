@@ -9,7 +9,15 @@ excluded recovery as an open PR; the underlying crash problem remains unresolved
 #1286's actual native timing proof and independent review pass; typecheck/build
 pass. Its full local run retains an unchanged store benchmark failure, with
 byte-identical baseline/current checks and the remaining stages completed.
-Final-head CI, including `test`, and exact-head integration remain pending.
+Delivery [PR #1287](https://github.com/rynfar/meridian/pull/1287) passed all
+executed final-head checks, including `test`, and merged as
+`ca6a5c0a4eddb87da52d83993f8f9e105712f0f6`. Its tree matches the validated
+head exactly, human contributor credit is present, and unchanged source #1286
+was closed as incorporated. The current focused delivery is #1290/#1289;
+its production review corrections, actual Pi/Opus and four-mode E41 evidence
+are complete. Final evidence review and final-head CI remain before merge;
+#1295 is being corrected in parallel. See the linked delivery record and
+its durable evidence receipts.
 Other historical dispositions below remain qualified by
 their own recorded scopes and dates.
 

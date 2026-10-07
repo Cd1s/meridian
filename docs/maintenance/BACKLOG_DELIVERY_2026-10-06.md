@@ -22,7 +22,7 @@ the separately reviewed fsync/publication subset was accepted. Revisit recovery
 with affirmative owner-death/boot evidence or a fencing protocol; elapsed grace
 alone is insufficient.
 
-## #1286: accepted with corrections, awaiting delivery CI
+## #1286: accepted with corrections and delivered as #1287
 
 [Source PR #1286](https://github.com/rynfar/meridian/pull/1286) was created during
 this delivery pass. Consequently the fresh Meridian inventory still has 20
@@ -62,6 +62,63 @@ changed inside Bun; its result was not logged first. That failure remains
 retained, and the corrected fixture supplies PATH before launching each fresh
 Bun arm. It does not count as a passed before/after control.
 
+Delivery [PR #1287](https://github.com/rynfar/meridian/pull/1287) merged on
+2026-10-06 at 20:34:29 UTC, after all six executed final-head checks passed
+and the expected changelog check skipped. The [test run](https://github.com/rynfar/meridian/actions/runs/37496805897)
+passed on head `c06c03535da79f72b2a389dc036a60d7fdc02b38`.
+Merge `ca6a5c0a4eddb87da52d83993f8f9e105712f0f6` has the exact validated tree
+`aa4ff3f0c2ba83594f96c3ca7a168965db9e49cd` and verified
+`Co-authored-by: Nowaker <spam@nowaker.net>` credit. Source #1286 was rechecked
+at unchanged `b7caeacaf89f3f9c95d2e13ca5d1e53556eb6b46` and closed at
+20:35:06 UTC. Earlier CI-pending statements above describe preparation only;
+the retained local benchmark and first fixture failures remain unchanged.
+
 This pass adds no shared guardian or general test-platform work. The owner's
 dirty checkout remains preserved; releases and public comments remain
 unauthorized.
+
+
+## #1290 / #1289: accepted with corrections, delivery ready for CI
+
+[Source #1290](https://github.com/rynfar/meridian/pull/1290), unchanged
+`97cc5ab4ec52bbf3e750e3991f5691efae60d582`, is authored cherry-pick
+`85aba6f93da81d8a972c03aab9f529557d0a0e68` from main `ca6a5c0a`.
+Jaedyn Chilton's Author/AuthorDate remain intact. Maintainer corrections
+`7a20dacd` and `acc5d3fe` close CAS-loss streams with an error before stop,
+preserve concurrent winners, and avoid a contradictory terminal after an
+observer throws. Meaningful negative controls reproduced each defect before
+correction; all 124 focused integration tests pass. Public contracts are preserved.
+
+Fresh independent review round 2 accepted the production correction and
+actual-Pi harness at `5e608a7f`, with no surviving material findings. Its two
+prior P2 findings are corrected: deadline cancellation cannot count as EOF,
+and post-terminal observer failure cannot append a contradictory terminal.
+Final review of the E41 additions and complete durable receipts is pending.
+
+[Local gates/E61](evidence/1290-local-gates-e61.md),
+[actual Pi](evidence/1290-pi-live.md), and
+[real-provider E41](evidence/1290-e41-live.md) are complete. Supported Pi 1.0.2
+on Darwin arm64, SDK 0.2.141, CLI 2.1.285 and independently installed scrub
+0.2.2 reproduce capped fallback failure on unchanged main and pass the same
+controlled harness on the correction. A separate actual Opus 5.5 work-profile
+run passes real receipt, checkpoint/fork, saved follow-up and supported history.
+E41's four sequential/parallel × JSON/streaming modes pass actual Opus,
+unchanged source histories and cache continuity. The reporter Pi/OS remains
+unknown; the owner approved the isolated supported client. Leftover scrub
+docs wrappers remain qualified, not claimed fixed.
+
+Default live authentication failure and the first E41 default-profile setup
+failure remain recorded. Corrected setup explicitly passes a private supported
+access-only profile to the programmatic server. Seven owned snapshot copies
+were removed after launches joined; no owner login/refresh/source-store write
+was performed. The first full npm run retains the unrelated timing-ratio
+failure, with matching graph and narrow baseline/current comparisons; all
+remaining stages, typecheck and build pass. Final integration CI including
+`test`, exact-head squash, human credit, merged tree and source closure remain
+required. No source or issue closure is claimed yet.
+
+The next contribution is #1295. Independent triage found an unbounded late
+queue-timer extension and silent-mode logging regression. Its separate authored
+integration is correcting those and testing publication/replay/CAS/cancellation
+behavior while #1290 finishes. No general guardian/runtime platform expansion
+or new owner decision is needed for these internal fixes.
