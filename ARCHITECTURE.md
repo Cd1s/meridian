@@ -313,6 +313,10 @@ server.ts (HTTP layer)
 
 8. **`sessionTree.ts` holds only live-request bookkeeping.** No HTTP, no I/O, no logging: the caller supplies each entry's abort handle and owns the eviction and telemetry discipline that follows an abort. It must not import from `server.ts`, `session/`, or `adapter.ts`.
 
+`operationalLog.ts` owns the existing process-wide operational stderr silence
+policy. Server orchestration and lifecycle queue logging use it without importing
+each other; diagnostic entries remain available to silent embedding hosts.
+
 ## Agent Adapter Pattern
 
 Agent-specific behavior is isolated behind the `AgentAdapter` interface (`adapter.ts`). The proxy calls adapter methods instead of hardcoding agent logic.
@@ -509,8 +513,16 @@ An SDK writer lease is released once its writer has been joined. If the lifecycl
 FIFO with at most 256 waiting callers. Local waiting does not consume the
 two-second external-lock acquisition budget; only the head creates a durable
 candidate. A holder stalled for 60 seconds rejects queued/new callers without
-unlocking or abandoning its transaction. Capacity and stalled-holder errors are
+unlocking or abandoning its transaction. A stall deadline that runs more than a
+second late was delayed by a blocked event loop, which delayed the holder too, so
+it grants one additional window. The second deadline rejects waiters even if it
+is late; the holder still owns the lock until its actual completion. Capacity and
+stalled-holder errors are
 distinct, defined in the dependency-leaf `session/lifecycleErrors.ts`.
+A turn whose model already answered does not fail on any of these lock errors
+at terminal publication: they are raised before the transaction runs, so the
+turn invalidates its unchanged pre-turn mapping and the next turn replays. A
+durable priority attempt still requires its atomic publication.
 Request admission signals remove queued work and cancel external acquisition,
 but a running durable callback always finishes before returning ownership.
 Cleanup never receives the canceled admission signal. Publication callbacks

@@ -1,5 +1,27 @@
 # Upstream review handoff
 
+## Current continuation — 2026-10-07
+
+Pi continuation #1290/#1289 was delivered by [#1296](https://github.com/rynfar/meridian/pull/1296),
+merged `133bb918e02c7cf3a3a2ed4fb212df47a1c6895b` with the exact validated tree,
+verified contributor credit, and unchanged source/issue closure.
+[Meridian 1.80.0](https://github.com/rynfar/meridian/releases/tag/meridian-v1.80.0)
+is published from `c2052aac759c74d8ab0910809009b478ddfce243` through the normal
+Release Please workflow. npm integrity/provenance, versioned Docker platforms,
+mac-arm64 desktop assets and fresh registry-installed actual Pi/Opus behavior
+are verified; complete receipts and runnable harness are in
+[release PR #1202](https://github.com/rynfar/meridian/pull/1202).
+
+The current delivery is [source #1295](https://github.com/rynfar/meridian/pull/1295).
+[Qualified local and live proof](evidence/1295-live.md) covers actual Linux
+JSON/SSE before/after, all four E41 modes, concurrent publication lifetime,
+real/recurrent timer controls, and built native OpenCode with both plugins.
+The source stays open until final independent acceptance, delivery-head CI,
+exact credited integration and unchanged-head closure. The prepared #1285
+production port follows it; its local/native/CI gates remain open. Historical
+preparation statuses below are superseded only for these completed scopes;
+other Sonnet/MCP/SQLite/backlog holds remain their own work.
+
 ## Current continuation — 2026-10-06 (delivery)
 
 [The current delivery record](BACKLOG_DELIVERY_2026-10-06.md) records #1223's
