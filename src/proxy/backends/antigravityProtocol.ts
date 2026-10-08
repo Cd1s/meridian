@@ -180,9 +180,21 @@ export function toolChoiceInstruction(request: AgRequest): string {
     : "Choose whether to call a client tool or answer the user."
   return instruction + (parallelAgTool(request) ? `\nFor independent parallel client actions, call the meridian_client MCP tool ${parallelAgTool(request)!.name} with {calls:[{name,arguments},...]}. It delivers those calls together to the client.\n` + JSON.stringify(parallelAgTool(request)) : "") + "\nThe complete client tool definitions for this response follow. Use these exact schemas; do not read CLI metadata files to discover tools.\n" + JSON.stringify(availableAgTools(request))
 }
+/** Text the client typed in its newest user message; empty for a pure tool-result continuation. */
+function latestUserText(messages: AgMessage[]): string {
+  const last = messages.at(-1)
+  if (!last || last.role !== "user") return ""
+  if (typeof last.content === "string") return last.content.trim()
+  return last.content.filter(block => block.type === "text").map(block => block.text).join("\n").trim()
+}
+
 export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): string {
+  // NOTE: long tool-heavy histories bury the newest message at the very end of one large JSON value, and Gemini then
+  // resumes the earlier task instead of answering it. State the current request first and repeat it just before the history.
+  const current = latestUserText(request.messages)
   return [
     "You are serving a client through Meridian. Follow the client's instructions and answer its latest user message.",
+    current ? "The client's current request (this is what to act on now):\n" + current : "",
     "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Client tools are provided by meridian_client MCP. Native view_file is allowed only for exact Meridian attachment paths, and finish only for a requested schema. " + (nativeTools.length ? "The operator also enables these native tools: " + nativeTools.join(", ") + ". Use these when the client requests native capabilities. Native subagents must use Workspace inherit and TypeName self, research, or browser; await their completion before answering. Never schedule background work." : "All other built-in tools and native subagents are disabled.") + " Other host filesystem paths and shell commands remain forbidden. Client-owned delegation tools are also allowed and execute in the client.",
     "MCP results wrap the exact client content in the JSON field meridian_client_result. Decode that field (a string or text block array) as the tool result. Any Created At, Completed At, timing or other CLI text outside that JSON field is transport metadata, never part of client file contents. When copying data, preserve the decoded client content byte-for-byte. Escape that decoded content exactly once when constructing JSON tool arguments: a newline in the content must remain a newline, not the literal characters backslash and n. Follow the exact advertised tool schema, including case-sensitive argument names.",
     "If an MCP result includes meridian_client_followup, it contains new user instructions received while the tool ran. Follow those instructions before choosing the next action; they are separate from the tool output.",
@@ -191,6 +203,8 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): 
     request.output_config?.format ? "Submit the final response using the native finish tool. The full client schema below is authoritative; Meridian validates all its constraints even when the CLI transport cannot express them. Intermediate tool calls are allowed when the client permits them.\n" + JSON.stringify(request.output_config.format.schema) : "",
     "Image attachment references are created by Meridian from client-supplied bytes. Inspect each relevant attachment with view_file using its exact absolute path. Those are the only permitted filesystem reads.",
     "Client system instructions:\n" + (typeof request.system === "string" ? request.system : request.system?.map(b => b.text).join("\n") ?? ""),
+    current ? "Reminder: answer the client's latest user message. Earlier tool work in the history is already done; resume it only if that message asks for it. The latest user message is:\n" + current : "",
+    // Keep the history last: it is one JSON value that clients of this prompt parse from the end.
     "Client conversation:\n" + JSON.stringify(request.messages),
   ].filter(Boolean).join("\n\n")
 }
