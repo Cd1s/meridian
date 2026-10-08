@@ -180,9 +180,27 @@ export function toolChoiceInstruction(request: AgRequest): string {
     : "Choose whether to call a client tool or answer the user."
   return instruction + (parallelAgTool(request) ? `\nFor independent parallel client actions, call the meridian_client MCP tool ${parallelAgTool(request)!.name} with {calls:[{name,arguments},...]}. It delivers those calls together to the client.\n` + JSON.stringify(parallelAgTool(request)) : "") + "\nThe complete client tool definitions for this response follow. Use these exact schemas; do not read CLI metadata files to discover tools.\n" + JSON.stringify(availableAgTools(request))
 }
+/** Index and text of the newest user message with typed text; tool-result-only turns are skipped. */
+function latestRequest(messages: AgMessage[]): { at: number; text: string } {
+  for (let at = messages.length - 1; at >= 0; at--) {
+    const { role, content } = messages[at]!
+    const text = role !== "user" ? "" : typeof content === "string" ? content : content.flatMap(b => b.type === "text" ? [b.text] : []).join("\n")
+    if (text.trim()) return { at, text: text.trim() }
+  }
+  return { at: -1, text: "" }
+}
+
 export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): string {
+  // NOTE: in long tool-heavy histories Gemini loses the newest request (and the work already done for it) at the end of
+  // one large JSON value and resumes earlier tasks. Restate both, briefly, ahead of the history, which stays last.
+  const { at, text: current } = latestRequest(request.messages)
+  // Work already done for this request, results cut to 200 chars: enough to see it ran without repeating its output.
+  const since = request.messages.slice(at + 1).map(m => typeof m.content === "string" ? m : { ...m, content: m.content.map(b => b.type !== "tool_result" ? b : { ...b, content: JSON.stringify(b.content ?? "").slice(0, 200) }) })
+  // Every earlier tool call as name + target, newest kept when long: lets the model recall what it did without the bulky outputs.
+  const actions = request.messages.slice(0, Math.max(at, 0)).flatMap(m => typeof m.content === "string" ? [] : m.content.flatMap(b => b.type === "tool_use" ? [`${b.name} ${String(Object.values(b.input)[0] ?? "").slice(0, 80)}`] : [])).join("; ").slice(-4000)
   return [
     "You are serving a client through Meridian. Follow the client's instructions and answer its latest user message.",
+    current ? "Current request:\n" + current : "",
     "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Client tools are provided by meridian_client MCP. Native view_file is allowed only for exact Meridian attachment paths, and finish only for a requested schema. " + (nativeTools.length ? "The operator also enables these native tools: " + nativeTools.join(", ") + ". Use these when the client requests native capabilities. Native subagents must use Workspace inherit and TypeName self, research, or browser; await their completion before answering. Never schedule background work." : "All other built-in tools and native subagents are disabled.") + " Other host filesystem paths and shell commands remain forbidden. Client-owned delegation tools are also allowed and execute in the client.",
     "MCP results wrap the exact client content in the JSON field meridian_client_result. Decode that field (a string or text block array) as the tool result. Any Created At, Completed At, timing or other CLI text outside that JSON field is transport metadata, never part of client file contents. When copying data, preserve the decoded client content byte-for-byte. Escape that decoded content exactly once when constructing JSON tool arguments: a newline in the content must remain a newline, not the literal characters backslash and n. Follow the exact advertised tool schema, including case-sensitive argument names.",
     "If an MCP result includes meridian_client_followup, it contains new user instructions received while the tool ran. Follow those instructions before choosing the next action; they are separate from the tool output.",
@@ -191,6 +209,9 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): 
     request.output_config?.format ? "Submit the final response using the native finish tool. The full client schema below is authoritative; Meridian validates all its constraints even when the CLI transport cannot express them. Intermediate tool calls are allowed when the client permits them.\n" + JSON.stringify(request.output_config.format.schema) : "",
     "Image attachment references are created by Meridian from client-supplied bytes. Inspect each relevant attachment with view_file using its exact absolute path. Those are the only permitted filesystem reads.",
     "Client system instructions:\n" + (typeof request.system === "string" ? request.system : request.system?.map(b => b.text).join("\n") ?? ""),
+    current && actions ? "Tool calls before this request, oldest first: " + actions : "",
+    current ? "Answer this; prior tool work is done" + (since.length ? ". Since this request:\n" + JSON.stringify(since) : ":") + "\n" + current : "",
+    // Keep the history last: it is one JSON value that clients of this prompt parse from the end.
     "Client conversation:\n" + JSON.stringify(request.messages),
   ].filter(Boolean).join("\n\n")
 }
