@@ -189,6 +189,13 @@ function latestRequest(messages: AgMessage[]): { at: number; text: string } {
   }
   return { at: -1, text: "" }
 }
+// Argument names that say what a tool call acted on. Clients order arguments freely (write arrives as {content, file_path}).
+const TARGET_KEYS = ["file_path", "filePath", "path", "file", "command", "cmd", "url", "pattern", "query"]
+/** What a tool call acted on: its first target-like string argument, else its first argument. */
+function toolTarget(input: Record<string, unknown>): string {
+  const key = TARGET_KEYS.find(k => typeof input[k] === "string")
+  return String(key ? input[key] : Object.values(input)[0] ?? "").slice(0, 80)
+}
 /** Head and tail of a long restated text; the full text stays in the history, so restating never multiplies a large paste. */
 function clip(text: string, max = 4000): string {
   if (text.length <= max) return text
@@ -205,7 +212,7 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): 
   // Work already done for this request, inputs and results cut to 200 chars: enough to see it ran without repeating it.
   const since = request.messages.slice(at + 1).map(m => typeof m.content === "string" ? m : { ...m, content: m.content.map(b => b.type === "tool_result" ? { ...b, content: JSON.stringify(b.content ?? "").slice(0, 200) } : b.type === "tool_use" ? { ...b, input: JSON.stringify(b.input).slice(0, 200) } : b) })
   // Every earlier tool call as name + target, newest kept when long: lets the model recall what it did without the bulky outputs.
-  const actions = request.messages.slice(0, Math.max(at, 0)).flatMap(m => typeof m.content === "string" ? [] : m.content.flatMap(b => b.type === "tool_use" ? [`${b.name} ${String(Object.values(b.input)[0] ?? "").slice(0, 80)}`] : [])).join("; ").slice(-4000)
+  const actions = request.messages.slice(0, Math.max(at, 0)).flatMap(m => typeof m.content === "string" ? [] : m.content.flatMap(b => b.type === "tool_use" ? [`${b.name} ${toolTarget(b.input)}`] : [])).join("; ").slice(-4000)
   return [
     "You are serving a client through Meridian. Follow the client's instructions and answer its latest user message.",
     current ? "Current request:\n" + current : "",

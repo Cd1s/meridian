@@ -90,6 +90,25 @@ describe("Antigravity prompt keeps the latest user request in focus", () => {
     expect(log.length).toBeLessThanOrEqual(4000)
   })
 
+  it("logs the target of a tool call, not its first argument, when content comes first", () => {
+    // Captured from DeepSeek Harness + Gemini: write arrives as {content, file_path}. Logging the first value recorded
+    // "write ok", and the model then claimed it had created a file named "ok".
+    const messages = [
+      { role: "user", content: "Create done.txt containing ok." },
+      { role: "assistant", content: [{ type: "tool_use", id: "w1", name: "write", input: { content: "ok", file_path: "/w/done.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "w1", content: "created" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "b1", name: "bash", input: { description: "Delete it", command: "rm /w/done.txt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "b1", content: "" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "x1", name: "lookup", input: { key: "receipt" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "x1", content: "ok" }] },
+      { role: "assistant", content: [{ type: "text", text: "Done." }] },
+      { role: "user", content: "Which files did you create or delete?" },
+    ]
+    const prompt = renderAgPrompt(parseAgRequest({ model: "fixture-model", messages }))
+    const log = prompt.split("Tool calls before this request, oldest first: ")[1]!.split("\n\n")[0]!
+    expect(log).toBe("write /w/done.txt; bash rm /w/done.txt; lookup receipt")
+  })
+
   it("leaves a short first-turn prompt unchanged apart from the request header", () => {
     const request = parseAgRequest({ model: "fixture-model", messages: [{ role: "user", content: "hello" }] })
     const prompt = renderAgPrompt(request)
