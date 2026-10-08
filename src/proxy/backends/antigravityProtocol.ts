@@ -189,13 +189,21 @@ function latestRequest(messages: AgMessage[]): { at: number; text: string } {
   }
   return { at: -1, text: "" }
 }
+/** Head and tail of a long restated text; the full text stays in the history, so restating never multiplies a large paste. */
+function clip(text: string, max = 4000): string {
+  if (text.length <= max) return text
+  const half = max / 2
+  return text.slice(0, half) + `\n[... ${text.length - max} chars omitted; full text is in the client conversation below ...]\n` + text.slice(-half)
+}
 
 export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): string {
   // NOTE: in long tool-heavy histories Gemini loses the newest request (and the work already done for it) at the end of
   // one large JSON value and resumes earlier tasks. Restate both, briefly, ahead of the history, which stays last.
-  const { at, text: current } = latestRequest(request.messages)
-  // Work already done for this request, results cut to 200 chars: enough to see it ran without repeating its output.
-  const since = request.messages.slice(at + 1).map(m => typeof m.content === "string" ? m : { ...m, content: m.content.map(b => b.type !== "tool_result" ? b : { ...b, content: JSON.stringify(b.content ?? "").slice(0, 200) }) })
+  const latest = latestRequest(request.messages)
+  const { at } = latest
+  const current = clip(latest.text)
+  // Work already done for this request, inputs and results cut to 200 chars: enough to see it ran without repeating it.
+  const since = request.messages.slice(at + 1).map(m => typeof m.content === "string" ? m : { ...m, content: m.content.map(b => b.type === "tool_result" ? { ...b, content: JSON.stringify(b.content ?? "").slice(0, 200) } : b.type === "tool_use" ? { ...b, input: JSON.stringify(b.input).slice(0, 200) } : b) })
   // Every earlier tool call as name + target, newest kept when long: lets the model recall what it did without the bulky outputs.
   const actions = request.messages.slice(0, Math.max(at, 0)).flatMap(m => typeof m.content === "string" ? [] : m.content.flatMap(b => b.type === "tool_use" ? [`${b.name} ${String(Object.values(b.input)[0] ?? "").slice(0, 80)}`] : [])).join("; ").slice(-4000)
   return [

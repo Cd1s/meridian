@@ -57,6 +57,30 @@ describe("Antigravity prompt keeps the latest user request in focus", () => {
     expect(added.length).toBeLessThan(600)
   })
 
+  it("restates a large pasted request as head and tail only, so the prompt does not triple it", () => {
+    const paste = "LOGSTART " + "z".repeat(200_000) + " Question at the end: why did it fail?"
+    const request = longHistory(paste)
+    const prompt = renderAgPrompt(request)
+    const preamble = prompt.slice(0, prompt.indexOf("Client conversation:"))
+    expect(preamble.length).toBeLessThan(prompt.length - 200_000)
+    expect(preamble.match(/LOGSTART/g)).toHaveLength(2)
+    expect(preamble.match(/Question at the end: why did it fail\?/g)).toHaveLength(2)
+    expect(preamble).toContain("chars omitted; full text is in the client conversation below")
+    expect(JSON.parse(prompt.split("Client conversation:\n").at(-1)!)).toEqual(request.messages)
+  })
+
+  it("caps tool inputs already sent for the current request, such as a large file write", () => {
+    const messages = [
+      { role: "user", content: "Write the report." },
+      { role: "assistant", content: [{ type: "tool_use", id: "w1", name: "write", input: { path: "report.md", content: "r".repeat(100_000) } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "w1", content: "ok" }] },
+    ]
+    const request = parseAgRequest({ model: "fixture-model", messages, tools: [{ name: "write", input_schema: { type: "object" } }] })
+    const added = renderAgPrompt(request).split("Answer this; prior tool work is done")[1]!.split("Client conversation:")[0]!
+    expect(added).toContain("report.md")
+    expect(added.length).toBeLessThan(800)
+  })
+
   it("lists earlier tool calls as name and target only, capped, so the model can recall what it did", () => {
     const prompt = renderAgPrompt(longHistory("Which files did you read?"))
     const log = prompt.split("Tool calls before this request, oldest first: ")[1]!.split("\n\n")[0]!
