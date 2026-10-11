@@ -60,9 +60,9 @@ function agRunArgs(runtime: AntigravityRuntime, workspace: string, model: string
   return args
 }
 async function agWriteBridgeConfig(runtime: AntigravityRuntime, workspace: string, mcpId: string): Promise<void> {
-  await writeFile(join(workspace, ".agents/hooks.json"), JSON.stringify({ meridian_policy: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: agHookCommand(process.execPath, join(workspace, "policy.cjs")), timeout: 5 }] }] } }))
+  await writeFile(join(workspace, ".agents/hooks.json"), JSON.stringify({ client_policy: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: agHookCommand(process.execPath, join(workspace, "policy.cjs")), timeout: 5 }] }] } }))
   await writeFile(join(workspace, ".agents/mcp_config.json"), JSON.stringify({ mcpServers: {
-    meridian_client: { serverUrl: `${runtime.mcpUrl}/${mcpId}` },
+    client: { serverUrl: `${runtime.mcpUrl}/${mcpId}` },
     ...(runtime.options.allowNativeBrowser ? { chrome_devtools: {
       command: runtime.options.browserMcpExecutable ?? "chrome-devtools-mcp",
       args: ["--headless", "--isolated", "--no-usage-statistics", "--no-performance-crux", "--filesystem-root", workspace],
@@ -206,7 +206,7 @@ export class AntigravityRun {
       await this.grammars.prepare()
       const spareKey = this.restored ? undefined : agSpareKey(this.runtime, this.request, this.launch)
       spare = spareKey ? this.runtime.takeSpare(spareKey) : undefined
-      this.workspace = spare?.workspace ?? this.restored?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(this.runtime.childEnv.TMPDIR || tmpdir(), "meridian-agy-")))
+      this.workspace = spare?.workspace ?? this.restored?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(this.runtime.childEnv.TMPDIR || tmpdir(), "workspace-")))
       this.runtime.nativeSessions?.register(this.workspace)
       await mkdir(join(this.workspace, ".agents"), { recursive: true })
       const tools = [...this.request.tools, ...[parallelAgTool({ ...this.request, tool_choice: { type: "auto" } })].filter(tool => tool !== undefined)]
@@ -216,7 +216,7 @@ export class AntigravityRun {
       const hookPath = join(this.workspace, "policy.cjs")
       // Workspace contains bridge configuration and supplied attachment bytes only.
       // Permit client MCP dispatch, exact supplied image reads, or schema submission.
-      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const allowed=(${agNativeAllowed.toString()})(t?.name,a,${JSON.stringify(agNativeTools(this.runtime.options))},${!!this.runtime.options.allowNativeBrowser},${!!this.runtime.options.allowNativeSubagents})||(t?.name==='call_mcp_tool'&&a?.ServerName==='meridian_client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||(t?.name==='view_file'&&JSON.parse(require('node:fs').readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(a?.AbsolutePath));const fs=require('node:fs');const audit=${JSON.stringify(join(this.workspace, 'policy-audit.jsonl'))};if(!fs.existsSync(audit)||fs.statSync(audit).size<65536)fs.appendFileSync(audit,JSON.stringify({name:t?.name,allowed,conversationId:p.conversationId})+'\\n',{mode:384});console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'Meridian restricts tools to client dispatch, supplied attachments, schema submission and operator-enabled native capabilities'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid Meridian hook payload'}));}});`)
+      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const allowed=(${agNativeAllowed.toString()})(t?.name,a,${JSON.stringify(agNativeTools(this.runtime.options))},${!!this.runtime.options.allowNativeBrowser},${!!this.runtime.options.allowNativeSubagents})||(t?.name==='call_mcp_tool'&&(a?.ServerName==='client'||a?.ServerName==='meridian_client')&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||(t?.name==='view_file'&&JSON.parse(require('node:fs').readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(a?.AbsolutePath));const fs=require('node:fs');const audit=${JSON.stringify(join(this.workspace, 'policy-audit.jsonl'))};if(!fs.existsSync(audit)||fs.statSync(audit).size<65536)fs.appendFileSync(audit,JSON.stringify({name:t?.name,allowed,conversationId:p.conversationId})+'\\n',{mode:384});console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'Restricted to client dispatch, supplied attachments, schema submission and operator-enabled native capabilities'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid hook payload'}));}});`)
       if (!spare) await agWriteBridgeConfig(this.runtime, this.workspace, this.id)
       let schemaPath: string | undefined
       if (this.request.output_config?.format) {
@@ -368,7 +368,7 @@ export class AntigravityRun {
     }
     this.clientDispatched = true
     this.toolCalls++
-    const call: AgCall = { type: "tool_use", id: "toolu_agy_" + randomUUID().replaceAll("-", ""), name, input }
+    const call: AgCall = { type: "tool_use", id: "toolu_" + randomUUID().replaceAll("-", ""), name, input }
     return new Promise((resolve, reject) => {
       this.pending.set(call.id, { call, resolve, reject })
       this.runtime.toolOwners.set(call.id, this)
@@ -713,9 +713,9 @@ export class AntigravityRuntime {
       await this.ensureServer()
       const [model, effort, skipPermissions] = JSON.parse(shape) as [string, string | null, boolean]
       const id = randomUUID()
-      const workspace = await realpath(await mkdtemp(join(this.childEnv.TMPDIR || tmpdir(), "meridian-agy-")))
+      const workspace = await realpath(await mkdtemp(join(this.childEnv.TMPDIR || tmpdir(), "workspace-")))
       await mkdir(join(workspace, ".agents"), { recursive: true })
-      await writeFile(join(workspace, "policy.cjs"), "process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({decision:'deny',reason:'No Meridian request is bound to this process yet'})))")
+      await writeFile(join(workspace, "policy.cjs"), "process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({decision:'deny',reason:'No request is bound to this process yet'})))")
       await agWriteBridgeConfig(this, workspace, id)
       if (this.draining) { await rm(workspace, { recursive: true, force: true }); return }
       const child = spawn(this.executable, agRunArgs(this, workspace, model, effort ?? undefined, skipPermissions), { cwd: workspace, env: this.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
@@ -949,7 +949,7 @@ export class AntigravityRuntime {
       let result: unknown
       const parallel = parallelAgTool(run.request)
       const tools = [...availableAgTools(run.request), ...(parallel ? [parallel] : [])]
-      if (rpc.method === "initialize") result = { protocolVersion: rpc.params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "meridian-client-tools", version: "1" } }
+      if (rpc.method === "initialize") result = { protocolVersion: rpc.params?.protocolVersion ?? "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "client-tools", version: "1" } }
       else if (rpc.method === "tools/list") result = { tools: tools.map(t => ({ name: t.name, description: t.description ?? t.name, inputSchema: t.input_schema })) }
       else if (rpc.method === "tools/call") {
         const params = toolParams.parse(rpc.params)
@@ -957,7 +957,7 @@ export class AntigravityRuntime {
         const value = await (params.name === parallel?.name ? run.dispatchBatch(scopedId, params.arguments) : run.dispatchCall(scopedId, params.name, params.arguments))
         // CLI adds timing prose around MCP responses. An explicit JSON envelope
         // preserves the boundary between exact client bytes and harness metadata.
-        result = { content: [{ type: "text", text: JSON.stringify({ meridian_client_result: value.content ?? "", meridian_client_followup: value.clientMessages?.length ? value.clientMessages : undefined, is_error: value.is_error ?? false }) }], isError: value.is_error ?? false }
+        result = { content: [{ type: "text", text: JSON.stringify({ client_result: value.content ?? "", client_followup: value.clientMessages?.length ? value.clientMessages : undefined, is_error: value.is_error ?? false }) }], isError: value.is_error ?? false }
       } else return reply(res, 200, { jsonrpc: "2.0", id: rpc.id, error: { code: -32601, message: "Method not found" } })
       reply(res, 200, { jsonrpc: "2.0", id: rpc.id, result })
     } catch (error) { reply(res, 200, { jsonrpc: "2.0", id: rpcId ?? null, error: { code: -32603, message: String(error) } }) }

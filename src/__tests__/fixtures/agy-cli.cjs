@@ -15,6 +15,8 @@ async function main(inputPrompt) {
   if (prompt === '/config') return emit({ command: { data: { config: { customModelsConfig: process.env.AGY_FIXTURE_CUSTOM ? { fixture: {} } : {}, modelProvider: process.env.AGY_FIXTURE_API ? 'gemini' : '', useG1Credits: false } } } })
   if (prompt === '/usage') return emit({command:{data:{groups:[{name:'Gemini Models',buckets:[{id:'gemini-5h',window:'5h',remaining_fraction:0.75,reset_time:'2099-01-01T00:00:00Z'}]}]}}})
   if (prompt.includes('POLICY_PROBE')) {
+    const config = JSON.parse(readFileSync('.agents/mcp_config.json', 'utf8'))
+    const clientServer = config.mcpServers.client ? 'client' : 'meridian_client'
     const check = (input, decision) => {
       const child = spawnSync(process.execPath, ['policy.cjs'], { input: typeof input === 'string' ? input : JSON.stringify(input), encoding: 'utf8' })
       if (child.status !== 0 || JSON.parse(child.stdout).decision !== decision) throw new Error('Policy mismatch: ' + child.stdout)
@@ -22,9 +24,9 @@ async function main(inputPrompt) {
     check({toolCall:{name:'view_file',args:{AbsolutePath:'/etc/passwd'}}}, 'deny')
     check({toolCall:{name:'run_command',args:{CommandLine:'id'}}}, 'deny')
     check({toolCall:{name:'call_mcp_tool',args:{ServerName:'other',ToolName:'lookup'}}}, 'deny')
-    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'unknown'}}}, 'deny')
+    check({toolCall:{name:'call_mcp_tool',args:{ServerName:clientServer,ToolName:'unknown'}}}, 'deny')
     check('invalid JSON', 'deny')
-    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'lookup'}}}, 'allow')
+    check({toolCall:{name:'call_mcp_tool',args:{ServerName:clientServer,ToolName:'lookup'}}}, 'allow')
   }
   if (prompt.includes('IMAGE_PROBE')) {
     const paths = JSON.parse(readFileSync('attachment-paths.json', 'utf8'))
@@ -41,7 +43,7 @@ async function main(inputPrompt) {
   if (prompt.includes('MALFORMED')) { console.log('not JSON'); return }
   if (prompt.includes('DENIED')) return emit({ event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'mcp' }] } })
   const config = JSON.parse(readFileSync('.agents/mcp_config.json', 'utf8'))
-  const url = config.mcpServers.meridian_client.serverUrl
+  const url = (config.mcpServers.client || config.mcpServers.meridian_client).serverUrl
   let nextId = 0
   const rpc = async (method, params, retryId) => {
     const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: retryId ?? ++nextId, method, params }) })
@@ -76,7 +78,7 @@ async function main(inputPrompt) {
   if (prompt.includes('MCP_BATCH') || prompt.includes('MCP_SESSIONS')) {
     let results
     if (prompt.includes('MCP_BATCH')) {
-      const batch = tools.find(tool => tool.name === 'meridian_parallel')
+      const batch = tools.find(tool => tool.name === 'batch_call' || tool.name === 'meridian_parallel')
       let invalid = false
       try { await rpc('tools/call', { name: batch.name, arguments: { calls: [{ name: 'lookup', arguments: { key: 'a' } }, { name: 'lookup', arguments: { key: 7 } }] } }) }
       catch (error) { if (!String(error).includes('Invalid arguments')) throw error; invalid = true }
@@ -109,9 +111,10 @@ async function main(inputPrompt) {
     const results = await Promise.all(calls)
     if (prompt.includes('NEXT_TOOL')) await rpc('tools/call', { name: tools[0].name, arguments: { key: 'next' } })
     if (prompt.includes('STEERING')) {
-      const followup = JSON.parse(results[0].content[0].text).meridian_client_followup
+      const payload = JSON.parse(results[0].content[0].text)
+      const followup = payload.client_followup ?? payload.meridian_client_followup
       answer = JSON.stringify(followup)
-    } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).meridian_client_result)).join('|')
+    } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).client_result ?? JSON.parse(result.content[0].text).meridian_client_result)).join('|')
   }
   if (prompt.includes('NATIVE_SECOND')) {
     if (nativePrompts.length !== 2 || prompt.includes('NATIVE_FIRST')) throw new Error('Native continuation replayed history or spawned another process')

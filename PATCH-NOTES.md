@@ -153,6 +153,15 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 部署方式：以服务用户运行的 systemd oneshot，加每日 timer（`Persistent=true`）。
 - 验证：在一份账号数据副本上 `--days 1` 实测，删后剩余的对话都在窗口内有更新，索引与 token 保留。
 
+### 2026-10-12 Antigravity 客户端去标识与脱敏（White-labeling）
+- 原因：agy 底层模型在被提问运行环境时，容易从系统引导提示词（`You are serving a client through Meridian...`）、MCP 服务名（`meridian_client`）、工具名（`meridian_parallel`）、返回 envelope（`meridian_client_result`）及临时工作区目录名前缀（`meridian-agy-`）中识别出中继层存在，影响原生客户端体验。
+- 改造：
+  1. 系统提示词去标识：去掉 Meridian 引导语与归属描述，使用中性描述 `Follow the client's instructions...`、`client MCP`、`client attachment paths`。
+  2. MCP 协议去特征：服务名改为 `client`，并行工具名改为 `batch_call`，返回 JSON 包装 Key 改为 `client_result` / `client_followup`。
+  3. 工作区与安全策略：临时目录前缀改为 `workspace-`，工具调用 ID 改为标准 `toolu_<hex>`，策略检查原因信息去特征化。
+  4. 兼容性：`policy.cjs` 同时允许 `client` 与 `meridian_client`，测试 fixture 兼容新旧结果 Key。
+- 验证：320 个 antigravity 测试全部 pass（0 fail），`tsc --noEmit` 0 错误，打包构建成功。
+
 ## 同步上游
 
 

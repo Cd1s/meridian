@@ -14,7 +14,8 @@ const injected = `
     for (let n = 0; n < Number(loop[1]); n++) {
       await nap(80)
       const result = await rpc('tools/call', { name: tools[0].name, arguments: { key: 'step' + n } })
-      seen.push(JSON.parse(result.content[0].text).meridian_client_result)
+      const parsed = JSON.parse(result.content[0].text)
+      seen.push(parsed.client_result ?? parsed.meridian_client_result)
     }
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'LOOP_DONE:' + seen.join('|') } })
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10 } } })
@@ -27,7 +28,8 @@ const injected = `
   if (prompt.includes('SLOW_ANSWER') && !replayedResults.length) {
     const result = await rpc('tools/call', { name: tools[0].name, arguments: { key: 'probe0' } })
     await nap(700)
-    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'SLOW:' + JSON.parse(result.content[0].text).meridian_client_result } })
+    const parsed = JSON.parse(result.content[0].text)
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'SLOW:' + (parsed.client_result ?? parsed.meridian_client_result) } })
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10 } } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }

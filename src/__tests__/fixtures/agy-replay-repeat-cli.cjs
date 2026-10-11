@@ -9,7 +9,7 @@ const anchor = "let answer = replayedResults.length"
 const injected = `
   if (prompt.includes('REPEAT_COMPLETED') && replayedResults.length) {
     const done = history.at(-2).content.find(b => b.type === 'tool_use')
-    const text = r => (v => typeof v === 'string' ? v : v.map(b => b.text).join(''))(JSON.parse(r.content[0].text).meridian_client_result)
+    const text = r => (v => typeof v === 'string' ? v : v.map(b => b.text).join(''))(JSON.parse(r.content[0].text).client_result ?? JSON.parse(r.content[0].text).meridian_client_result)
     const seen = [text(await rpc('tools/call', { name: done.name, arguments: done.input }))]
     if (prompt.includes('REPEAT_TWICE')) seen.push(text(await rpc('tools/call', { name: done.name, arguments: done.input })))
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'REPLAYED:' + seen.join('|') } })
