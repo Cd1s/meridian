@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface, type Interface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPrompt, agEffortFallback, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPrompt, agEffortFallback, contractKey, historyKey, stable, completedToolTail, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
 import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravitySchema"
 import type { ValidateFunction } from "ajv"
@@ -172,6 +172,11 @@ export class AntigravityRun {
   private killTimer?: ReturnType<typeof setTimeout>
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
   private toolCalls = 0
+  // NOTE: a new run whose request ends in tool results is a history replay (its live turn is gone). Models then often
+  // request the call that just completed again. Until this run has sent a call to the client, an identical request is
+  // answered from the recorded result instead of executing twice; each recorded call is consumed once.
+  private readonly replayedTail: Map<string, AgResult>
+  private clientDispatched = false
   private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
   private settledResolve!: () => void
   readonly settled = new Promise<void>(resolve => { this.settledResolve = resolve })
@@ -183,6 +188,7 @@ export class AntigravityRun {
     this.continuation = restored ? "restored" : "new"
     this.reusable = runtime.options.reuseConversations !== false && !request.output_config?.format && !request.stop_sequences?.length
     this.history = request.messages
+    this.replayedTail = completedToolTail(request.messages)
     this.contract = contractKey(request)
     const schemas = new AgSchemaCompiler()
     for (const tool of request.tools) this.toolValidators.set(tool.name, schemas.compile(tool.input_schema, `Tool ${tool.name}`))
@@ -352,6 +358,15 @@ export class AntigravityRun {
     if (this.stopped || this.terminal) throw new Error("Turn is closed")
     if (this.pending.size >= 32) throw new Error("Too many outstanding tools")
     if (this.toolCalls >= 256) throw new Error("Antigravity conversation exceeded 256 client tool calls")
+    const identity = stable({ name, input })
+    const recorded = this.clientDispatched ? undefined : this.replayedTail.get(identity)
+    if (recorded) {
+      this.replayedTail.delete(identity)
+      this.runtime.replayDuplicates++
+      console.log(JSON.stringify({ ts: new Date().toISOString(), event: "agy_replay_duplicate", tool: name }))
+      return this.attachments!.toolResult(recorded)
+    }
+    this.clientDispatched = true
     this.toolCalls++
     const call: AgCall = { type: "tool_use", id: "toolu_agy_" + randomUUID().replaceAll("-", ""), name, input }
     return new Promise((resolve, reject) => {
@@ -369,6 +384,8 @@ export class AntigravityRun {
   }
   rememberCompleted(): void { this.completedSnapshot = true }
   async resume(request: AgRequest, signal?: AbortSignal): Promise<void> {
+    // A new client turn may deliberately repeat an earlier call; only the replayed turn itself is guarded.
+    this.replayedTail.clear()
     this.completedSnapshot = false
     this.continuation = "live"
     this.busy = true
@@ -593,6 +610,7 @@ export class AntigravityRuntime {
   draining = false
   cliVersion = ""
   reused = 0
+  replayDuplicates = 0
   reclaimed = 0
   completed = 0
   failed = 0

@@ -226,6 +226,27 @@ export function stable(value: unknown): string {
   if (value && typeof value === "object") return "{" + Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => JSON.stringify(key) + ":" + stable(val)).join(",") + "}"
   return JSON.stringify(value) ?? "null"
 }
+/**
+ * Successful calls of the batch a pure tool-result tail completes, keyed by stable({name, input}). A request that
+ * reaches a new run with this tail is a history replay: its calls already ran in the client. Identities that occur
+ * more than once in the batch are left out, since a repeat of them cannot be told apart from a deliberate one.
+ */
+export function completedToolTail(messages: AgMessage[]): Map<string, AgResult> {
+  const tail = new Map<string, AgResult>()
+  const results = messages.at(-1), calls = messages.at(-2)
+  if (results?.role !== "user" || typeof results.content === "string" || !results.content.length || !results.content.every(b => b.type === "tool_result")) return tail
+  if (calls?.role !== "assistant" || typeof calls.content === "string") return tail
+  const seen = new Set<string>()
+  for (const call of calls.content) {
+    if (call.type !== "tool_use") continue
+    const identity = stable({ name: call.name, input: call.input })
+    const result = results.content.find((b): b is AgResult => b.type === "tool_result" && b.tool_use_id === call.id)
+    if (seen.has(identity)) tail.delete(identity)
+    else if (result && !result.is_error) tail.set(identity, result)
+    seen.add(identity)
+  }
+  return tail
+}
 export function historyKey(messages: AgMessage[]): string {
   return stable(messages.map(m => ({ role: m.role, content: blocks(m) })))
 }
@@ -275,6 +296,13 @@ function toolTarget(input: Record<string, unknown>): string {
   const key = TARGET_KEYS.find(k => typeof input[k] === "string")
   return String(key ? input[key] : Object.values(input)[0] ?? "").slice(0, 80)
 }
+/** Tool input with each argument cut to 200 chars and its full length noted, so targets such as file_path survive a large content-first write. */
+function clipInput(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).map(([key, value]) => {
+    const text = typeof value === "string" ? value : JSON.stringify(value) ?? ""
+    return [key, text.length <= 200 ? value : `${text.slice(0, 200)}[... ${text.length} chars in full]`]
+  }))
+}
 /** Head and tail of a long restated text; the full text stays in the history, so restating never multiplies a large paste. */
 function clip(text: string, max = 4000): string {
   if (text.length <= max) return text
@@ -289,7 +317,7 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = []): 
   const { at } = latest
   const current = clip(latest.text)
   // Work already done for this request, inputs and results cut to 200 chars: enough to see it ran without repeating it.
-  const since = request.messages.slice(at + 1).map(m => typeof m.content === "string" ? m : { ...m, content: m.content.map(b => b.type === "tool_result" ? { ...b, content: JSON.stringify(b.content ?? "").slice(0, 200) } : b.type === "tool_use" ? { ...b, input: JSON.stringify(b.input).slice(0, 200) } : b) })
+  const since = request.messages.slice(at + 1).map(m => typeof m.content === "string" ? m : { ...m, content: m.content.map(b => b.type === "tool_result" ? { ...b, content: JSON.stringify(b.content ?? "").slice(0, 200) } : b.type === "tool_use" ? { ...b, input: clipInput(b.input) } : b) })
   // Every earlier tool call as name + target, newest kept when long: lets the model recall what it did without the bulky outputs.
   const actions = request.messages.slice(0, Math.max(at, 0)).flatMap(m => typeof m.content === "string" ? [] : m.content.flatMap(b => b.type === "tool_use" ? [`${b.name} ${toolTarget(b.input)}`] : [])).join("; ").slice(-4000)
   return [
