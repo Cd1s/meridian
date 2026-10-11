@@ -102,6 +102,8 @@ or active-resume guarantee. No automatic client-side reconciliation UI is claime
 `MERIDIAN_AGY_TURN_TIMEOUT_MS` bounds an active CLI turn (default 300,000 ms).
 `MERIDIAN_AGY_TOOL_TIMEOUT_MS` bounds idle waiting for a client result
 (default 60,000 ms); a late result can recover through completed history.
+`MERIDIAN_AGY_IDLE_CONVERSATION_MS` keeps a completed conversation's live process
+for the next turn (default: the tool timeout); a later turn replays the full history.
 `MERIDIAN_AGY_MAX_CONCURRENT` bounds concurrent CLI processes (default 4).
 Request/response/attachment buffers are also bounded; see the backend guide.
 
