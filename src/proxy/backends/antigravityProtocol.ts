@@ -155,6 +155,40 @@ export type AgMessage = z.infer<typeof message>
 export type AgBlock = z.infer<typeof block>
 export type AgCall = z.infer<typeof callBlock>
 export type AgResult = z.infer<typeof resultBlock>
+
+/**
+ * What a request continues, read once by the multi-account router: the tool results it answers, a previous Responses
+ * id, and (Messages only) the raw body, which an account parses at most once into `request` to match a live process.
+ */
+export interface AgContinuation {
+  toolIds: string[]
+  responseId?: string
+  messages?: unknown
+  request?: AgRequest | null
+}
+export type AgHold = "tool" | "live" | "native" | "response"
+
+export function agContinuation(path: string, raw: unknown): AgContinuation {
+  const field = (value: unknown, key: string): unknown => value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined
+  const list = (value: unknown): unknown[] => Array.isArray(value) ? value : []
+  const ids = (values: unknown[]) => values.filter((id): id is string => typeof id === "string")
+  if (path === "/v1/messages" || path === "/messages") {
+    const results = list(field(list(field(raw, "messages")).at(-1), "content")).filter(block => field(block, "type") === "tool_result")
+    return { toolIds: ids(results.map(block => field(block, "tool_use_id"))), messages: raw }
+  }
+  if (path === "/v1/chat/completions") {
+    const messages = list(field(raw, "messages"))
+    let start = messages.length
+    while (start > 0 && field(messages[start - 1], "role") === "tool") start--
+    return { toolIds: ids(messages.slice(start).map(message => field(message, "tool_call_id"))) }
+  }
+  if (path === "/v1/responses") {
+    const outputs = list(field(raw, "input")).filter(item => ["function_call_output", "custom_tool_call_output"].includes(String(field(item, "type"))))
+    const previous = field(raw, "previous_response_id")
+    return { toolIds: ids(outputs.map(item => field(item, "call_id"))), responseId: typeof previous === "string" ? previous : undefined }
+  }
+  return { toolIds: [] }
+}
 const agEffortSlug = /^(gemini-[a-zA-Z0-9._-]+)-(low|medium|high)$/
 const agEffortFallbacks = { low: ["medium", "high"], medium: ["high", "low"], high: ["medium", "low"] } as const
 /** Fork patch: nearest official level when an effort-selected slug is not in the account catalogue (3.1 Pro has no medium). */
