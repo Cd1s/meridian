@@ -128,6 +128,27 @@ export function stable(value: unknown): string {
   if (value && typeof value === "object") return "{" + Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, val]) => JSON.stringify(key) + ":" + stable(val)).join(",") + "}"
   return JSON.stringify(value) ?? "null"
 }
+/**
+ * Successful calls of the batch a pure tool-result tail completes, keyed by stable({name, input}). A request that
+ * reaches a new run with this tail is a history replay: its calls already ran in the client. Identities that occur
+ * more than once in the batch are left out, since a repeat of them cannot be told apart from a deliberate one.
+ */
+export function completedToolTail(messages: AgMessage[]): Map<string, AgResult> {
+  const tail = new Map<string, AgResult>()
+  const results = messages.at(-1), calls = messages.at(-2)
+  if (results?.role !== "user" || typeof results.content === "string" || !results.content.length || !results.content.every(b => b.type === "tool_result")) return tail
+  if (calls?.role !== "assistant" || typeof calls.content === "string") return tail
+  const seen = new Set<string>()
+  for (const call of calls.content) {
+    if (call.type !== "tool_use") continue
+    const identity = stable({ name: call.name, input: call.input })
+    const result = results.content.find((b): b is AgResult => b.type === "tool_result" && b.tool_use_id === call.id)
+    if (seen.has(identity)) tail.delete(identity)
+    else if (result && !result.is_error) tail.set(identity, result)
+    seen.add(identity)
+  }
+  return tail
+}
 export function historyKey(messages: AgMessage[]): string {
   return stable(messages.map(m => ({ role: m.role, content: blocks(m) })))
 }
