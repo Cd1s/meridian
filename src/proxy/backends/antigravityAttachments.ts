@@ -40,7 +40,7 @@ export class AgAttachments {
           await writeFile(path, bytes, { flag: "wx", mode: 0o600 })
           this.paths.add(path)
         }
-        result.push({ type: "text", text: `Meridian image attachment (${mime}): use view_file to inspect exactly ${path}` })
+        result.push({ type: "text", text: `Image attachment (${mime}): use view_file to inspect exactly ${path}` })
       } else if (block.type === "audio" || block.type === "video") {
         const bytes = Buffer.from(block.source.data, "base64")
         if (bytes.toString("base64") !== block.source.data || !bytes.length) throw new AntigravityError("Media requires canonical nonempty base64")
