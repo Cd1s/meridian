@@ -141,7 +141,7 @@ describe.skipIf(process.platform === "win32")("AgAccountSet keeps an Antigravity
     const first = { model: "fixture-model", max_tokens: 100, tools: [tool], messages: [{ role: "user", content: "Get receipt" }] }
     const reply = await (await set.route(post(keys.acc1, JSON.stringify(first)))).json() as { content: Array<{ type: string; id: string }> }
     const call = reply.content.find(block => block.type === "tool_use")!
-    expect(call.id).toStartWith("toolu_agy_")
+    expect(call.id).toMatch(/^toolu_[0-9a-f]{32}$/)
     const continuation = { ...first, messages: [...first.messages, { role: "assistant", content: reply.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "receipt" }] }] }
     const answer = await set.route(post(keys.acc2, JSON.stringify(continuation)))
     expect(answer.status).toBe(200)

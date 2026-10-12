@@ -161,6 +161,12 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   3. 工作区与安全策略：临时目录前缀改为 `workspace-`，工具调用 ID 改为标准 `toolu_<hex>`，策略检查原因信息去特征化。
   4. 兼容性：`policy.cjs` 同时允许 `client` 与 `meridian_client`，测试 fixture 兼容新旧结果 Key。
 - 验证：320 个 antigravity 测试全部 pass（0 fail），`tsc --noEmit` 0 错误，打包构建成功。
+- 2026-10-12 补正：上面的验证漏了 `antigravity-account-affinity.test.ts`，它仍断言 `toolu_agy_` 前缀而失败，会让每小时上游同步的检查步骤失败；已改为断言 `toolu_<32 hex>`。另把漏改的图片附件提示 `Meridian image attachment` 改为 `Image attachment`。仍带 Meridian 字样、模型可能看到的：原生会话目录里的 `.meridian-owner.json`，以及 `MERIDIAN_AGY_STATE_PATH` 所在目录名（图片附件绝对路径会出现在提示词里）。此改动仅本 fork，不提交上游。
+- 升级注意：已保存的原生会话快照里，agy 历史记的是旧服务名 `meridian_client`，恢复后 MCP 配置只剩 `client`；policy 放行旧名，但如果模型照历史调用旧名，该次调用会失败。
+
+### 2026-10-12 上游 PR #1340 / #1341 合并后的同步冲突
+- 本 fork 的 #30 已包含 rynfar/meridian#1340（回放后不重复执行已完成的工具调用）和 rynfar/meridian#1341（`MERIDIAN_AGY_IDLE_CONVERSATION_MS`）。上游合并这两个 PR 后，同步会在 4 个文件冲突（已用 merge-tree 模拟确认）。
+- 解决：`src/proxy/backends/antigravityRuntime.ts`、`src/proxy/types.ts`、`src/__tests__/fixtures/agy-replay-repeat-cli.cjs` 全部保留本 fork（HEAD）一侧，fork 一侧已是上游改动加上 fork 自己的字段与去标识改动；`docs/antigravity.md` 保留 HEAD 的 TURN_TIMEOUT / RUN_MAX 两行，TOOL_TIMEOUT 与 IDLE_CONVERSATION 两行两边已一致。
 
 ## 同步上游
 
