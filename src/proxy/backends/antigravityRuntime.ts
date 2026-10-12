@@ -804,7 +804,9 @@ export class AntigravityRuntime {
     // Validate the binary before asking it to inspect subscription configuration.
     if (!this.cliVersion.startsWith("1.") && process.env.MERIDIAN_AGY_ANY_VERSION !== "1") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build supports agy 1.x. Set MERIDIAN_AGY_ANY_VERSION=1 to bypass.`)
     const config = await readAgProbe(this.executable, "configuration", options)
-    const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.unknown().optional(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config)).command.data.config
+    // The verified 1.2.7 effective settings expose an explicit boolean here.
+    // Missing or malformed credits are indeterminate, not verified disabled.
+    const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.boolean(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config)).command.data.config
     const customModels = settings.customModelsConfig
     if (customModels && (typeof customModels !== "object" || Object.keys(customModels).length > 0)) throw new Error("Antigravity custom model providers must be disabled for subscription-only access")
     if (settings.modelProvider || settings.useG1Credits || settings.gcp) throw new Error("Antigravity requires default account authentication with paid overage credits disabled; configure agy first")
