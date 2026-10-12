@@ -168,6 +168,12 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 本 fork 的 #30 已包含 rynfar/meridian#1340（回放后不重复执行已完成的工具调用）和 rynfar/meridian#1341（`MERIDIAN_AGY_IDLE_CONVERSATION_MS`）。上游合并这两个 PR 后，同步会在 4 个文件冲突（已用 merge-tree 模拟确认）。
 - 解决：`src/proxy/backends/antigravityRuntime.ts`、`src/proxy/types.ts`、`src/__tests__/fixtures/agy-replay-repeat-cli.cjs` 全部保留本 fork（HEAD）一侧，fork 一侧已是上游改动加上 fork 自己的字段与去标识改动；`docs/antigravity.md` 保留 HEAD 的 TURN_TIMEOUT / RUN_MAX 两行，TOOL_TIMEOUT 与 IDLE_CONVERSATION 两行两边已一致。
 
+### 2026-10-12 发布 v1.80.0-cd1s.1 并部署到 Oracle-SGwest
+- 发现：06:11 由 Mac mini 部署的去标识构建（provenance 仍写 63a56e7）不含 #30：线上没有 `agy_account_affinity`、`agy_replay_duplicate`，`MERIDIAN_AGY_IDLE_CONVERSATION_MS=1800000` 的 drop-in 也不生效。前一版 `dist-accounts.old-1073605` 是有的。
+- 部署：`ac62621`（tag `v1.80.0-cd1s.1`，provenance `package-1.80.0-2-detached-ac626211`，非 dirty）的 `dist/` 打包为 `/opt/meridian/staging/dist-accounts-ac62621.tgz`（sha256 `ed3c0203…`），替换 `dist-accounts` 后重启，约 20s 恢复健康；依赖与 1.79.0 相同，`node_modules` 未动。
+- 回滚点：`/opt/meridian/node_modules/@rynfar/meridian/dist-accounts.old-neutralize-20261012-103046`；打包备份 `/opt/meridian/backups/live-neutralize-before-ac62621-20261012-103020.tgz`（含 systemd 单元与 drop-in，sha256 `0e0f93f1…`），并已 `agent-backup put`。
+- 验证：部署前后 `/health` 均为 20 个账号、失败 acc20/acc21/acc23（订阅配置检查失败，部署前已存在）；面板 3450 返回 200。实机 agy（`gemini-3.8-flash-medium`）：acc1 返回 `tool_use`（id 为 `toolu_<32 hex>`），用 acc2 的 key 发 tool_result，日志 `agy_account_affinity kind=tool selected=acc2 holder=acc1 status=200`，回答原样包含随机码，未出现 Meridian 字样。
+
 ## 同步上游
 
 
