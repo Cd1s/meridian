@@ -51,10 +51,21 @@ export class AgNativeSessions {
     return this.options.reuseConversations !== false && !this.options.allowNativeBrowser && !this.options.allowNativeSubagents && !request.output_config?.format && !request.stop_sequences?.length && !hasAgImages(request.messages)
   }
   private key(request: AgRequest, messages: AgMessage[]) { return createHash('sha256').update(contractKey(request) + historyKey(messages)).digest('hex') }
-  claim(request: AgRequest): AgNativeSnapshot | undefined {
+  /** Prefix of a request that a saved snapshot would cover: its history through the last assistant turn. */
+  private resumable(request: AgRequest): number | undefined {
     if (!this.eligible(request)) return
     const count = request.messages.findLastIndex(message => message.role === 'assistant') + 1
     if (!count || count === request.messages.length || !request.messages.slice(count).every(message => message.role === 'user')) return
+    return count
+  }
+  /** Whether claim() would restore this request, without taking the snapshot. */
+  has(request: AgRequest): boolean {
+    const count = this.resumable(request)
+    return count !== undefined && this.state.get('native-sessions', this.key(request, request.messages.slice(0, count)), '') !== undefined
+  }
+  claim(request: AgRequest): AgNativeSnapshot | undefined {
+    const count = this.resumable(request)
+    if (count === undefined) return
     const json = this.state.take('native-sessions', this.key(request, request.messages.slice(0, count)), '')
     if (!json) return
     const value = snapshot.parse(JSON.parse(json))

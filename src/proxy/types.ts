@@ -28,6 +28,8 @@ export interface AntigravityOptions {
   browserMcpExecutable?: string
   allowNativeSubagents?: boolean
   pendingToolTimeoutMs?: number
+  /** Fork patch: how long a finished conversation's live process waits for the next turn (default pendingToolTimeoutMs). After it expires the next turn replays the whole history. */
+  idleConversationMs?: number
   /** Fork patch: reuse a successful `agy -p /config` account check for this long. 0 (default) checks every request like upstream. */
   accountCheckTtlMs?: number
   /** Fork patch: overlay for spawned agy processes (per-account HOME and proxies when several accounts share one process). */
@@ -98,6 +100,7 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
       turnTimeoutMs: process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS),
       runMaxMs: process.env.MERIDIAN_AGY_RUN_MAX_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_RUN_MAX_MS),
       pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
+      idleConversationMs: process.env.MERIDIAN_AGY_IDLE_CONVERSATION_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_IDLE_CONVERSATION_MS),
       accountCheckTtlMs: process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS),
       prewarmIdleMs: process.env.MERIDIAN_AGY_PREWARM_IDLE_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_PREWARM_IDLE_MS),
       prewarmMaxAgeMs: process.env.MERIDIAN_AGY_PREWARM_MAX_AGE_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_PREWARM_MAX_AGE_MS),

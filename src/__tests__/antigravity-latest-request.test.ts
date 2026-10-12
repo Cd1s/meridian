@@ -69,6 +69,22 @@ describe("Antigravity prompt keeps the latest user request in focus", () => {
     expect(JSON.parse(prompt.split("Client conversation:\n").at(-1)!)).toEqual(request.messages)
   })
 
+  it("keeps the target of a large content-first write in the current-turn recap", () => {
+    // Live replay: with the whole input cut to 200 chars, a 100k {content, file_path} write lost its path and Gemini
+    // Flash Low verified or rewrote the file instead of confirming it.
+    const messages = [
+      { role: "user", content: "Write the report to /w/report.md." },
+      { role: "assistant", content: [{ type: "tool_use", id: "w1", name: "write", input: { content: "r".repeat(100_000), file_path: "/w/report.md" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "w1", content: "Created file" }] },
+    ]
+    const request = parseAgRequest({ model: "fixture-model", messages, tools: [{ name: "write", input_schema: { type: "object" } }] })
+    const added = renderAgPrompt(request).split("Since this request:\n")[1]!.split("\n")[0]!
+    const input = JSON.parse(added)[0].content[0].input
+    expect(input.file_path).toBe("/w/report.md")
+    expect(input.content).toEndWith("[... 100000 chars in full]")
+    expect(added.length).toBeLessThan(800)
+  })
+
   it("caps tool inputs already sent for the current request, such as a large file write", () => {
     const messages = [
       { role: "user", content: "Write the report." },

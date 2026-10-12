@@ -42,6 +42,11 @@ export class AgResponseStore {
     this.entries.set(id, { scope, json: persist ? undefined : json, bytes, expires })
     this.bytes += bytes
   }
+  /** Whether get() would find this response, without reading or copying it. */
+  has(id: string, scope: string): boolean {
+    this.prune()
+    return this.entries.get(id)?.scope === scope
+  }
   get(id: string, scope: string): { input: unknown[]; response: Record<string, unknown>; events?: AgResponseEvent[] } {
     this.prune()
     const entry = this.entries.get(id)

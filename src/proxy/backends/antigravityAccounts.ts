@@ -7,6 +7,7 @@ import { join } from "node:path"
 import type { ProxyConfig } from "../types"
 import { AgProcessPool } from "./antigravityRuntime"
 import { AgPanelStore } from "./antigravityPanelStore"
+import { agContinuation, type AgContinuation, type AgHold } from "./antigravityProtocol"
 
 export interface AgAccount {
   name: string
@@ -21,7 +22,10 @@ export interface AgAccount {
 export interface AgBackend {
   fetch(request: Request): Promise<Response>
   close(): Promise<void>
+  /** Whether this account holds the conversation a request continues (see createAntigravityServer). */
+  holds?(continuation: AgContinuation): AgHold | undefined
 }
+const AFFINITY_PATHS = new Set(["/v1/messages", "/messages", "/v1/chat/completions", "/v1/responses"])
 
 export function parseAgEnvFile(text: string): Record<string, string> {
   const vars: Record<string, string> = {}
@@ -138,8 +142,7 @@ export class AgAccountSet {
   route(request: Request): Promise<Response> {
     const key = agRequestKey(request.headers)
     const name = key ? this.byKey.get(digest(key)) : undefined
-    const entry = name ? this.running.get(name) : undefined
-    if (entry) return entry.backend.fetch(request)
+    if (name && this.running.has(name)) return this.dispatch(request, name, [...this.running.keys()], false)
 
     if (!key && ["/health", "/readyz", "/livez"].includes(new URL(request.url).pathname)) {
       return Promise.resolve(Response.json({ status: "healthy", backend: "antigravity", accounts: this.running.size, failed: this.failures.size }))
@@ -169,21 +172,56 @@ export class AgAccountSet {
         gwKey.requests += 1
         gwKey.lastUsedAt = Date.now()
         this.panel.saveThrottled()
-
-        const selectedEntry = this.running.get(selectedName)!
-        const headers = new Headers(request.headers)
-        headers.set("x-api-key", selectedEntry.account.apiKey)
-        if (headers.has("authorization")) {
-          headers.set("authorization", `Bearer ${selectedEntry.account.apiKey}`)
-        }
-        // Rebuild from the URL: node-server's lightweight Request cannot be cloned with `new Request(request, ...)`.
-        const hasBody = request.method !== "GET" && request.method !== "HEAD"
-        const forwarded = new Request(request.url, { method: request.method, headers, body: hasBody ? request.body : undefined, signal: request.signal, ...(hasBody ? { duplex: "half" } : {}) } as RequestInit)
-        return selectedEntry.backend.fetch(forwarded)
+        return this.dispatch(request, selectedName, eligible, true)
       }
     }
 
     return Promise.resolve(denied())
+  }
+  /**
+   * Sends a request to the selected account, unless another eligible account holds the conversation it continues: a
+   * delivered tool call, an idle live process or native snapshot it extends, or a stored Responses id. Routers in front
+   * (key round-robin here, Sub2API upstream) pick accounts per request, and an account that does not hold the
+   * conversation can only replay it. If the holder fails before responding, the selected account still serves it.
+   */
+  private async dispatch(request: Request, selectedName: string, eligible: string[], rekey: boolean): Promise<Response> {
+    const path = new URL(request.url).pathname
+    const affinity = process.env.MERIDIAN_AGY_ACCOUNT_AFFINITY !== "0" && request.method === "POST" && AFFINITY_PATHS.has(path) && eligible.length > 1
+    if (!affinity) return this.send(request, selectedName, rekey)
+    // node-server's lightweight Request has a body stream but no text().
+    const text = request.body ? await new Response(request.body).text() : ""
+    let raw: unknown
+    try { raw = JSON.parse(text) } catch { raw = undefined }
+    const continuation = agContinuation(path, raw)
+    const selected = this.running.get(selectedName)!
+    const kind = selected.backend.holds?.(continuation)
+    let holder: { name: string; kind: AgHold } | undefined
+    if (!kind) for (const name of eligible) {
+      if (name === selectedName) continue
+      const held = this.running.get(name)?.backend.holds?.(continuation)
+      if (held) { holder = { name, kind: held }; break }
+    }
+    if (!holder) return this.send(request, selectedName, rekey, text)
+    const response = await this.send(request, holder.name, true, text)
+    const fallback = response.status >= 400
+    console.log(JSON.stringify({ ts: new Date().toISOString(), event: "agy_account_affinity", path, kind: holder.kind, selected: selectedName, holder: holder.name, status: response.status, fallback }))
+    if (!fallback) return response
+    await response.body?.cancel()
+    return this.send(request, selectedName, rekey, text)
+  }
+  /** Forwards to one account, with that account's key when the request did not arrive with it. */
+  private send(request: Request, name: string, rekey: boolean, body?: string): Promise<Response> {
+    const entry = this.running.get(name)!
+    if (!rekey && body === undefined) return entry.backend.fetch(request)
+    const headers = new Headers(request.headers)
+    if (rekey) {
+      headers.set("x-api-key", entry.account.apiKey)
+      if (headers.has("authorization")) headers.set("authorization", `Bearer ${entry.account.apiKey}`)
+    }
+    // Rebuild from the URL: node-server's lightweight Request cannot be cloned with `new Request(request, ...)`.
+    const hasBody = request.method !== "GET" && request.method !== "HEAD"
+    const payload = body ?? (hasBody ? request.body : undefined)
+    return entry.backend.fetch(new Request(request.url, { method: request.method, headers, body: payload, signal: request.signal, ...(payload instanceof ReadableStream ? { duplex: "half" } : {}) } as RequestInit))
   }
   /** Calls one account's backend in-process with its own key (admin panel). */
   async request(name: string, path: string): Promise<Response | undefined> {
@@ -207,5 +245,5 @@ export async function startAgBackend(config: Partial<ProxyConfig>): Promise<AgBa
   const { createAntigravityServer } = await import("./antigravity")
   const backend = createAntigravityServer(resolveBackendConfig(config))
   try { await backend.initPlugins?.() } catch (error) { await backend.closeBackend(); throw error }
-  return { fetch: request => Promise.resolve(backend.app.fetch(request)), close: async () => { backend.beginDrain?.(); await backend.closeBackend() } }
+  return { fetch: request => Promise.resolve(backend.app.fetch(request)), close: async () => { backend.beginDrain?.(); await backend.closeBackend() }, holds: continuation => backend.holds(continuation) }
 }

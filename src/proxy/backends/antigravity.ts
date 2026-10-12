@@ -16,7 +16,7 @@ import { buildRuntime } from "../buildRuntime"
 import { hasValidApiKey } from "../auth"
 import { headerSettingsResponse, healthHostname } from "../../headerSettings"
 import { AntigravityRuntime, type AntigravityRun } from "./antigravityRuntime"
-import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequest, type AgBlock, type AgResult, type AgRequest } from "./antigravityProtocol"
+import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequest, type AgBlock, type AgResult, type AgRequest, type AgContinuation, type AgHold } from "./antigravityProtocol"
 import { agAccountHash, agLogRequest, agLoggedRequest } from "./antigravityRequestLog"
 
 function errorResponse(error: unknown): Response {
@@ -41,12 +41,30 @@ async function readBody(request: Request): Promise<unknown> {
   } finally { reader.releaseLock() }
 }
 
-export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage> } {
+export function createAntigravityServer(config: ProxyConfig, runtime = new AntigravityRuntime({ ...config.antigravity, maxConcurrent: config.antigravity?.maxConcurrent ?? config.maxConcurrent })): ProxyServer & { closeBackend(): Promise<void>; providerStatus(): Promise<ProviderUsage>; holds(continuation: AgContinuation): AgHold | undefined } {
   if (config.profiles?.length || config.defaultProfile) throw new Error("Antigravity does not support Claude profile configuration")
   const accountHash = agAccountHash(runtime.options.env)
   const responses = new AgResponseStore(undefined, undefined, runtime.state)
   const completedAnswers = new AgCompletedAnswers(runtime.state)
   const responseJobs = new AgResponseJobs(responses)
+  const ownScope = agResponseScope(new Headers({ "x-api-key": config.apiKey ?? "" }))
+  // NOTE: one conversation must stay on the account whose process holds it. Elsewhere it can only be replayed as one
+  // history JSON value: Gemini then loses the request, repeats completed tools, and every turn re-sends the history.
+  /** Whether this account holds the conversation a request continues; the multi-account router keeps it here. */
+  function holds(continuation: AgContinuation): AgHold | undefined {
+    if (runtime.draining) return undefined
+    if (continuation.toolIds.some(id => runtime.toolOwners.get(id)?.busy === false)) return "tool"
+    if (continuation.responseId && responses.has(continuation.responseId, ownScope)) return "response"
+    if (continuation.messages === undefined || (!runtime.runs.size && !runtime.nativeSessions)) return undefined
+    if (continuation.request === undefined) {
+      try { continuation.request = parseAgRequest(continuation.messages, runtime.options.adaptThinkingBudgets) }
+      catch { continuation.request = null }
+    }
+    const request = continuation.request
+    if (!request) return undefined
+    if ([...runtime.runs.values()].some(run => run.matches(request))) return "live"
+    return runtime.nativeSessions?.has(request) ? "native" : undefined
+  }
   async function recoverResults(body: AgRequest, signal: AbortSignal, results: AgResult[], scope: string, previous?: AntigravityRun): Promise<AntigravityRun> {
     // Claim before retiring the old owner: simultaneous HTTP retries must not
     // start competing replays while shutdown or account preflight is pending.
@@ -402,7 +420,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     return Response.json({ ...payload, ...healthHostname() }, { status: response.status, headers })
   }
   return {
-    app: { fetch }, config, providerStatus,
+    app: { fetch }, config, providerStatus, holds,
     initPlugins: () => runtime.initialize(),
     beginDrain: () => { runtime.draining = true },
     forceAbortInFlight: () => { for (const run of runtime.runs.values()) run.abort(new Error("Backend shutting down")) },
