@@ -1,3 +1,41 @@
+## STOP: contributor attribution — #1363 (2026-10-13)
+
+Read this before touching any contributor PR. Entries below that record credit
+as "`Co-authored-by` present" or "Author/AuthorDate preserved" describe a
+cherry-pick on a maintainer branch that was then squashed; the commit on `main`
+names the maintainer as Author. Those notes are not evidence of credit. The
+verified record is the [attribution ledger](ATTRIBUTION_LEDGER.md).
+
+The integration-PR procedure is withdrawn. Follow
+[Contributor pull requests](../../.agents/references/contributing.md#contributor-pull-requests):
+merge the contributor's own PR, push fixes to their branch, never close silently.
+
+Open maintainer drafts that carry contributor commits. **Do not squash-merge
+them.** The maintainer commits in each belong on the contributor's branch, and
+the contributor's PR is what merges:
+
+| Draft | Carries | Contributor PR to merge instead |
+|---|---|---|
+| #1362 | @Nowaker `13abefad5` | #1360 (signed, `CLEAN`) |
+| #1317 | @Cd1s `80d4b9667` | #1314 (unsigned, `BLOCKED`) |
+| #1322 | @passabilities (10), @justprosh (7), @Nowaker (1) | #1211, #1231, #1292; Nowaker's `52965e113` is from closed #1283 |
+
+Corrections to past PRs (reopening, comment edits, release notes, any rewrite of
+`main`) are the owner's decisions in #1363. Do not start them from this note.
+
+## Plugin config isolation — #1360 (2026-10-13)
+
+Nowaker's own PR #1360 carries the change; maintainer tests, CLI help and
+evidence are separate commits on their branch. This replaces draft #1362, which
+held a cherry-picked copy and is closed unmerged. With `MERIDIAN_CONFIG_DIR`
+set, plugin discovery and `plugins.json` follow that directory; explicit
+`MERIDIAN_PLUGIN_DIR` / `MERIDIAN_PLUGIN_CONFIG` still win. Unchanged main fails
+both isolation assertions and the real CLI probe; the candidate passes them
+through the source CLI and a packed, installed CLI.
+[Receipts and harness](evidence/1360-plugin-config-20261012/README.md).
+Not run: model inference through a plugin loaded from a relocated config
+directory. The change only moves two default paths, so no request path differs.
+
 ## Current Nix runtime integration — #1342 → #1357
 
 Authored current-main incorporation26e2dd4a5/dd4bf666 preserves Connor Grady's
