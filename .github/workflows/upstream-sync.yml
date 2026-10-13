@@ -7,6 +7,11 @@ on:
   schedule:
     - cron: "29 * * * *"
   workflow_dispatch:
+    inputs:
+      drill:
+        description: "Drill: take the conflict path without merging or pushing; the issue gets the meridian-sync-drill label, which does not wake the repair agent"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -20,11 +25,11 @@ concurrency:
 env:
   UPSTREAM: https://github.com/rynfar/meridian.git
   PROD: ours/antigravity-gateway-patch
+  DRILL: ${{ github.event_name == 'workflow_dispatch' && inputs.drill && 'true' || 'false' }}
 
 jobs:
   sync:
-    # `schedule` only fires from the default branch (main), so this file lives on main AND the production
-    # branch; the job always checks out and updates the production branch.
+    # The production branch is the repository's default branch, so `schedule` runs this copy.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +43,9 @@ jobs:
           git remote add upstream "$UPSTREAM"
           git fetch -q upstream main
           n=$(git rev-list --count "origin/$PROD..upstream/main")
+          if [ "$DRILL" = true ]; then n=1; echo "drill: forcing one upstream commit"; fi
           echo "count=$n" >> "$GITHUB_OUTPUT"
+          echo "head=$(git rev-parse --short=12 upstream/main)" >> "$GITHUB_OUTPUT"
           echo "upstream commits not in $PROD: $n"
           if [ "$n" != 0 ]; then
             git log --format='%h %s' "origin/$PROD..upstream/main" | head -5 > "$RUNNER_TEMP/upstream-log.txt"
@@ -51,23 +58,29 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           COUNT: ${{ steps.detect.outputs.count }}
         run: |
-          text=$(printf '【Meridian 上游同步：开始】\n上游有 %s 个新提交，正在合并并测试\n%s' "$COUNT" "$(cut -c1-120 "$RUNNER_TEMP/upstream-log.txt")")
+          prefix=""; [ "$DRILL" = true ] && prefix="[演练] "
+          text=$(printf '%s【Meridian 上游同步：开始】\n上游有 %s 个新提交，正在合并并测试\n%s' "$prefix" "$COUNT" "$(cut -c1-120 "$RUNNER_TEMP/upstream-log.txt")")
           curl -sS --max-time 20 -o /dev/null -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "text=${text}" --data-urlencode "disable_web_page_preview=true" || true
 
       - uses: actions/setup-node@v4
-        if: steps.detect.outputs.count != '0'
+        if: steps.detect.outputs.count != '0' && env.DRILL != 'true'
         with:
           node-version: "22"
 
       - uses: oven-sh/setup-bun@v2
-        if: steps.detect.outputs.count != '0'
+        if: steps.detect.outputs.count != '0' && env.DRILL != 'true'
 
       - name: Merge upstream
         if: steps.detect.outputs.count != '0'
         id: merge
         run: |
           set -o pipefail
+          if [ "$DRILL" = true ]; then
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "(drill: no merge attempted)" > "$RUNNER_TEMP/conflicts.txt"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           branch="sync/upstream-$(date -u +%Y%m%d-%H%M)"
@@ -106,12 +119,55 @@ jobs:
           number=$(gh api -X POST "repos/$GITHUB_REPOSITORY/pulls" -f title="sync: merge rynfar/meridian main ($COUNT commits)" -f head="$BRANCH" -f base="$PROD" -f body="$body" --jq .number)
           echo "url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${number}" >> "$GITHUB_OUTPUT"
           merged=false
-          for attempt in 1 2 3 4 5 6; do
+          for _ in 1 2 3 4 5 6; do
             if gh api -X PUT "repos/$GITHUB_REPOSITORY/pulls/$number/merge" -f merge_method=merge --jq .merged > "$RUNNER_TEMP/merged.txt" 2> "$RUNNER_TEMP/merge-err.txt"; then merged=$(cat "$RUNNER_TEMP/merged.txt"); break; fi
             sleep 5   # GitHub computes mergeability asynchronously right after the PR is created
           done
           [ "$merged" = true ] || { cat "$RUNNER_TEMP/merge-err.txt"; echo "::error::PR #$number was created but could not be merged"; exit 1; }
           git push origin --delete "$BRANCH" || true
+
+      # A conflict is detected and handled inside "Merge upstream", which then succeeds, so `failure()` alone never
+      # opened an issue for it. Run on a conflict or on any failed step, before the notification that reports it.
+      - name: Open issue for Hub repair agent
+        if: always() && steps.detect.outputs.count != '0' && (steps.merge.outputs.conflict == 'true' || failure())
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFLICT: ${{ steps.merge.outputs.conflict }}
+          CHECKS: ${{ steps.checks.outcome }}
+          HEAD: ${{ steps.detect.outputs.head }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -o pipefail
+          label=meridian-sync-failed title="Upstream sync failed"
+          if [ "$DRILL" = true ]; then label=meridian-sync-drill title="[演练] Upstream sync failed"; fi
+          reason="checks failed after a conflict-free merge"
+          [ "${CHECKS:-}" = success ] && reason="checks passed but creating or merging the sync PR failed"
+          [ -z "${CONFLICT:-}" ] && reason="the merge step failed before reporting conflicts"
+          [ "$CONFLICT" = true ] && reason="merge conflicts: $(head -10 "$RUNNER_TEMP/conflicts.txt" | tr '\n' ' ')"
+          marker="Upstream head: $HEAD"
+          body="Upstream sync failed ($reason).
+
+          $marker
+          Run: $RUN_URL
+          Production branch: $PROD. Upstream: rynfar/meridian main. Do not deploy; repair via PR into $PROD."
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues?labels=$label&state=open" --jq '.[0].number // empty')
+          if [ -z "$existing" ]; then
+            url=$(gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="$title" -f body="$body" -f "labels[]=$label" --jq .html_url)
+            echo "state=opened" >> "$GITHUB_OUTPUT"
+          else
+            url=$(gh api "repos/$GITHUB_REPOSITORY/issues/$existing" --jq .html_url)
+            # The same upstream head fails every hour until it is repaired; report it once per head.
+            seen=$( { gh api "repos/$GITHUB_REPOSITORY/issues/$existing" --jq .body; gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$existing/comments" --jq '.[].body'; } | grep -cF "$marker" || true)
+            if [ "$seen" = 0 ]; then
+              gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$existing/comments" -f body="$body" --silent
+              echo "state=commented" >> "$GITHUB_OUTPUT"
+            else
+              echo "state=unchanged" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "issue: $url"
 
       - name: Notify result
         if: always() && steps.detect.outputs.count != '0'
@@ -122,43 +178,40 @@ jobs:
           CONFLICT: ${{ steps.merge.outputs.conflict }}
           CHECKS: ${{ steps.checks.outcome }}
           PR_URL: ${{ steps.pr.outputs.url }}
+          PR_OUTCOME: ${{ steps.pr.outcome }}
+          ISSUE_OUTCOME: ${{ steps.issue.outcome }}
+          ISSUE_STATE: ${{ steps.issue.outputs.state }}
+          ISSUE_URL: ${{ steps.issue.outputs.url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ -n "$PR_URL" ]; then
+          case "$ISSUE_STATE" in
+            opened) issue="已开 issue 交给 Hub 修复 agent：$ISSUE_URL" ;;
+            commented) issue="已在现有 issue 补充本次失败：$ISSUE_URL" ;;
+            unchanged) issue="同一上游提交已在 issue 中报告过：$ISSUE_URL" ;;
+            *) issue="开 issue 失败（$ISSUE_OUTCOME），Hub 修复 agent 未收到，请看运行日志" ;;
+          esac
+          # PR_URL is set as soon as the PR exists, before the merge; only a successful step means it merged.
+          if [ "$PR_OUTCOME" = success ]; then
             title="Meridian 上游同步：已合并"
             body=$(printf '%s 个上游提交已合入生产分支，类型检查与 Antigravity 测试通过。\nPR：%s\n已合入生产分支，尚未部署到 SG-west' "$COUNT" "$PR_URL")
           elif [ "$CONFLICT" = true ]; then
             title="Meridian 上游同步：需人工审"
-            body=$(printf '合并有冲突，已开 issue 交给 Hub 修复 agent。\n冲突文件：%s\n运行：%s' "$(head -5 "$RUNNER_TEMP/conflicts.txt" | tr '\n' ' ')" "$RUN_URL")
+            body=$(printf '合并有冲突。%s\n冲突文件：%s\n运行：%s' "$issue" "$(head -5 "$RUNNER_TEMP/conflicts.txt" | tr '\n' ' ')" "$RUN_URL")
           elif [ "$CHECKS" = "success" ]; then
             title="Meridian 上游同步：失败（检查已通过，合并步骤出错）"
-            body=$(printf '测试和类型检查通过，但创建或合并 PR 失败，已开 issue 交给 Hub 修复 agent。\n运行：%s' "$RUN_URL")
+            body=$(printf '测试和类型检查通过，但创建或合并 PR 失败。%s\nPR：%s\n运行：%s' "$issue" "${PR_URL:-未创建}" "$RUN_URL")
           else
             title="Meridian 上游同步：失败"
-            body=$(printf '检查未通过（%s），已开 issue 交给 Hub 修复 agent。\n运行：%s' "$CHECKS" "$RUN_URL")
+            body=$(printf '检查未通过（%s）。%s\n运行：%s' "${CHECKS:-未运行}" "$issue" "$RUN_URL")
           fi
+          [ "$DRILL" = true ] && title="[演练] $title"
           curl -sS --max-time 20 -o /dev/null -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TG_CHAT_ID}" --data-urlencode "text=【${title}】
           ${body}" --data-urlencode "disable_web_page_preview=true" || true
 
-      - name: Open issue for Hub repair agent
-        if: failure() && steps.detect.outputs.count != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CONFLICT: ${{ steps.merge.outputs.conflict }}
-          CHECKS: ${{ steps.checks.outcome }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # A handled conflict leaves every step green; fail the run so the Actions page shows it.
+      - name: Fail on merge conflict
+        if: steps.merge.outputs.conflict == 'true'
         run: |
-          reason="checks failed after a conflict-free merge"
-          [ "${CHECKS:-}" = success ] && reason="checks passed but creating or merging the sync PR failed"
-          [ "$CONFLICT" = true ] && reason="merge conflicts: $(head -10 "$RUNNER_TEMP/conflicts.txt" | tr '\n' ' ')"
-          body="Upstream sync failed ($reason).
-
-          Run: $RUN_URL
-          Production branch: $PROD. Upstream: rynfar/meridian main. Do not deploy; repair via PR into $PROD."
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues?labels=meridian-sync-failed&state=open" --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$existing/comments" -f body="$body" --silent
-          else
-            gh api -X POST "repos/$GITHUB_REPOSITORY/issues" -f title="Upstream sync failed" -f body="$body" -f "labels[]=meridian-sync-failed" --silent
-          fi
+          echo "::error::Upstream merge conflicts: $(head -10 "$RUNNER_TEMP/conflicts.txt" | tr '\n' ' ')"
+          exit 1
