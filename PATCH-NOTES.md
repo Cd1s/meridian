@@ -240,6 +240,20 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - **面板登录脚本**：`agy-login.py` 在 1.3.4 下也能拿到授权链接，结束后不留进程。
 - 未覆盖：OpenCode 相关的测试（含 tool-catalog）、native-tools、media、desktop。
 - 上游：没有提 PR，由用户自己测试几天后再提。上游用的分支 `feat/agy-1.3.4` 保留着。
+- 发布与部署：
+  - `v1.81.0-cd1s.3`（`93db290`，provenance `package-1.81.0-1-detached-93db2903`，非 dirty），bundle sha256 `5757f3a4…`。
+  - 部署顺序：先把 `/usr/local/bin/agy` 原子替换为官方 1.3.4（Linux arm64，sha256 `08d619ae…`），旧的 1.2.16 保留为 `/usr/local/bin/agy-1.2.16`。再加 drop-in `meridian-accounts.service.d/agy-pin.conf`（`AGY_CLI_DISABLE_AUTO_UPDATE=true`）。最后替换 `dist-accounts` 并重启。
+  - 重启后 acc22 第一次账号检查两次超时（1.3.4 在每个账号目录里第一次运行较慢），约 70 秒后启动器自动重试恢复。最终 20 个账号在服务，失败的仍是 acc20 / acc21 / acc23（部署前就失败）。
+- 回滚：
+  - 把 `/usr/local/bin/agy-1.2.16` 复制回 `/usr/local/bin/agy`；
+  - 把 `dist-accounts.old-09f6b64-20261013-150708` 改回 `dist-accounts`；
+  - 删掉 `agy-pin.conf`，执行 `systemctl daemon-reload`，再重启服务。
+  - 打包备份在 `/opt/meridian/backups/live-09f6b64-agy1216-before-93db290-20261013-150638.tgz`（sha256 `94762c4c…`），并已 `agent-backup put`。
+- 验证：
+  - acc1 / acc2 / acc22 的 `/health` 都显示 `cliVersion` 1.3.4、`verifiedCliVersion` 1.3.4。
+  - 跨账号：acc1 发起 `tool_use`，用 acc2 的 key 发 tool_result，日志 `agy_account_affinity holder=acc1 status=200`，回答包含随机码。
+  - 回放测试：直接回答 3/3；轮询 3/3（提示 → 再读 → `done`）。
+  - 部署后 11 个请求全部 200，没有出现 “Unsupported agy version”，也没有异常。
 
 ## 同步上游
 
