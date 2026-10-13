@@ -191,6 +191,17 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - MacBook Air 环境说明：
   - agy 登录信息存在钥匙串里，SSH 会话读不到。测试改为用 `open` 让桌面会话里的“终端”运行 `.command` 脚本。
   - 测试用的 agy 1.2.7 放在 `~/meridian-e2e/owned/agy-1.2.7/`，并设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true`；全局的 `~/.local/bin/agy` 是 1.3.3，保持不动。
+- 发布与部署：
+  - `v1.81.0-cd1s.2`（`09f6b64`，provenance `package-1.81.0-1-detached-09f6b64c`，非 dirty），bundle sha256 `2dd3539a…`。
+  - 部署到 Oracle-SGwest 后约 18s 恢复健康。产品代码和之前在跑的 `980e4d6`（#36）相同。
+- 回滚点：
+  - `dist-accounts.old-980e4d6-20261013-130347`；
+  - 打包备份 `/opt/meridian/backups/live-980e4d6-before-09f6b64-20261013-130338.tgz`，并已 `agent-backup put`（sha256 `758f0d2d…`）。
+- 验证：
+  - `/health` 部署前后都是 20 个账号，失败 acc20/acc21/acc23（部署前已存在）；面板 200。
+  - 跨账号：acc1 发起 `tool_use`，acc2 的 key 发 tool_result，日志 `agy_account_affinity holder=acc1 status=200`，回答包含随机码。
+  - 轮询回放 3/3：提示 → 模型再读 → `done`。
+  - 部署后 20 分钟日志 0 条 error。
 
 ## 同步上游
 
