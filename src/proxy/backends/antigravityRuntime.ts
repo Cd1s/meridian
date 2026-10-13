@@ -646,7 +646,9 @@ export class AntigravityRuntime {
     this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
     for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.runMaxMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
     this.idleConversationMs = options.idleConversationMs ?? this.pendingToolTimeoutMs
-    if (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
+    // The new option has its own range; leaving it unset retains every
+    // previously accepted tool deadline rather than adding a startup refusal.
+    if (options.idleConversationMs !== undefined && (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000)) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
     this.accountCheckTtlMs = options.accountCheckTtlMs ?? 0
     if (!Number.isSafeInteger(this.accountCheckTtlMs) || this.accountCheckTtlMs < 0 || this.accountCheckTtlMs > 600_000) throw new Error("Antigravity account check TTL must be an integer from 0 to 600000 ms")
     // Fork patch: pre-started agy processes; off unless prewarmIdleMs is set.

@@ -28,7 +28,7 @@ export interface AntigravityOptions {
   browserMcpExecutable?: string
   allowNativeSubagents?: boolean
   pendingToolTimeoutMs?: number
-  /** Fork patch: how long a finished conversation's live process waits for the next turn (default pendingToolTimeoutMs). After it expires the next turn replays the whole history. */
+  /** How long a finished conversation's live process waits for the next turn (default pendingToolTimeoutMs). After it expires the next turn replays the whole history. */
   idleConversationMs?: number
   /** Fork patch: reuse a successful `agy -p /config` account check for this long. 0 (default) checks every request like upstream. */
   accountCheckTtlMs?: number

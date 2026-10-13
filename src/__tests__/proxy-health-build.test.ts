@@ -141,7 +141,7 @@ describe("/v1/models profile auth context", () => {
     expect(models.get("claude-fable-5")?.context_window).toBe(1_000_000)
   })
 
-  it("keeps the 200k catalog for a non-Max profile", async () => {
+  it("keeps non-Max tiers at 200k while advertising Haiku 5.5's native 1M window", async () => {
     const { app } = createProxyServer({
       port: 0,
       host: "127.0.0.1",
@@ -157,7 +157,8 @@ describe("/v1/models profile auth context", () => {
       profileId: "pro",
       envOverrides: { CLAUDE_CONFIG_DIR: "/profiles/pro" },
     }])
-    expect(body.data.every((model) => model.context_window === 200_000)).toBe(true)
+    expect(body.data.find(model => model.id === "claude-haiku-5-5")?.context_window).toBe(1_000_000)
+    expect(body.data.filter(model => model.id !== "claude-haiku-5-5").every(model => model.context_window === 200_000)).toBe(true)
   })
 })
 
