@@ -1,4 +1,4 @@
-import { hasExtendedContext, type ClaudeModel } from "./models"
+import { CANONICAL_HAIKU_MODEL, hasExtendedContext, type ClaudeModel } from "./models"
 
 /** Approximate replay estimate: overestimates Cyrillic-like scripts, but can
  * underestimate CJK, base64, and multi-page documents. Reactive overflow
@@ -22,7 +22,13 @@ export function estimateTokens(content: unknown): number {
   }, 0)
 }
 
-export function contextWindowFor(model: string): number {
+/** resolvedModel is the effective SDK tier pin, including profile/shell and
+ * per-request overrides. Haiku 5.5's 1M window is native, not a [1m] beta. */
+export function contextWindowFor(
+  model: string,
+  resolvedModel = model === "haiku" ? CANONICAL_HAIKU_MODEL : model,
+): number {
+  if (resolvedModel === "claude-haiku-5-5") return 1_000_000
   return hasExtendedContext(model as ClaudeModel) ? 1_000_000 : 200_000
 }
 
@@ -36,14 +42,14 @@ export const REPLAY_RESERVE_TOKENS = 64_000
  *  English tokens, roughly half the window, for conversations that used to fit.
  *  Capping keeps the 1M budget byte-for-byte unchanged and lifts 200k models to
  *  the same ~80% share. Underestimates are still covered by the overflow retry. */
-export function replayReserveFor(model: string): number {
-  return Math.min(REPLAY_RESERVE_TOKENS, Math.floor(contextWindowFor(model) * 0.1))
+export function replayReserveFor(model: string, resolvedModel?: string): number {
+  return Math.min(REPLAY_RESERVE_TOKENS, Math.floor(contextWindowFor(model, resolvedModel) * 0.1))
 }
 
-export function replayBudgetFor(model: string): number {
+export function replayBudgetFor(model: string, resolvedModel?: string): number {
   const configured = replayBudgetOverride()
   if (configured !== undefined) return configured
-  return Math.floor(contextWindowFor(model) * 0.9) - replayReserveFor(model)
+  return Math.floor(contextWindowFor(model, resolvedModel) * 0.9) - replayReserveFor(model, resolvedModel)
 }
 
 /** Test-only override. Proving the trim against a real model otherwise needs a

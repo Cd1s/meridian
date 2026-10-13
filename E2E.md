@@ -1,4 +1,68 @@
+## Antigravity completed-conversation idle window (#1341)
+
+Run `node scripts/e2e-antigravity-idle-conversation.mjs <server.js> <pi-integration.js> <pi-cli.js> <official-agy> <new-report.json> <label>`
+against unchanged main and candidate builds. The gate pins the verified official
+agy1.2.7 macOS ARM64 binary hash and uses actual Pi1.1.0/Gemini3.8FlashLow.
+It validates the real provider-specific Pi retry integration against a local
+fixture before allowing generation, and retains its request-ID check at native
+admission. The independently installed arm uses the packaged
+`dist/antigravity-clients/pi.js`, not a stand-in extension.
+
+The measured completion-to-next-prompt interval must be longer than the tool
+deadline and shorter than the completed-conversation idle window. Assert the
+same native conversation and `continuation=live`, then require expiry beyond
+the idle deadline. Native readiness checks must not be inserted into the timed
+pause. CLI self-updates are disabled, paid-credit/provider guards remain active,
+and original child/pipe closure and final executable identity are required.
+See [before/after receipts, retained timing failure and limits](docs/maintenance/evidence/1341-idle-window-20261012.md).
+
 # End-to-End Testing
+
+## Overlapping passthrough queries
+
+```sh
+bun scripts/e2e-passthrough-mcp-overlap.mjs
+```
+
+Credential-free: the installed Claude executable runs through the Agent SDK
+with the options `buildQueryOptions` produces, against a loopback Anthropic API
+fixture, so no model is called. One passthrough tool set is built once and
+handed to two queries, as Meridian hands a conversation's cached tool set to
+each of its queries. The fixture holds the first query's model request open
+while the second query runs. Both queries must report the `oc` server
+connected, reach the model with identical tool definitions, and leave no
+`Failed to connect SDK MCP server` entry in the CLI's MCP logs: that entry is
+the signature of a turn that ran without the client's tools.
+
+**Verified 2026-10-05:** Linux, Claude Code 2.1.284, Agent SDK 0.2.141: passes
+with each query building its own MCP server. On main 74d0a499, which hands both
+queries one server instance, the second query reports `oc` failed, its model
+request carries no tools, and the CLI logs `SDK MCP server not found: oc`.
+
+The maintained harness additionally accepts `--source-root=/absolute/checkout`,
+`--evidence-dir=/absolute/owned/output`, `--shared-instance`, and
+`--case=overlap|cancel|pre-request-failure|init-timeout|uncooperative`.
+Baseline/shared-instance must fail catalog/connection assertions; failure and
+timeout controls intentionally exit nonzero while proving joined cleanup.
+Read the JSON outcome and cleanup separately. Missing MCP logs remain an explicit
+limitation rather than a verified zero. The current-main before/after receipts
+are in `docs/maintenance/evidence/1283-current-main-20261012/`.
+These credentialless tests do not replace affected-client/model/platform gates.
+
+## SDK process-gate native close barrier
+
+Run `bun scripts/e2e-sdk-process-join.mjs`, or bundle the same file with
+`bun build scripts/e2e-sdk-process-join.mjs --target=node --outfile=/tmp/sdk-join-proof.mjs`
+and run it with stock Node. Identical original-handle assertions fail unchanged
+source and pass the correction on Darwin/Linux arm64: ordinary exit, exited
+parent with explicitly held inherited pipes, and an armed TERM-resistant child.
+The resistant arm must close with SIGKILL; every original close and publication
+must join before owned fixture removal. Unknown cleanup retains state and fails.
+This exercises the production gate with actual controlled subprocesses, **not**
+SDK `query()`, Claude/model inference or the reported #1326 affected client.
+Windows uses a separate wrapper/cancellation contract; these POSIX fixtures
+explicitly skip it. See [durable proof, receipts, baseline reproduction and
+limits](docs/maintenance/evidence/sdk-process-close-join.md).
 
 ## Shared header separator hover (#1262)
 
@@ -95,6 +159,17 @@ follow-up, and at least 95% of the previous cached prefix on every continuation.
 They use the same real SDK/native model and original actor/HTTP custody gates.
 
 > **Droid tests (D1–D10)** additionally require `droid` installed (`droid --version` ≥ 0.89.0) and a Factory AI account for BYOK configuration. Tests D1–D10 cover internal mode (the default). Passthrough mode for Droid is opt-in via `MERIDIAN_PASSTHROUGH=1` and requires `droid` ≥ 0.109 — see "Droid passthrough mode" below.
+
+## OpenCode refusal and long-tool harness prerequisites
+
+`e2e-extra-usage-opencode.mjs` and the streaming-idle delivery's
+`e2e-tool-input-opencode.mjs` require both the matching Meridian client plugin
+and an independently installed OpenCode server scrub plugin. Set
+`E2E_PLUGIN_PATH` to the scrub's absolute built entrypoint and optionally
+`E2E_SCRUB_VERSION` to pin its package version. Missing/wrong/inactive plugins
+must stop before inference; retain loaded identity and successful onRequest
+invocations. The October 12 runs omitted the server scrub: their refusals cannot
+establish account exhaustion or correctly configured client acceptance.
 
 ## Required Meridian OpenCode plugin preflight
 
@@ -927,6 +1002,31 @@ cover both response modes, changed models, recovery and unrelated sessions.
 Run all four live E41 modes alongside this gate to check ordinary tool-result
 continuation and cache reuse.
 
+### Long tool inputs and the idle guard
+
+```bash
+E2E_PROFILE_CLAUDE_DIR=/absolute/owned/claude-config bun scripts/e2e-tool-input-streaming.mjs
+```
+
+The harness drives the bundled Claude Code through the Agent SDK with the
+options `buildQueryOptions` produces for a streaming passthrough turn with one
+client `write` tool, and asks Opus 5.5 for a 600-line file (`E2E_MODEL`,
+`E2E_LINES`). Two arms run concurrently: as built, and the same options without
+`CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`. It prints the longest gap
+between non-ping stream events inside the write's `tool_use` block for each
+arm, with the SDK, CLI and served-model versions. Both arms must end at the
+tool call with at least 20,000 characters of input, and the as-built arm must
+have no gap over 15 s (`E2E_MAX_GAP_MS`). On an unchanged checkout both arms
+send the same request; `--expect-baseline` asserts a silence of at least 60 s
+there instead. The gap without the variable is reported, not asserted: whether
+the API streams without it is Anthropic's setting and can change.
+
+This is direct SDK evidence for the request Meridian builds, not the actual
+OpenCode flow. For that, run the plugin preflight above and a turn whose
+`write` generates for longer than `MERIDIAN_UPSTREAM_IDLE_MS`. Each arm leaves
+one SDK transcript in the owned configuration directory, as any session does.
+Raw model output is never printed.
+
 ### Capped passthrough turns (#926)
 
 ```bash
@@ -1243,7 +1343,7 @@ curl -s -X PUT -H 'Content-Type: application/json' -d '{"checkForUpdates":false}
 | E39 | [OpenCode internal-agent session key (#845)](#e39-opencode-internal-agent-session-key-845) | **Manual**, real OpenCode: its `title` agent runs under the USER'S session id, so the user's first turn used to queue behind it and then get HTTP 400 `session_turn_conflict`. Asserts the first turn succeeds, waits ~0ms on the session lease, and every later request is `lineage=continuation`. **Run after any OpenCode upgrade and before releases touching session keys or the turn coordinator** | 2026-08-19 |
 | E40 | [Passthrough digest-turn cap](#e40-passthrough-digest-turn-cap) | **Automated**: `bun scripts/e2e-digest-turn-cap.mjs` — real SDK. Asserts the capped tool turn generates no digest text, costs materially less than uncapped on an identical prompt, still RESUMES at its captured checkpoint, leaves text-only turns returning `success`, and does not truncate parallel tool calls. **Run before any release touching the passthrough tool loop, `maxTurns`, or the early-stop checkpoint** | 2026-08-20 |
 | E41 | [Passthrough multi-turn: one call, one answer](#e41-passthrough-multi-turn-one-call-one-answer) | **Automated**: `bun scripts/e2e-passthrough-turns.mjs [--stream]` — real proxy + SDK + Claude Max. Chain and `PROBE_PARALLEL=1` modes assert exact tool-call batching, a distinct durable fork per result round, one real answer per delivered call in the active transcript, and full prompt-cache continuity. **Run all four chain/parallel × stream/non-stream combinations before releases touching passthrough resume or the deny hook** | 2026-08-26 |
-| E42 | [OpenCode V2 compatibility](#e42-opencode-v2-compatibility) | **Automated**, exact betas `18314`, `18866`, `19271` and release `2.0.16`. Run the beta package gate with each pinned beta; run `e2e-opencode-v2-stable-live.mjs` with the released binary. The stable gate covers setup, real model requests, title/generate isolation, signed primary turns, resumed session, model-discovery effort variant, tool result, fork isolation, and compaction. Test source and packed npm artifacts. **Run after any V2 plugin/API change; another host version is not a pass** | 2026-09-24 |
+| E42 | [OpenCode V2 compatibility](#e42-opencode-v2-compatibility) | **Automated**, exact betas `18314`, `18866`, `19271` and releases `2.0.16`, `2.0.21`. Run the beta package gate with each pinned beta; run `e2e-opencode-v2-stable-live.mjs` with the released binary. The stable gate covers setup, real model requests, title/generate isolation, signed primary turns, resumed session, model-discovery effort variant, tool result, fork isolation, and compaction. Test source and packed npm artifacts. **Run after any V2 plugin/API change; another host version is not a pass** | 2026-09-24 |
 | E43 | [Passthrough tools in a namespaced client](#e43-passthrough-tools-in-a-namespaced-client) | **Automated**: `bun scripts/e2e-passthrough-namespaced-tools.mjs [--stream]` — real proxy + SDK. A client tool declared `mcp__oc__read` collides with the namespace Meridian nests client tools under; asserts the call is still dispatched and captured, delivered under the name the client declared, and answered from the client's real result, with an ordinary and a foreign-namespace control alongside. **Run before any release touching passthrough tool registration, the deny hook, or tool-name delivery** | 2026-09-08 |
 | E44 | [Tier refusal failover](#e44-tier-refusal-failover) | **Automated**: `bun scripts/e2e-tier-refusal-failover.mjs [--stream]` — local refusal fixture, **real Claude Max fallback**. Asserts the credits-era per-tier banner is recorded 429 on the refusing profile and that a healthy profile actually answers. Catches what unit tests cannot: the shape that arrives carries the upstream status. **Run before releases touching error classification or priority failover** | 2026-09-08 |
 | E45 | [Codex auto-defer](#e45-codex-auto-defer) | **Automated**: `bun scripts/e2e-codex-auto-defer.mjs` — real proxy + SDK, 40 Codex-shaped tools. Asserts a Codex request reports no deferral and that `exec_command` is loaded rather than found via ToolSearch. The codex transform inherited OpenCode's core tool names, which match nothing Codex sends, so every tool was deferred. **Run before releases touching the codex transform, auto-defer, or `computePassthroughMaxTurns`** | 2026-09-08 |
@@ -4708,6 +4808,31 @@ entry. Through the live proxy (E17 shape): output 306 → 144 and cache_read
 *"I attempted to read that file, but the tool call w…"* — content the client
 never sees and the account is billed for.
 
+## OpenCode E41 plugin qualification
+
+`scripts/e2e-qualified-passthrough-turns.mjs` requires **both** installed plugins:
+`E2E_CLIENT_PLUGIN_PATH` points to the matching package's bundled
+`dist/meridian/index.js`, and `E2E_PLUGIN_PATH` to the installed server scrub.
+Missing, wrong-package, changed or inert client plugins fail before grant access.
+The protocol host executes the real client `config` and `chat.headers` hooks,
+checks their session/request/agent outputs, and uses those outputs on every
+request; it does not manufacture replacement headers. Reports retain package
+identity, hashes, hook counts and errors. Server scrub activation and invocation
+are checked independently. Do not use the older plugin-less direct script.
+
+This remains a protocol host, not the OpenCode executable. Separately qualify
+the actual client with `scripts/e2e-mcp-client-opencode.mjs`; its short read and
+continuation check does not replace E41's four-mode gate. Use explicit live
+opt-in, an owned access-only grant, exact model and isolated runtime as described
+by the harness. The required matrix remains `PROBE_PARALLEL=0|1` ×
+`--stream`/no flag with all batching, history, model, cache and join assertions.
+
+The earlier plugin-incomplete sequential JSON run passed protocol predicates;
+SSE failed cache continuity and exact-model identity. Neither is qualified
+acceptance under the plugin requirement. The matrix stopped before parallel
+arms; no new live success follows from the credentialless plugin-host checks.
+See [durable evidence](docs/maintenance/evidence/1283-current-main-20261012/REVIEW.md).
+
 ## E41: Passthrough multi-turn: one call, one answer
 
 **What it proves:** across dependent and parallel forwarded tool calls, the active
@@ -4787,9 +4912,18 @@ changing request bodies. It also proves that durable primary lineage survives
 real V2 tools, a Meridian restart, undo, fork, and parallel subagents.
 
 Validate all supported beta hosts, `0.0.0-beta-18314`, `0.0.0-beta-18866`,
-and `0.0.0-beta-19271`, plus the released 2.0.16 host below.
+and `0.0.0-beta-19271`, plus the released 2.0.16 and 2.0.21 hosts below.
 The beta CLI can update itself, so the automated gate verifies its exact version
 before and after each run and disables automatic updates. Use isolated installs:
+
+Live beta runs now use `e2e-qualified-opencode-proxy-host.mjs`. Set
+`E2E_ALLOW_LIVE_MODEL=1`, `E2E_LIVE_PROFILE_FILE` to a private access-only
+OAuth profile array, `E2E_PLUGIN_PATH` to the installed server scrub,
+`E2E_NATIVE_BIN` to the qualified native CLI, and `E2E_PROXY_REPORT_DIR` to an
+owned artifact directory. Each actual proxy subprocess records its SDK child
+exit/close and pipe-close witnesses; preserve both distinct process reports
+across the restart before deleting the grant. Live effort discovery targets
+Haiku 5.5; the offline fixture retains its controlled Haiku 4.5 catalog.
 
 ```bash
 npm install --prefix /tmp/opencode-18314 @opencode-ai/cli@0.0.0-beta-18314
@@ -4801,7 +4935,7 @@ E2E_OPENCODE_BIN=/tmp/opencode-18866/node_modules/.bin/opencode2 bun scripts/e2e
 E2E_OPENCODE_BIN=/tmp/opencode-19271/node_modules/.bin/opencode2 bun scripts/e2e-opencode-v2-package.mjs --live --extended
 ```
 
-The released 2.0.16 host uses the `@opencode/cli` binary and a different plugin
+The released 2.0.16 and 2.0.21 hosts use the `@opencode/cli` binary and a different plugin
 domain API. Its committed headless gate launches an isolated OpenCode client,
 installs the bundled plugin through `meridian setup --v2`, and forwards its real
 Anthropic traffic to a real Meridian SDK/model through a local relay. It checks
@@ -4817,6 +4951,7 @@ npm install --prefix /tmp/opencode-2016 @opencode/cli@2.0.16
 npm run build
 E2E_OPENCODE_BIN=/tmp/opencode-2016/node_modules/.bin/opencode \
   bun scripts/e2e-opencode-v2-stable-live.mjs
+# Repeat with @opencode/cli@2.0.21 and E2E_OPENCODE_VERSION=2.0.21.
 # With E2E_MERIDIAN_ROOT pointing at an independently installed npm pack
 # consumer, repeat the same command before merging. Repeat after publication
 # with a fresh registry install before closing a release gate.
@@ -4853,12 +4988,14 @@ Discovery attempts the client abandons when a one-shot process exits are
 recorded and allowed; at least one must complete, and no attempt may fail for
 any other reason.
 
-In `--live --extended` the gate additionally selects
-`anthropic/claude-haiku-4-5#xhigh` and requires the run to succeed with
-`effort: "xhigh"` reaching the proxy. That variant is
-`provider.no-route — Variant unavailable` without discovery, so a pass can only
-come from the applied catalog. It needs the warm server that `--extended`
-starts: a one-shot client process outruns the catalog reload (#1008).
+In `--live --extended` the gate selects `anthropic/claude-haiku-5-5#xhigh`
+and requires the primary request to carry `xhigh` in either `effort` or
+`output_config.effort`, matching Meridian's accepted wire forms, and complete
+upstream. The live catalog advertises Haiku5.5 with a 1M window. Detached title
+requests remain in the trace but are not required to finish before the primary
+answer. The controlled offline Haiku4.5 fixture above retains the strict
+Meridian-only discovery and cache-invalidation assertions; live Haiku5.5 alone
+does not prove that the selected variant is absent from the client's own catalog.
 
 `--no-discovery` is the negative control. The fixture answers the catalog request
 with 404 and the whole gate must still pass, proving discovery fails closed
@@ -5058,6 +5195,36 @@ condition we cannot cause, not the behavior under test.
 **Verified:** 2026-09-08. Both modes pass. Against the contributor's suffix fix
 alone the gate fails with the refused attempt recorded 500 and no failover,
 which is what identified the missing status allowance.
+
+### Delayed refusal after an SSE heartbeat
+
+Run the credentialless packaged-path gate against an independently installed tarball:
+
+```bash
+E2E_SSE_WORKING_FIXTURE=1 \
+  E2E_MERIDIAN_PKG=/path/to/node_modules/@rynfar/meridian \
+  E2E_SSE_MODEL=claude-opus-5-5 \
+  node scripts/e2e-sse-quota-failover-heartbeat.mjs
+```
+
+The real SDK/CLI reaches a local account-refusal fixture delayed past the
+15-second heartbeat, then a local answering fixture. The gate requires headers
+and a heartbeat before the first refusal, exactly one refused telemetry attempt
+and one answering profile, no leaked suppressed error, and non-stream parity.
+This exercises transport mechanics, not live subscription or actual-client behavior.
+
+For the bounded live answering leg, omit E2E_SSE_WORKING_FIXTURE and provide
+E2E_ALLOW_LIVE_MODEL=1, a mode-0600 E2E_LIVE_PROFILE_FILE with one access-only
+OAuth profile, E2E_CLIENT_PLUGIN_PATH pointing to the installed V1 plugin, and
+E2E_PLUGIN_PATH pointing to the installed server scrub (version assertions use
+E2E_CLIENT_VERSION / E2E_SCRUB_VERSION). Both plugins preflight before the grant
+is read; actual client hooks generate request headers and active server scrub
+is checked before and after requests. Original children/pipes must join before
+the final report succeeds. Use an isolated container for credential and SDK state.
+The refused leg always remains a local fixture. This is a protocol host, not the
+OpenCode executable or naturally exhausted-account evidence. Real affected-client
+acceptance, actual model identity and four-mode E41 remain separate gates. Do not
+use fixtures as substitutes or enable paid usage to manufacture a refusal.
 
 ## E45: Codex auto-defer
 
@@ -6278,7 +6445,7 @@ Run `bun scripts/e2e-duplicate-checkpoint.mjs` in both modes. The real model mus
 Run `bun scripts/e2e-settlement-proof.mjs` in both modes to verify revised history following a completed real tool checkpoint. Require the supplied decision in the SDK input and answer, unchanged source history, and a resumed ordinary follow-up. Keeping old completed checkpoints must not force future turns to replay.
 
 
-## Claude Code and Oh My Pi trailing system reminders
+## Claude Code, Oh My Pi and OpenCode trailing system reminders
 
 Run `bun scripts/e2e-claude-code-system-delta.mjs` in both modes (`--stream`); repeat with `E2E_MODEL=claude-sonnet-4-6` and the `--image` flag to validate a native image tool result followed by a reminder. Require the actual tool result, reminder identifier and optional image color in the answer, checkpoint resume, no reminder promoted into the SDK system prompt, and unchanged source history through supported `getSessionMessages`.
 
@@ -6287,6 +6454,8 @@ Repeat the direct gate with `--revise-history` and separately with `--insert-his
 Run the direct gate with `--blank-reminder` in both response modes, with and without `--image`. Whitespace-only text does not qualify for the narrow reminder exception: require fresh replay, the correct tool value/context and optional image color, and unchanged source history.
 
 Repeat every case above with `--agent pi`. Oh My Pi upgrades developer-origin notes (advisor, async results, todo nudges) to a mid-conversation `system` turn after tool results, producing the same tail. The gate sends `x-meridian-agent: pi` and additionally requires telemetry to record `adapter=pi`, so a pass cannot come from Claude Code detection.
+
+Repeat every case above with `--agent opencode`. This protocol gate requires `E2E_CLIENT_PLUGIN_PATH` pointing to an installed `dist/meridian-v2/index.js` and `E2E_PLUGIN_PATH` pointing to the installed OpenCode server scrub. It executes the real V2 HTTP hook in an owned host fixture and verifies server scrub loading before inference, then hook invocation/error counts afterward. This does not replace the actual OpenCode 2.0.21 client before/after gate or E41/E42 acceptance. OpenCode 2 sends instruction updates (a changed `AGENTS.md`, a date rollover, an MCP or skill catalog change) as a native mid-conversation `system` turn after tool results on models that accept system updates, producing the same tail. The gate sends `x-meridian-agent: opencode`, an OpenCode user agent and an `x-opencode-session` key, and requires telemetry to record `adapter=opencode`.
 
 Run `bun scripts/e2e-claude-code-client.mjs` for the full installed Claude Code 2.1.259 → Meridian → real SDK loop. `E2E_CLAUDE_CLIENT` can name that exact client binary. The fixture isolates the outer client's settings and enables its `CLAUDE_CODE_FORCE_MID_CONVERSATION_SYSTEM` flag; `--bare` suppresses the shape and is unsuitable. The real CLI reads a disposable fixture, sends its native `<total_tokens>` system reminder, then resumes for an ordinary follow-up. Require both proxy continuations to resume, delivery of both reminders to SDK user history, correct answers, and unchanged source history.
 
@@ -7709,7 +7878,7 @@ See [bounded proof](docs/maintenance/evidence/1257-profile-credential-isolation.
 ## Home Manager service environment rendering
 
 For the opt-in `unsetEnvironment` configuration, run native Nix with the existing
-lock: `nix build --no-link --no-update-lock-file .#checks.x86_64-linux.home-module`.
+lock: `nix build --no-link --no-update-lock-file .#checks.x86_64-linux.home`.
 This uses the real locked Home Manager renderer and asserts default omission,
 repeated removal directives, explicit config/login directories, disabled-service
 omission and invalid-name rejection. The check is Linux-only: verify the Darwin
@@ -7720,8 +7889,72 @@ retain the native failed-before missing-service assertion and the corrected buil
 No model/credential flow is implicated by this generated-unit-only change.
 
 
-### Credentialless telemetry contention (#1328)
+## Haiku 5.5 release gate
+
+The [bounded preparation/evidence](docs/maintenance/evidence/haiku55-support.md)
+separates native wire compatibility from actual model/client acceptance.
+
+`bun scripts/e2e-haiku55-native-compat.mjs` runs actual CLI/SDK under a localhost-only
+macOS sandbox, using production option/pin helpers and scripted Anthropic replies.
+Set `E2E_MERIDIAN_ROOT` for the exact before tree and `E2E_NATIVE_BIN` for the same
+qualified CLI. It proves default/legacy pins, native adaptive conversion, pre-spawn
+refusal of unsupported explicit controls, public materialization and physical joins.
+**Not a real model, production HTTP or coding-client acceptance gate.**
+
+The actual gate requires native Node (not Bun) and an authorized private, supported
+access-only profile. Never include the profile in artifacts:
+
+```sh
+E2E_ALLOW_LIVE_MODEL=1 E2E_LIVE_PROFILE_FILE=/private/owned-profile.json \
+E2E_PI_PACKAGE=/absolute/actual/pi-package E2E_NATIVE_BIN=/absolute/qualified/claude \
+E2E_MERIDIAN_ROOT=/absolute/built-or-fresh-installed-package \
+node scripts/e2e-haiku55-pi-live.mjs
+```
+
+Require actual Pi read execution and model receipt read-back, HTTP catalog/pin data,
+public SDK history naming Haiku 5.5 (not a client-model echo), and original production
+SDK gate plus both pipe closures. Preserve fixtures/grants when custody is unknown.
+The corrected Node harness now qualifies the recorded Darwin ARM64 / Node 24.20.0 /
+Pi 1.1.0 / CLI 2.1.296 / SDK 0.2.141 tuple through both source-built and independently
+npm-pack-installed Meridian. Its documented Pi/profile headers, one real owned
+read, exact receipt, two HTTP 200s, per-session native Haiku 5.5 history and all
+original process/both-pipe joins are in [the actual-flow record](docs/maintenance/evidence/haiku55-live-20261011/README.md).
+The earlier Bun refusal/vacuous cleanup and missing-header Node run remain negative;
+new success does not clear their historical custody. Do not retry a blocked
+account, change accounts, refresh owner credentials or enable paid usage without
+authorization. Repeat the successful flow from the published registry artifact
+before claiming a completed release. Nix Linux installed-native credentialless
+qualification is separate. The macOS Nix build now runs the same installed HTTP,
+SDK/native, thinking/pin and cleanup assertions through
+`scripts/e2e-haiku55-nix-darwin.sh`, on a disposable credentialless runner with isolated config and a dummy
+loopback API profile. macOS sandbox-exec prevents production setuid `/bin/ps`
+identity probes, so this platform does not claim an OS-wide network fence. CI uploads `haiku55-nix-darwin-runtime`; require its actual passing
+report before claiming the macOS runtime gap is closed. This scripted API gate
+proves installed compatibility, not real provider inference. To reproduce after
+`nix build .#meridian`, set `E2E_NIX_OUT` to the resolved `result` path and
+`E2E_OUTPUT_DIR` to a fresh absolute directory, then run the shell harness.
+
+## Credentialless telemetry contention (#1328)
 
 `scripts/e2e-telemetry-busy.mjs` runs the actual CLI/SDK denial path with isolated state in a Linux namespace containing only loopback. Supply a valid task-owned machine-id, locked dependencies, Node 22.22.3 and Bun 1.3.11. It refuses non-loopback networking. Run `bun scripts/e2e-telemetry-busy.mjs "$PWD" /evidence`; retain its JSON and child logs. Both ordinary requests must yield 401 and produce two rows. During six further 401 requests a real second process holds SQLite writes for 400 ms with 100 ms gaps. Require six new rows after holder release and joined server shutdown. The unchanged main baseline loses rows; the correction preserves six. Source and escrow hashes, failed controls and scope are in [the durable review](docs/maintenance/evidence/1328-telemetry-busy.md).
 
 This verifies transient contention for error-request storage without outbound model access. It does not assert successful-model or actual OpenCode-client behavior, physical-host latency, or lossless writes during held/starving locks. The 1,000 ms synchronous wait applies to each write, including diagnostic logs, and can add across writes while blocking the event loop.
+
+## Historical image read-back amplification (#1310)
+
+`node scripts/e2e-pi-historical-image-dedup.mjs` runs actual Pi sessions against
+an installed package. It requires `E2E_ALLOW_LIVE_MODEL=1`, a private access-only
+`E2E_LIVE_PROFILE_FILE`, absolute `E2E_PI_PACKAGE`, `E2E_NATIVE_BIN`,
+`E2E_MERIDIAN_ROOT`, and the independently installed Pi scrub `E2E_PLUGIN_PATH`
+(with optional `E2E_SCRUB_VERSION`). Missing prerequisites fail before inference.
+Use the same gate with `E2E_EXPECT=baseline` to require duplication on the second
+fresh replay, and the default candidate mode for three cycles plus current media.
+
+The actual Pi read tool returns an owned same-byte image; client history from that
+real read is loaded through Pi's public SessionManager into a fresh session.
+Supported SDK history must contain one historical image per replay, unchanged
+current-image media, and exact Opus 5.5 model metadata. This qualifies read-back
+feedback without exploring private SDK attachment files. The model's prose is not
+an assertion. Retain before/after reports and join original processes/pipes before
+deleting temporary grants. This gate supplements E41 and E65; it does not claim
+the reporter's unspecified Pi/model/OS environment or a release is verified.

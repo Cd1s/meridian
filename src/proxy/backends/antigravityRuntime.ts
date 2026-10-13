@@ -173,7 +173,7 @@ export class AntigravityRun {
               clearTimeout(this.timer)
               this.idle = true
               this.queue.push({ kind: "end" })
-              this.pendingTimer = setTimeout(() => this.abort(new Error("Idle conversation expired"), "retired"), this.runtime.pendingToolTimeoutMs)
+              this.pendingTimer = setTimeout(() => this.abort(new Error("Idle conversation expired"), "retired"), this.runtime.idleConversationMs)
               this.pendingTimer.unref()
             }
           }
@@ -396,6 +396,7 @@ export class AntigravityRuntime {
   readonly executable: string
   readonly turnTimeoutMs: number
   readonly pendingToolTimeoutMs: number
+  readonly idleConversationMs: number
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
   // Warm live conversations; expired or restarted processes replay client history.
@@ -484,6 +485,10 @@ export class AntigravityRuntime {
     this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000
     this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
     for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
+    this.idleConversationMs = options.idleConversationMs ?? this.pendingToolTimeoutMs
+    // The new option has its own range; leaving it unset retains every
+    // previously accepted tool deadline rather than adding a startup refusal.
+    if (options.idleConversationMs !== undefined && (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000)) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
     this.state = options.statePath ? new AgState(options.statePath) : undefined
     try {
     this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined

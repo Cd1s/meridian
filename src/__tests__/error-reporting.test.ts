@@ -282,7 +282,9 @@ describe("in a real process", () => {
     expect(crashed.code).toBe(baseline.code)
     expect(crashed.stderr).toContain("thrown")
 
-    await waitFor(() => received.length === 1 && spooled(spool).length === 0)
+    // The detached sender renames pending JSON before receiving the response.
+    // Wait for its claimed file to disappear too, matching the final assertion.
+    await waitFor(() => received.length === 1 && (!existsSync(spool) || readdirSync(spool).length === 0))
     expect(received).toHaveLength(1)
     const event = eventOf(received[0]!.body)
     expect(event.level).toBe("fatal")

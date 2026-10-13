@@ -1,4 +1,785 @@
-## Current oldest-first continuation — 2026-10-11
+## Current Nix runtime integration — #1342 → #1357
+
+Authored current-main incorporation26e2dd4a5/dd4bf666 preserves Connor Grady's
+commits/dates, current test isolation, npm native floor and Home Manager quoting.
+Native Linux ARM64 build, home check, dependency/package reproducibility and
+10 installed SDK/native HTTP controls pass. Package160→51MiB; closure763→578MiB;
+all application bundles unchanged except the Nix-pinned Node shebang. Original
+full local99164 exits0 (clean npm ci,5752 tests,35 skips,0 failures,typecheck/build).
+[Exact evidence](evidence/1342-nix-runtime-20261012/README.md).
+Final-head CI, macOS runtime artifact review and credited exact-head merge remain.
+Source#1342 stays open. No release.
+
+Sonnet #1213 has current-main preparation preserved at branch
+codex/sonnet-context-1213-20261012 (dab7630a3):5767 tests/typecheck/build and actual
+Linux/OpenCode offline source/package admission pass (200k7/14 vs1M14/14).
+Supported default credential store returned no access token, so no grant was
+staged or live call started. Native model/history/resume acceptance stays open.
+
+#1261 current b999654d retains byte-identical sweep/retention/query blobs from
+rejected7475d08c; ownership, concurrent deletion and join findings still apply.
+#1266 remains draft atd9594af with its original exact macOS/nono/client evidence
+hold. Neither item is accepted by this checkpoint.
+
+## Current #1356 acceptance — full local and actual source/package pass
+
+Delivery [#1356](https://github.com/rynfar/meridian/pull/1356) incorporates
+source #1341 (8e7b40cbde70481e7838d9bc5a8d8775dfce0a67) through authored
+d4590e9b3, preserving Cd1s's identity/date, with separate compatibility
+correction3140ccbd. Full local original59007 exited0 on frozen0b080b02:
+5752 pass / 35 skip / 0 fail in23 isolated groups, typecheck/build pass.
+
+Actual Pi1.1.0 + matching Antigravity retry plugin + official agy1.2.7 +
+Gemini3.8FlashLow/DarwinARM64 reproduces baseline failure and passes corrected
+source and independently installed package, including the bundled client
+plugin. The measured pause is between tool and idle deadlines; same native
+conversation continues, then expires beyond the configured idle window.
+All original processes/pipes join, paid credits remain disabled and the
+native executable hash is unchanged. No model process remains active.
+
+Original15301 baseline exit1,50314 source exit0,70924 installed exit0.
+Initial53395/30143 failures are retained: the initial harness inserted blocking
+native readiness checks into an unmeasured pause. The corrected harness measures
+the complete interval without those calls. No product change or unexplained
+rerun. [Durable evidence](evidence/1341-idle-window-20261012.md) and runnable
+`scripts/e2e-antigravity-idle-conversation.mjs` are committed. Final-head CI and
+exact-head merge with verified Cd1s coauthor credit remain. Recheck source head
+before closing #1341; #1073/#1325 remain open. No release authorized.
+
+Post-SDK queue refresh:32 PRs/21 issues across six managed repositories, including
+source/delivery pairs and deferred releases. Ranked report now explicitly includes
+#1212/#1213/#1315 native context-window work and its original-platform evidence hold.
+
+## Current integration checkpoint — SDK close landed; idle window in review
+
+#1334 merged as 0d12f6a11f52f78bdb8760a5b16f29acea4bb8a7 from final
+cb6950476c55c7227058c9531a05bd2b31483783. Original69316 exited0: 5746 pass,
+35 skip, zero failures across23 isolated groups; typecheck/build pass. Required
+final-head test CI38313634366 and all relevant checks pass. Merged tree
+927be89a62ef57dbf19b48c3d8847210de819167 matches the reviewed prospective tree
+exactly, including separately verified npm-lock repair #1355 (fb5854be5).
+#1326 remains open: its original Linux/OpenCode/Opus hang is not established fixed.
+No release. Earlier pending SDK/lock statements below are historical.
+
+#1341 source8e7b40cb is incorporated as authored d4590e9b3 with separate
+compatibility correction3140ccbd. 78 focused tests/typecheck pass; old timer
+negative control fails two tests. Official isolated agy1.2.7 read-only settings
+pass with paid credits disabled and stable binary identity. Live client gate
+and full local/CI remain. See [review evidence](evidence/1341-idle-window-20261012.md).
+
+## Current integration checkpoint — OpenCode landed
+
+#1354 merged fa90c9aaf1e99d5fbd69f6725ce8be0dcc3cfff3 after final-head CI.
+Exact merged tree equals4edfb46cb; Aleksey coauthor verified. Source#1301
+unchanged05e2381f was rechecked and closed. No new release.
+
+#1334 original full local91165 exited1 with three error-reporting tests reading
+transient conflict markers during the ancestry merge. This was an orchestration
+error; retain its failed result. The exact stderr identifies sdkProcessGate.ts
+with `Unexpected <<`. No actual-client proof was invalidated: both live arms
+finished before the merge and used the unchanged built package. Current main
+fa90c9aaf is now integrated; only this chronological handoff conflicted. Freeze
+the completed checkout throughout the replacement full local run. Both native
+platforms and actual source/installed Pi SDK proofs remain available below.
+
+#1355 npm-lock fix remains ready with clean install/typecheck/build; CI watched.
+Post-merge paginated rediscovery finds six managed repositories,33 open PRs and
+21 issues including source/delivery/release pairs. Ranked report updated.
+
+## SDK #1334 current acceptance continuation — 2026-10-12
+
+Fresh branch codex/sdk-close-acceptance-1334-20261012 from main506a811d3
+preserves original source commits and prepared TERM cap separately. Both native
+before/after platforms and actual source/installed Pi/SDK/Opus5.5 gates pass;
+all original handles joined and grants removed. See
+[evidence/sdk1334-current-acceptance-20261012.md](evidence/sdk1334-current-acceptance-20261012.md).
+Remote original10f4132a is an ancestor of tree-identical merge8e778b99, allowing
+same-PR fast-forward delivery. Full local original91165 is running. Do not
+restart it on timeout. No actual #1326 Linux-x64/OpenCode/Opus hang resolution.
+Older preparation worktree95cc52ea3 remains preserved and unchanged.
+
+OpenCode #1354 head4edfb46cb passed actual required live matrix and full local
+5743pass/35skip/0fail,typecheck/build; ready, awaiting CI. Separate #1355
+dece601a fixes npm-lock drift below the existing Claude Code floor; clean npm
+install/typecheck/build pass, CI pending. Both linked and watched. No new release.
+
+## Current #1354 checkpoint — all live gates complete
+
+All three pinned beta extended live gates pass against independently installed
+b90324930: originals58550 (18314),15803 (18866),44041 (19271), all exit0.
+Each has two distinct proxy worker PIDs, PASS/joined reports, and removed grants.
+Actual Haiku5.5 and installed client/server plugins were verified. Stable2.0.16
+and2.0.21 live E42, six offline source/installed beta arms, actual instruction
+before/after and all four Opus5.5 E41 modes also pass. Durable evidence is under
+1301-opencode-instruction-update-20261012, with every causally diagnosed failure.
+
+Maintainer gate corrections: accept both supported effort wire fields; require
+completion of primary xhigh requests, retaining asynchronous title traces; wait
+for the warm host's actual /api/model catalog before selecting a newly discovered
+model. The distinct cold standalone gate remains unchanged. Beta19271's initial
+catalog race made zero model requests; credentialless readiness control and the
+full corrected actual run both confirm the cause. No unexplained rerun claimed.
+
+Full local npm test/typecheck/build original89187 was started before this
+checkpoint. Its terminal result must be recorded in #1354 before integration;
+poll the original handle until terminal. Final diff review, final-head CI and
+exact-head integration with Aleksey credit remain mandatory.
+#1301 unchanged05e2381f remains open; #1354 remains draft. No release authorized.
+
+## Latest #1354 checkpoint — broad gates passed, extended beta harness needs correction
+
+Clean0aab7d26 original28183 exited0:5743pass/35skip/0fail,typecheck/build.
+Original32660 all four qualified E41 modes pass (Opus5.5, joined grants removed).
+Original83785 all six offline E42 beta source/installed arms pass. Installed
+stable2.0.16 live E42 original57684 passes full flow with qualified external
+proxy/scrub, actual Haiku5.5, joined actors/grant removed. Durable receipts now
+under evidence/1301-opencode-instruction-update-20261012.
+
+Extended beta18314 original34036 failed missing external restart handle.
+Original61202 then failed stale Haiku4.5#xhigh catalog selection; its in-process
+proxy restart is also insufficient for the actual process-restart gate. Do not
+count either as acceptance. Both terminal/joined/grants removed. Next: update
+real subprocess e2e-opencode-proxy-host.mjs to require installed server scrub
+and explicit private access-only profiles, capture SDK original process joins,
+and keep the beta harness's genuine child-process restart. Use current live
+Haiku5.5 for xhigh, retaining controlled offline catalog. Then run each beta's
+extended live flow. Do not rerun completed local28183 absent material changes.
+OpenCode2.0.21 still rejected by setup; its actual manual-fixture instruction
+proof is retained without claiming qualified setup support. No merge/release.
+
+#1334 refreshed unchanged10f4132a, linked to thread; held draft. Quota blocker
+is now stale but actual SDK/client acceptance remains. Existing authored branch
+/Users/rynfar/repos/meridian-sdk-close-completion-1334-20261011 is a lead; inspect
+worktree state before using. Keep #1326 original hang issue open independently.
+
+## Latest OpenCode #1354 evidence
+
+Actual installed OpenCode2.0.21/Haiku5.5 now reproduces the trailing-system
+checkpoint failure on baseline and passes candidate (isResume false -> true).
+Candidate original36496exit0; actors/pipes joined and access grant removed.
+See evidence/1301-opencode-instruction-update-20261012/README.md for exact
+package identities, retained harness failures and setup qualification gap.
+No new release; #1354 remains draft pending E41/E42 and full final gates.
+
+## Current authoritative checkpoint — Nix merged, OpenCode instruction updates active
+
+#1353 merged `506a811d319184381164dab5995703cbcd5b9906`; exact tree versus
+`5498892b30c55f437fc690599328aae9583da22f` and Connor Grady coauthor verified.
+Original final local session56950 exited0:5730pass/35skip/0fail,typecheck/build.
+Final-head CI test succeeded; cancelled duplicate Nix run was superseded by
+same-head success. Source1352 unchangedde3c6fe5 rechecked and closed.
+Real systemd seven-case and actual installed Meridian profile proof retained.
+No new release. This supersedes historical Nix-pending statements below.
+
+Active draft #1354 in /Users/rynfar/repos/meridian-opencode-system-delta-1301-20261012
+incorporates #1301 authored05e2381f as e836a81a9 plus separate mandatoryV2/server
+scrub harness correction1da7bdf3. Nix main merged cleanly. Targeted202pass;
+only restoring the old opt-in gives132pass/5expectedfail; typecheck/build pass.
+No live calls yet. Actual @opencode/cli2.0.21 installation being prepared;
+legacy opencode-ai package/release lookup404 was a package-name lookup error,
+not evidence the target version is unavailable. Required actual-client,
+installed-package,E41/E42 and final combined local/CI gates remain.
+
+#1201 review branch /Users/rynfar/repos/meridian-checkpoint-pairs-1201-20261012
+contains authored0bd4ff218 and local evidencef6e9f5d4;75focusedtests/typecheck
+pass. Original Meowbert runtime/exact model remains unknown; existing evidence
+hold unchanged. No live call/source closure or extra PR for that held item.
+
+## Current authoritative state — 2026-10-12
+
+Nix source #1352 is incorporated in draft #1353. Current SSE main `736e9fd61`
+is now integrated; only this chronological handoff conflicted. Product files
+merged cleanly. Before this integration, the original local gate completed:
+5,682 pass, 35 skip, zero failures, typecheck and build. A fresh combined gate
+is next. Do not restart completed session 24351.
+
+Live Nix qualification is complete for the changed configuration behavior:
+seven actual systemd unit-file cases pass, and installed Meridian starts with the
+configured profile. The unchanged module corrupts JSON and loses that profile.
+All proof and the retained harness limitations are in the #1353 evidence record.
+This is credentialless configuration testing, not model inference.
+
+SSE #1350 and image #1351 are merged and their originals are closed. No new
+release has been authorized. Historical “active” and “pending” entries below
+record earlier stages and are superseded by this section and final PR bodies.
+
+The owner's Docker cleanup is complete: 29 Meridian image tags and 33 stopped
+test containers removed; targeted build cache reduced from 30.65 GB to 14.58 GB.
+All 25 running containers and volumes were preserved. Old Docker image/container
+references are evidence identities, not available runtime fixtures. Rebuild only
+what is needed, and clean up completed test artifacts promptly.
+
+## Latest local gate and owner storage request — 2026-10-12
+
+Nix draft #1353 original local session24351 finished exit0:5682pass/35skip/
+zero failures, typecheck/build, clean583797d8 source. Do not restart. This is
+still based on image maina8a214bfc; next integrate SSE main736e9fd61, refresh
+combined gates/CI and finish authored integration. Actual Nix/systemd seven-case
+proof and real installed Meridian startup comparison are preserved in1352evidence.
+Startup candidate session83370 passed; baseline22315 reproduced JSONloss/empty
+profiles but exited1 on an over-specific default-profile assertion (retained).
+Nixfmt session36354 passed. Owned isolated VMmeridian-nix-1352 remains available;
+no services/model actors or credentials remain active there.
+
+Owner requested Docker storage cleanup. All29Meridian image tags and33stopped
+Meridian test containers removed; targeted Meridian build-cache cleanup follows.
+No running container was removed. Old Docker images/container IDs in historical
+receipts no longer exist; rebuild from preserved source/package versions if needed.
+Reports and runnable harnesses remain escrowed. Thread model selection was changed
+through T3 configuration to codex/gpt-6.1-sol at the owner's request, verified by
+configuration readback. Backlog goal remains active.
+
+## Current checkpoint: SSE merged; Nix environment fix active — 2026-10-12
+
+SSE #1350 merged736e9fd6162ebd8cadbfbcd687dfec2c7acdc129. Verified exact
+merged tree versus76038fb7 and Aleksey Proshutinskiy co-author credit. Source
+#1214 rechecked unchanged1c8f17099 and closed without comment. Final gates5730
+pass/35skip/zero failures,typecheck/build; exact-head CI all passes. Actual
+installed OpenCode1.18.34/SDK0.2.141/native2.1.296/Opus5.5 realread/result/
+continuation passes in session62951 exit0. Bothplugins verified; alloriginal
+actors/pipes join and grant removed. Final receipts escrowed here; full final
+acceptance and packageintegrity in #1350 body. No new release.
+
+Nix source #1352 → draft #1353, worktree meridian-nix-systemd-env-1352-20261012.
+Both Connor Grady commits cherry-picked with Author/Date preserved. Actual
+NixOS25.11 ARM64/systemd258.7 user-unit before/after passes all7candidatecases;
+main reproduces JSON/pathcorruption. Committed credentialless harness and receipts
+under1352-nix-systemd-env-20261012. Full local gates currently original session
+24351 at /tmp/meridian-1352-local-gates.log; do not restart on timeout. This gate
+started on image maina8a214bfc; integrate SSE main only AFTER it finishes, not
+while tests mutate/read files. Actual Meridian service startup qualification is
+being prepared in owned isolated OrbStack VMmeridian-nix-1352; no credentials
+or model call. Node22 installation original session51300. Source remains open.
+
+## Current authoritative checkpoint — 2026-10-12
+
+Image #1351 merged as a8a214bfc53784c3e87456447ae9a327be6a70b2, exact tree
+match against validated 5b58b1b9. #1310 closed. Final local gates original session
+3276 exit 0:5682 pass/35 skip/zero failures, typecheck/build, clean source.
+Final installed actual Pi session 26537 exit 0: historical image counts1,1,1,
+current control1old+1new, actualOpus5.5, scrub0.2.2 zeroerrors, allactors/pipes
+joined and grant removed. Full final-head CI passes. Final tarball integrity,
+review findings and acceptance are durable in #1351 body; prior records below
+are chronological history, not current pending gates. No new release.
+
+SSE #1350: combined installed local-refusal/live-working probe23810 exit0,
+headers25.1ms, actualOpus5.5 confirmed, bothplugins zeroerrors, joined and grant
+removed. Four-mode E41 session78225 exit0 allPASS on cbb340eba. Evidence is
+escrowed under1214-sse-failover-20261012. Newly merged image main is now being
+incorporated. Actual OpenCode executable qualification, combined final gates
+and final-head CI remain; source #1214 stays open. Do not rerun finished sessions.
+
+## SSE combined local gate complete — 2026-10-12
+
+Original session 8226 terminated exit 0: 5722 pass /35 skip /zero failures,
+typecheck and build, clean a41e1998 source including streaming main 8edccd790.
+Do not restart. Installed transport proof for a9fece93 remains valid for that
+package; final combined installed/live and four-mode E41 gates remain open.
+
+## SSE installed transport comparison complete — 2026-10-12
+
+Same revised harness `932c8f92` on unchanged installed baseline and candidate:
+baseline headers 15,083 ms FAIL versus 1000 ms bound; candidate 104 ms PASS.
+Nonstream parity, first heartbeat before local refusal, one account fallback,
+suppressed error and joined processes/pipes all pass on candidate. Network disabled;
+no grants or real model requests. Original sessions 94533 /7573 are terminal exit
+1/0. Preserve earlier absolute-100ms failure; see [durable review](evidence/1214-sse-failover-20261012/REVIEW.md).
+
+#1350 merged streaming main into `0730fab1`; final combined local gate remains
+active session 8226, log `/tmp/meridian-1350-combined-gates.log`. Both installed
+transport and live client/model evidence must qualify the final tree.
+#1351 merged streaming main as `2127507c`; isolated dependency installation makes
+the same four build-observer controls pass. Full combined gate session 32853 is
+active at `/tmp/meridian-1351-combined-gates.log`. Do not restart active handles.
+
+## SSE current-main integration — 2026-10-12
+
+Streaming main `8edccd790` is now incorporated into #1350. Product files merged
+cleanly; this handoff retains both evidence histories. Original-source installed
+fixture timing controls are active in sessions 94533 (unchanged package) and
+7573 (candidate a9fece93), network disabled and the same committed harness 932c8f92.
+Both use the one-second header deadline, well before the 15-second heartbeat;
+retain the earlier 100 ms failure. Do not equate their original-source results
+with final combined-tree acceptance. Fresh local/live gates follow integration.
+
+## SSE installed fixture terminal failure — 2026-10-12
+
+Original session 25498 is terminal exit 1, not still running. Independently
+installed `a9fece93` with Docker network disabled passes nonstreaming fallback,
+then fails absolute SSE header deadline: 335.1 ms observed versus 100 ms asserted.
+All original processes/pipes joined. Durable report/console and analysis:
+[evidence](evidence/1214-sse-failover-20261012/REVIEW.md). No grant or model call.
+Review the timing assertion against baseline before rerunning; do not claim live
+or packaged SSE success. Streaming merge `8edccd790` remains verified and complete.
+
+## Streaming merged; SSE installed fixture active — 2026-10-12
+
+Streaming #1344 merged as `8edccd790f56fdee72a20b71337eef8ab6dec1ed`.
+Verified exact tree equality against `5f26a29b` and Nowaker co-author credit.
+Source #1294 was rechecked unchanged at `7f0a0235` and closed without a comment.
+Final-head test, Windows, Docker, desktop, Linux/macOS builds and replacement
+Nix CI pass. Earlier cancelled Nix duplicate is superseded. No release published.
+Post-merge discovery/pagination still covers six managed repos: 36 open PRs and
+22 issues, including new draft deliveries #1350/#1351 and source/delivery pairs.
+
+SSE #1350 clean `a9fece93` passed full local gates. Independent installed image
+`meridian1350:installed-20261012` is running its credentialless native fixture
+in original exec session 25498, container `meridian-1350-fixture-20261012`, with
+Docker network disabled. Only loopback refusal/answer fixtures are reachable.
+Log `/tmp/meridian-1350-package-20261012/fixture-console.txt`. Node and original
+claude.exe were confirmed live; no timeout/restart inference. Report comes from
+owned root printed on completion. Copy report before removing anything. No grant
+was staged. Pack metadata is in the same directory. Integrate new main into #1350
+and revalidate final combined tree after this exact-source result is recorded.
+
+Image #1310 → draft #1351 has owned full local gate session 73954 active at
+`/tmp/meridian-1310-full-gates.log`; source `6d522aaa` remains based on old main
+`3f5f4f81`, so integrate streaming before final acceptance. 19 pure and 44 HTTP
+controls pass; actual Pi/SDK and applicable live gates remain. No issue closure.
+
+## SSE full local gate complete — 2026-10-12
+
+#1350 clean `a9fece93` completed original session 54534 with exit 0: 5707 pass,
+35 skip, zero failures, typecheck and certified build. No restart needed. Independent
+package fixture image is building in owned session 33870, log
+`/tmp/meridian-1350-package-20261012/build.log`. Package source remains clean;
+subsequent changes are evidence only. Real affected-client/model/account and E41
+remain required. No live call, merge or release.
+
+## SSE failover preparation — 2026-10-12
+
+Source #1214 at `1c8f17099` incorporated from current main `3f5f4f81` in isolated
+`/Users/rynfar/repos/meridian-sse-failover-1214-20261012`, branch
+`codex/sse-failover-1214-20261012`. Actual authored mappings and review are in
+[evidence](evidence/1214-sse-failover-20261012/REVIEW.md). Clean main reproduces
+heartbeat preventing failover; candidate passes the same HTTP test. Corrected
+unbounded non-SSE inspection; 37 relay controls and typecheck pass. Live harness now requires explicit opt-in, an access-only grant and both installed
+plugin preflights, with original process/pipe join receipts. Three credentialless
+negative preflights pass; installed fixture/live execution is still pending. No model calls.
+
+Full local gates running in owned exec session 54534; log
+`/tmp/meridian-1214-full-gates.log`. Observe the same handle, do not restart on a
+wait timeout. Installed package fixture and qualified actual-client/account E2E,
+four-mode E41 and final CI still required. No merge/source closure/release.
+Streaming #1344 at `5f26a29b` remains watched for final CI with combined-package
+and four-mode live evidence published; do not rerun those without a changed gate.
+## Image actual Pi and E41 pass; malformed-padding correction — 2026-10-12
+
+#1351 has actual independently installed Pi before/after evidence: published
+1.81.0 grows historical SDK image copies 1,2; clean b6624d9f keeps 1,1,1 and retains
+a genuine current-image control. Pi1.1.0 /SDK0.2.141 /CLI2.1.296 /Opus5.5 /Darwin
+ARM64, scrub0.2.2 active; all actors/pipes joined and grants removed. Four E41
+modes also pass on b92cc66f with both OpenCode plugins in Linux Docker; original
+matrix session 27386 is terminal exit 0. No model process or grant remains.
+See [durable review](evidence/1310-historical-images-20261012/REVIEW.md).
+
+Final review found malformed padded base64 could be hidden by deduplication.
+A discriminating negative control now passes after strict padded-canonical checking.
+Valid-image live behavior is unchanged; 20 pure tests/typecheck pass. Final full
+local gate and clean final artifact qualification follow this correction; do not
+merge on the older tree alone. Original Pi metadata assertion failure is retained
+and explained (resolvedModel is Haiku-only, actual Opus is checked through SDK).
+
+## Combined image local gate passed; live harness prepared — 2026-10-12
+
+#1351 original session 32853 is terminal exit 0: 5681 pass /35 skip /zero failures,
+typecheck and build. New actual-Pi image read-back harness and Pi scrub preflight
+are now escrowed. Credentialless actual-client constructor and actual generated
+prompt scrub controls pass; no model call or grant was used. The full-gate build
+was dirty only from this new harness work, so commit and rebuild clean before
+independent package qualification. Actual Pi/SDK and E41/E65 remain open.
+SSE #1350 combined session 8226 also terminated exit 0: 5722 pass /35 skip /zero
+failures, typecheck/build, clean package source a41e1998. Do not restart either.
+
+## Image fix current-main integration and dependency correction — 2026-10-12
+
+#1351 now incorporates streaming main `8edccd790`. Product files merged cleanly;
+this handoff preserves both histories. Original image full-suite session 73954
+terminated exit 1: 5239 pass, 35 skip, one build-observer failure, EISDIR reading
+zod/index.js through the shared SSE-worktree node_modules link. The target was a
+regular file; do not claim it was a corrupt directory. Removed only this owned
+symlink and installed frozen dependencies locally. Revalidate the same build-worker
+control, then full combined-tree checks. Pure/image HTTP controls already pass.
+No actual Pi/SDK or E41/E65 live acceptance is established.
+
+## Historical image amplification preparation — 2026-10-12
+
+#1310 reproduced on current main `3f5f4f81`: fresh replay/read-back cycles emit
+1,2,4 identical images; both HTTP stream modes send duplicate SDK input blocks.
+Isolated `codex/historical-images-1310-20261012` now retains one historical visual
+copy with occurrence references, preserving current media and resume behavior.
+19 pure and 44 HTTP tests pass. Full local gates are running in original session
+73954, `/tmp/meridian-1310-full-gates.log`; actual Pi/SDK, E41/E65 and final CI
+remain. See [review/evidence](evidence/1310-historical-images-20261012/REVIEW.md).
+No live call or issue closure. Keep #1310 open until acceptance is established.
+
+SSE delivery #1350 is separately prepared at `a9fece93`; owned full local gate
+session 54534 remains active, `/tmp/meridian-1214-full-gates.log`. Its plugin-qualified
+probe is implemented but not yet fixture/live verified. Streaming #1344 at
+`5f26a29b` has complete combined-tree local/live evidence and is watched for CI.
+Last direct readiness check still had required jobs running; no merge was performed.
+## Combined streaming package verified — 2026-10-12
+
+#1344 incorporates landed MCP main `3f5f4f81`. Clean package/source `6ef677ce`
+passes all four plugin-qualified E41 modes and actual Linux OpenCode 1.18.34 /
+Opus 5.5 long write, tool result and same-session continuation: 49,037 characters
+over 123 seconds, max gap 511 ms below 15-second deadline. All four requests 200,
+all actors/pipes joined and temporary grants removed. Local suite records 5674
+pass /35 skip /zero failures, typecheck and certified build. Only documentation
+and evidence change afterward. Required final-head CI is still a merge gate.
+
+Earlier SSE refusal remains preserved: supported SDK inspection found ordinary
+end_turn refusal text, not a proven classifier event; no causal explanation or
+transport fault established. New-tree success does not erase it. See the
+[current evidence](evidence/stream-idle-1294-20261012.md) for the applicability
+review, package identity, baseline reproduction and retained failures. No release.
+Source #1294 last refreshed unchanged at `7f0a0235`; recheck before closure.
+
+## MCP merged; streaming updated to current main — 2026-10-12
+
+MCP [#1349](https://github.com/rynfar/meridian/pull/1349) merged as
+`3f5f4f81cd2205ebd62381d8c574d6a6f9ded2d9`. Its tree exactly matches validated
+`fc3fe028`, final-head CI passes (test, Windows, Docker, Linux/macOS desktop,
+Nix), and the squash preserves `Co-authored-by: Nowaker <spam@nowaker.net>`.
+Source #1283 was rechecked at `571a6716` and closed as incorporated, without
+posting a comment. No release was published. Earlier pending-MCP text below
+is historical and superseded by this entry.
+
+Current main is being merged into streaming #1344. All product files merge
+without conflicts; this handoff combines both evidence histories. The prior
+streaming E41 SSE refusal remains unresolved. Validate the integrated tree
+rather than reusing either branch's separate results. No model process remains
+active, and all previously staged grants were removed.
+
+## Streaming verification checkpoint — 2026-10-12
+
+[#1344](https://github.com/rynfar/meridian/pull/1344) clean installed package
+`6974747fe` now passes actual Linux OpenCode 1.18.34 / Opus 5.5 long write,
+tool result and same-session continuation with both plugins. 39761 characters,
+1921 deltas over 96.3 seconds, max gap 700 ms vs 15-second deadline; all four
+HTTP requests 200, original actors/pipes joined and grant removed.
+
+Its independent source-tree E41 matrix passes sequential JSON but fails SSE:
+after one read the model says a safety classifier stopped it and declines the
+remaining benign fixture reads. Actual model, cache, history/fork/follow-up
+predicates pass; required tool shape fails. Both plugins were active with zero
+hook errors. Matrix stopped before parallel modes; all actors joined and grants
+removed. No model process remains active. Preserve this failure; do not merge
+#1344 or close #1294. See [evidence](evidence/stream-idle-1294-20261012.md).
+
+MCP #1349 at `fc3fe028` has completed local gates and all four qualified E41
+modes. Its final adjacent-flow applicability review is now in its PR body:
+no V2 API or checkpoint policy changes trigger E42/E66/E67. Final-head CI is
+its remaining gate; use the existing T3 watch rather than a polling loop.
+
+## Final integrated streaming gate remains open — 2026-10-12
+
+Clean #1344 package at `6974747fe` passed actual long-input streaming (42,900
+characters over 106 seconds, no idle timeout), both plugin witnesses and joins.
+Its following tool-result request received an explicit OAuth-token-revoked error.
+This final run is FAIL; do not merge until final-tree continuation is verified.
+The earlier qualified artifact's full successful continuation remains valid only
+for that artifact. Staged grant removed; no refresh, account change or retry.
+See the durable integrated report and identity under
+`evidence/stream-idle-qualified-20261012/`. The refusal is authentication evidence,
+not a new billing/quota explanation. Continue independent #1338/#1283 work.
+
+## Scrub-qualified streaming progress — 2026-10-12
+
+Mandatory OpenCode server-scrub preflight merged as #1348, `ab615ca70`:
+5,637 local tests pass, 35 skip, zero failures; typecheck/build and required CI
+pass. The same preflight in #1344 qualified actual Linux/OpenCode 1.18.34/Opus
+5.5 baseline failure (15.4-second timeout) and candidate success (43,040 input
+characters over 108.7 seconds, real tool result and same-session continuation).
+Both matching client plugin and active server scrub 0.2.3 were verified; child/
+pipe joins passed and staged grant removed. An invalid inherited Docker
+entrypoint launch is retained as rejected evidence. See
+[evidence](evidence/stream-idle-1294-20261012.md) and adjacent sanitized receipts.
+The installed candidate's dirty build provenance is recorded, not hidden; final
+integrated package equivalence and final-head CI remain before #1344 can land.
+Main `ab615ca70` is being incorporated; contributor cherry-picks remain intact.
+
+## Current MCP/plugin checkpoint — 2026-10-12
+
+This entry supersedes stale running-session and draft descriptions below.
+MCP delivery [#1349](https://github.com/rynfar/meridian/pull/1349) preserves
+source #1283 as authored cherry-pick `158e6c18d` from fresh main `ab615ca70`.
+Actual independently installed Linux OpenCode 1.18.34 / Opus 5.5 read and
+same-session continuation passed with both matching client plugin and scrub
+0.2.3, all four requests 200 and original processes/pipes joined.
+
+All four corrected E41 modes now pass with real Opus 5.5, SDK 0.2.141/native
+2.1.296, Linux amd64, actual installed client hook and scrub 0.2.3. Both hooks
+run 16 times with zero errors; all histories/cache predicates pass and actors
+join. Every grant is removed. Earlier plugin-incomplete cache/model failures
+and their supported-API audit remain preserved, not explained away.
+See [evidence](evidence/1283-current-main-20261012/REVIEW.md).
+
+Owned local gate session **4259 is terminal exit 0**: 5659 pass / 35 skip /
+zero failures, then typecheck/build pass, with CI Bun 1.3.11. Do not restart or
+poll that completed process. Earlier full-run fixture races were corrected
+without changing final assertions; the unrelated cross-process 500 remains
+unexplained. Final-head CI and adjacent V2/interrupted-flow applicability and
+qualification review remain before merge/source closure. No model process is
+currently running. Product code is unchanged from authored source incorporation.
+
+Priority remains #1338 paid-overage routing, #1283 lost tools, #1294 stalled
+streaming, scrub #22/#23 cwd corruption, #1214 SSE failover and #1310 image
+amplification, before feature work. Haiku 5.5 is already published in 1.81.0.
+
+## Active prepared deliveries — 2026-10-12
+
+- MCP #1283 → [draft #1349](https://github.com/rynfar/meridian/pull/1349),
+  source `571a671676d6b8604cde932199d77c34bc6a46f3`, authored mapping below.
+  Seven credentialless transport controls complete; current-main full npm test
+  remains active (owned session 96749, `/tmp/meridian-1283-current-full.log`).
+- OpenCode scrub #22/#23 → [draft #24](https://github.com/rynfar/meridian-plugin-opencode-scrub/pull/24)
+  at `c3ec923`, in `/Users/rynfar/repos/meridian-plugin-opencode-scrub`, branch
+  `codex/cwd-preservation-22-23-20261012`. Both authors preserved. Main reproduces
+  23 new path failures; an additional two label/protection interaction failures
+  were fixed separately. All 57 tests/build pass. Source PR Windows fixture
+  claims lack an escrowed executable/artifact, and actual-client/model/installed
+  package verification remains open; do not merge/close source or release yet.
+- Priority overage #1338 → draft #1347 remains ahead of features, followed by
+  MCP loss, streaming #1294/#1344, cwd corruption, failover #1214 and image #1310.
+  Preserve existing owner deferrals. Authenticated live work must qualify both
+  plugins; no refresh/account switch is inferred from the last revoked-token
+  observation. No new live model call was made during this continuation.
+
+## MCP current-main delivery — 2026-10-12
+
+#1283 source `571a671676d6b8604cde932199d77c34bc6a46f3` is preserved as
+Nowaker-authored cherry-pick `158e6c18d` on fresh main `ab615ca70` in
+`codex/mcp-tools-1283-20261012`. Narrow source incorporation plus recovered
+maintainer transport-harness corrections replaces blindly replaying the old
+97-file preparation. That historical branch remains intact.
+
+Real credentialless SDK/native transport on Darwin reproduces lost tools on
+main, preserves both overlapping catalogs after the fix, and restores the
+failure when server sharing is deliberately reintroduced. All seven transport/
+fault/cancellation cases join owned resources; expected failures remain failures.
+Focused 103 tests and 17 harness/SDK controls pass; typecheck/build pass; full
+npm test is running. Actual Linux/OpenCode/Opus, E41/E42 and package/CI gates
+remain open. See [review and receipts](evidence/1283-current-main-20261012/REVIEW.md).
+No new credential access, refresh or model call occurred for this item.
+
+#1344 final integrated local gates now pass 5,652 / 35 skip / zero failures,
+typecheck/build. Its final actual continuation failed token-revoked; E41 modes
+are also still required. #1348 merged as `ab615ca70`. Do not infer a release.
+
+## OpenCode live-harness qualification correction — 2026-10-12
+
+Owner reaffirmed required plugins. Inspection found BOTH
+`scripts/e2e-extra-usage-opencode.mjs` on main and
+`scripts/e2e-tool-input-opencode.mjs` in draft #1344 configure only the client
+plugin. Neither loads server scrub in its isolated HOME. Withdraw the prior
+interpretation of their Extra Usage refusal as an account-quota blocker. Keep
+raw refusal/client-message evidence as an unqualified configuration observation.
+PR #1344/#1346 bodies are corrected. The merged error-text correction remains
+merged; correctly configured affected-flow acceptance is still unproven.
+
+Shared preflight resolves an independently installed official scrub entrypoint,
+records package version/hash, writes owned plugin configuration, verifies active
+loaded path/hook before inference, and requires successful real request-hook
+invocations afterward. No new live access, refresh, account change or paid usage
+occurred in this correction. The current #1338 delivery is draft #1347 with final
+local gates in progress; do not inherit the old quota-blocker assumption there.
+
+## Haiku release completed — 2026-10-12
+
+**1.81.0 is published and fresh-registry-install live verified.** Release merge
+`d4d60c406362750b8e96e3d1507f83b96a839125`, npm latest/integrity/gitHead,
+SLSA source/workflow, 109 registry signatures and 15 attestations verified.
+Fresh npm installation passed actual Pi 1.1.0 → SDK 0.2.141 / native 2.1.296 →
+Haiku 5.5 owned tool read on Darwin ARM64, with original processes/pipes joined.
+All Release Please jobs succeeded, signed macOS assets are attached, and GHCR
+1.81.0 includes amd64/arm64. npm's processing delay and failed early registry
+reads are preserved in [durable release evidence](evidence/release-1.81.0-20261012.json).
+Polytoken #1343 landed after this release and is not part of 1.81.0.
+
+## Polytoken final live and local gate — 2026-10-12
+
+Delivery #1343 product code is unchanged since `e5bac35d`; final harness head
+`ccb16eb9` passes actual Polytoken 0.8.21 / Haiku 4.5 on Darwin ARM64. Both
+parents and exactly four children complete; all six transcripts contain three
+successful fixture reads, all working conversations resume, distinct conversation
+SDK mappings remain disjoint, and original child processes/pipes join. The
+committed evidence retains prior authentication and ambiguous fixture failures.
+Full current-main local gates pass 5622 / 0 failures / 35 skips plus typecheck/build.
+Final-head CI, guarded merge, source-head recheck and contributor credit remain.
+
+## Core-fix delivery checkpoint — 2026-10-12
+
+Owner order remains core fixes, potential fixes, then features. Haiku delivery
+[#1337](https://github.com/rynfar/meridian/pull/1337) merged as
+`4dfdfe4e215de13ca71040dc3714d61ebeada384`; tested and merged trees match
+`075aabf0bbd333d83ae1241a5dcff19922c7015e`. The missing Darwin installed Nix
+qualification now passes all ten cases, six native execution witnesses, fifteen
+joined asynchronous actors and nine successful synchronous identity probes.
+[Durable CI artifact](https://github.com/rynfar/meridian/actions/runs/38274195603/artifacts/11758746098)
+contains the report (SHA256 `21029ed2bfb49894ad56b3aa2f022be9b5356aefae8ba92b54f5b7b81ac07ae4`).
+This scripted Nix qualification is distinct from actual Pi/Haiku inference.
+
+Release #1299 at `f907402b247b54f2773f979fad13ed71aa509b82` contains only
+1.81.0 version/changelog changes relative to current main. Local gates pass
+5615 tests, 35 skips, zero failures, typecheck and build. Independently installed
+1.81.0 npm-pack actual Pi 1.1.0 / Haiku 5.5 read-back passes on Darwin ARM64,
+Node 22.22.3, SDK 0.2.141 and native CLI 2.1.296; both requests are 200 and all
+original observed children/pipes join. Publication is not yet claimed; final
+Darwin Nix CI and release/publication/registry gates remain at this checkpoint.
+
+Polytoken source #1339 is accepted with correction in draft delivery
+[#1343](https://github.com/rynfar/meridian/pull/1343). Source authored commits
+`706de2c5` and `088e5c3c` map to `41cc0ca6` and `2f3e83d3`; contributor
+Author/AuthorDate are preserved. Separate maintainer correction `e5bac35d`
+isolates exact native title side calls from working conversation state.
+Two discriminating regressions fail contributor code; 41 focused tests pass
+with the correction. Before rebasing, full gates pass 5582/0/35, typecheck/build.
+Rebased final gates are running and acceptance remains draft until they finish.
+
+Actual Polytoken 0.8.21 / Haiku 4.5 / Darwin ARM64 completed two parents and
+four children, each with three read turns. Six independent conversations resume
+with disjoint SDK mappings. All 35 successful requests are 200; three other
+entries correlate to client-aborted native title requests. Title completion is
+not established. Durable sanitized [evidence](evidence/polytoken-1339/live-acceptance.json)
+and the committed Python/client + native-Node/server harness preserve the scope
+and earlier failures. Final harness assertions and current-main live run remain
+pending. Do not close source #1339 until delivery lands and its head is rechecked.
+
+## Core-fix completion checkpoint — 2026-10-12 16:40 UTC
+
+Haiku #1337 merged as `4dfdfe4e`; release #1299 merged exact verified candidate
+`f907402b` as `d4d60c406362750b8e96e3d1507f83b96a839125`. All final candidate
+checks passed; local 5615/0/35, typecheck/build and independent installed-package
+actual Pi/Haiku 5.5 read-back passed. Existing owner authorization for the bounded
+Haiku release is recorded in the October 11 entry below. Release workflow
+[38277901722](https://github.com/rynfar/meridian/actions/runs/38277901722) succeeded
+for npm, Docker and signed macOS assets. Tag `meridian-v1.81.0` points at the
+release merge. GHCR 1.81.0 has linux/amd64 and linux/arm64 manifests.
+**Registry reads still returned 404 at this checkpoint despite the successful
+publish log; registry integrity/provenance and fresh installed live validation
+remain open. Do not call the publication fully verified yet.**
+
+Polytoken delivery #1343 merged as `a48a84982453d3b4748ddbdf566455597e13c836`
+after final local 5622/0/35, typecheck/build, actual Polytoken 0.8.21 / Haiku 4.5
+Darwin ARM64 acceptance and all final-head CI. Merged tree
+`691f6ca554caa2b70edb90d410b85f0a4a00e9c5` equals the expected integration tree
+with release main. GitHub signature and David Bishop's explicit coauthor trailer
+verified. Source #1339 remained `088e5c3cdf0c3126d951eaf5883ef7f67d5b17c9` and
+was closed as incorporated without a comment. See delivery PR and committed
+`docs/maintenance/evidence/polytoken-1339/live-acceptance.json` for final proof.
+This fix is on main after 1.81.0; it is not part of that release.
+
+Antigravity #1340 at `ab836ac7` is deferred. Exact-source negative control shows
+legitimate status polling receives stale `running` from completedToolTail because
+name+arguments are treated as operation identity. Its PR body preserves the
+review and observable revisit gates: delivery identity, fresh identical reads,
+and affected Pi/macOS acceptance. No product correction or model call performed.
+
+Next core delivery #1344 cherry-picks #1294 into isolated branch
+`codex/stream-idle-1294-20261012`. Three regressions fail current release main and
+pass the correction; 107 focused checks pass. Full local checks are running;
+actual OpenCode/plugin + Opus 5.5 Linux and final CI remain acceptance gates.
+See `evidence/stream-idle-1294-20261012.md`. Preserve owner's dirty checkout.
+
+## Core-fix priority continuation — 2026-10-12
+
+The current owner order supersedes the older oldest-first instructions below:
+**core fixes, then potential fixes, then features**, with Haiku 5.5 explicitly
+prioritized. Fresh discovery finds the same six managed repositories. Preserve
+specific owner deferrals and contributor no-review requests.
+
+Haiku #1337 was not deployed because the delivery remained draft over missing
+macOS Nix installed-native/SDK proof; no release was started. npm latest is
+1.80.0. Contrary to the old PR checkpoint, final-head test and platform builds
+at `34156cfb` passed. The missing runtime proof can run in the existing macOS Nix
+CI runner without installing Nix on the owner's host. The added launcher runs
+the existing ten-case installed HTTP/SDK/native harness with isolated loopback API configuration, original SDK process/pipe joins,
+and Darwin executable observation.
+The negative external-network control returns EPERM locally. CI must still
+execute this exact installed tuple; no passing runtime result is claimed yet.
+The first CI attempt built the package but failed before cases: the Linux
+harness required `sleep` beside `/usr/bin/env`; macOS provides `/bin/sleep`.
+The corrected preflight resolves it through the actual sanitized PATH. Preserve
+[the original failed report](https://github.com/rynfar/meridian/actions/runs/38273029599/artifacts/11757534275);
+this was a harness prerequisite failure, not an SDK/model result.
+The second attempt reached the installed native/SDK versions but all HTTP
+cases returned 500 before SDK admission: macOS sandbox-exec refuses the setuid
+`/bin/ps` used by production incarnation checks. This is locally reproducible
+with sandbox-exec alone, independent of Meridian. The disposable macOS runner
+now uses cleared env, isolated config and dummy loopback API credentials without
+an OS-wide fence. Production synchronous identity probes are recorded with
+status/signal/error and output hashes; successful Node spawnSync completion is
+kept distinct from asynchronous SDK process/pipe joins. Unknown/failed sync
+probes still fail the gate. Neither change modifies production identity checks.
+Product code is unchanged. Existing real Pi/source and independent-pack evidence
+retains its original scope and failures. No release or community message has
+been sent. Current isolated worktree is
+`/Users/rynfar/repos/meridian-core-fixes-20261012`; owner's dirty checkout and
+other agents' worktrees remain untouched.
+
+## Owner-priority Haiku 5.5 release — 2026-10-11
+
+The owner subsequently requested Haiku 5.5 support ASAP and a release. That
+supersedes the earlier **no-release authorization** snapshot below for this
+bounded release only; it does not waive backlog holds, actual-model/client,
+physical custody, package or CI gates. Work is isolated on `codex/haiku-55-release`
+from main `e68b9bcadd`, without any unfinished preparations folded in.
+
+[Implementation, discriminating controls and remaining gates](evidence/haiku55-support.md)
+cover the new pin/discovery/native 1M replay capacity, tier-aware estimates,
+legacy-pin persistence and native CLI minimum. Independent review's disabled/
+omitted control and legacy-price findings were corrected. Credentialless native
+helper/SDK wire controls pass. The initial Pi attempt received a weekly
+rate-limit refusal; its Bun observer/private fixtures/grant remain unqualified
+and retained. After the reset, read-only default-store availability was weekly
+0%, five-hour 3%, Extra Usage disabled. No parent refresh/account/paid change
+occurred. A native-Node attempt exposed a missing documented Pi header; its
+negative receipt was preserved, the fixture corrected and independently reviewed.
+**Actual Pi and independently npm-pack-installed read-back now both pass**:
+Pi 1.1.0, Node 24.20.0, CLI 2.1.296, SDK 0.2.141, Darwin ARM64, exact owned read,
+200 Pi/pin metadata, public native Haiku 5.5 history, original gates/both pipes
+joined. [New actual-flow evidence and remaining gates](evidence/haiku55-live-20261011/README.md)
+qualify only these flows, not the original negative or registry/publication.
+
+Draft delivery #1337 remains held. At exact head `cb42827e`, `test` passed but
+Nix evaluation/package checks failed because the pinned nixpkgs/native fallback
+outpaced the raised CLI floor. The generated nixpkgs-only lock correction has
+actual before-fail/after-pass evaluation on three package targets and the Home
+Manager check; independent round 4 found no material lock defect. This is not
+build or model acceptance. Subsequently, exact head `34bcb028` passed latest
+`test`, Linux/macOS Nix builds, rendered Home Manager and other relevant checks.
+The cancelled same-head push Home Manager run was superseded by the successful
+PR run under declared concurrency; raw GitHub draft/UNSTABLE state is preserved.
+[Exact-head CI receipt](evidence/haiku55-final-head-ci-20261011.json) still needs
+rechecking after final evidence integration. [Actual installed Nix Linux ARM64](evidence/haiku55-nix-installed-20261011/README.md)
+built the exact archive and passed 10 credentialless cases with selected CLI
+2.1.295, Node 22.23.3, SDK 0.2.141, nine original close/both-pipe witnesses.
+Independent R5 found no material bounded evidence issue; full SSE conformance,
+universal subprocess faults, legacy snake-case budget preservation and Nix
+macOS installed-native execution remain explicitly unqualified.
+No floor reduction, broken-package bypass, paid usage, parent auth refresh or
+release has occurred. Final review/CI/guarded merge and release/registry gates remain.
+
+Preserved separately, never part of this release: #1310 at remote `b0884cd3`
+(no delivery PR yet), held #1334, scrub/#1214/Antigravity preparations, and SQLite
+custody WIP at `/Users/rynfar/repos/meridian-claude-sidecalls-stack-1292-20261008`
+(HEAD unchanged `964e2d18`). The custody child finished 34 native worker controls
+and 23 focused journal/custody tests, but its full suite had **52 failures**.
+Its `docs/maintenance/evidence/sqlite1219-native-custody-20261011/` records the
+original seven-file WIP escrow, new native changes and remaining gates; do not
+blindly commit, treat those failures as the former three, or approve the feature.
+Fresh independent custody review found two material admission gaps (ordinary
+preflight before atomic reservation, and memory ATTACH/backup disk lifetimes).
+A bounded immutable snapshot correction passes native getter controls, with
+further structural own-property correction and pure before/after coverage under
+review. Recovery diagnostics/corruption classification pass 72 focused controls;
+all three genuine recovery flows still fail. Nonmutating committed-WAL authority
+is a concrete native prerequisite, not permission for a writable fallback.
+Admission corrections are in progress in that separate preserved worktree;
+fixture setup corrections remain unexecuted pending its serialized native build.
+
+## Current oldest-first continuation — 2026-10-11 (earlier snapshot)
 
 Remaining newer-slice read-only triage refreshed 24 named items beyond #1261:
 20 open non-draft/non-release items and four excluded drafts. No item was

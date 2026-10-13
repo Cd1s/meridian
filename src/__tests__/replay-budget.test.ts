@@ -80,6 +80,21 @@ describe("replay budget", () => {
     expect(replayBudgetFor("sonnet")).toBe(160_000)
   })
 
+  it("budgets native Haiku 5.5 without an SDK haiku[1m] alias", () => {
+    expect(contextWindowFor("haiku")).toBe(1_000_000)
+    expect(contextWindowFor("claude-haiku-5-5")).toBe(1_000_000)
+    expect(replayBudgetFor("haiku", "claude-haiku-5-5")).toBe(836_000)
+    expect(replayReserveFor("haiku", "claude-haiku-5-5")).toBe(64_000)
+  })
+
+  it("does not widen explicit or configured legacy Haiku pins", () => {
+    for (const pin of ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-haiku-unknown"]) {
+      expect(contextWindowFor("haiku", pin)).toBe(200_000)
+      expect(replayBudgetFor("haiku", pin)).toBe(160_000)
+      expect(replayReserveFor("haiku", pin)).toBe(20_000)
+    }
+  })
+
   it("keeps the reserve proportionate to the window", () => {
     expect(replayReserveFor("opus[1m]")).toBe(64_000)
     expect(replayReserveFor("sonnet")).toBe(20_000)
