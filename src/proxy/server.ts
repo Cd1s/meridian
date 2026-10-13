@@ -9,8 +9,8 @@ import { serve, createAdaptorServer } from "@hono/node-server"
 import { getConnInfo } from "@hono/node-server/conninfo"
 import { socketActivationFd, parseIdleExitSeconds, isModelRequestPath } from "./socketActivation"
 import type { Server } from "node:http"
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { configPath } from "../configDir"
 import { query } from "@anthropic-ai/claude-agent-sdk"
 import { rateLimitStore } from "./rateLimitStore"
 import { guardUpstreamIdle, UpstreamIdleError, type LateIdleDeadline } from "./streamIdleGuard"
@@ -1041,8 +1041,8 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
     }
   }
 
-  const pluginDir = finalConfig.pluginDir ?? join(homedir(), ".config", "meridian", "plugins")
-  const pluginConfigPath = finalConfig.pluginConfigPath ?? join(homedir(), ".config", "meridian", "plugins.json")
+  const pluginDir = finalConfig.pluginDir ?? configPath("plugins")
+  const pluginConfigPath = finalConfig.pluginConfigPath ?? configPath("plugins.json")
   let loadedPlugins: LoadedPlugin[] = []
   let pluginTransforms: ReturnType<typeof getActiveTransforms> = []
 

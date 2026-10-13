@@ -75,8 +75,8 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_HOST_ID` | — | derived | Stable, unique container identity for session locks; see [deployment](deployment.md#persistence-and-host-identity). |
 | `MERIDIAN_QUIET` | `CLAUDE_PROXY_QUIET` | unset | Suppress informational telemetry startup output; warnings and errors still print. |
 | `MERIDIAN_AUTH_RENEWAL_WARN_DAYS` | — | `3` | Renewal warning horizon reported by health when credential renewal information is available. |
-| `MERIDIAN_PLUGIN_DIR` | — | `~/.config/meridian/plugins` | Plugin auto-discovery directory |
-| `MERIDIAN_PLUGIN_CONFIG` | — | `~/.config/meridian/plugins.json` | Plugin manifest path |
+| `MERIDIAN_PLUGIN_DIR` | — | `<config dir>/plugins` | Plugin auto-discovery directory |
+| `MERIDIAN_PLUGIN_CONFIG` | — | `<config dir>/plugins.json` | Plugin manifest path |
 | `MERIDIAN_CREDENTIALS_READONLY` | `CLAUDE_PROXY_CREDENTIALS_READONLY` | unset | Set to `1` to forbid this instance from refreshing or writing OAuth credentials. For a second instance sharing another's credential files — see [Read-only credentials](#read-only-credentials). |
 
 †These are Meridian context defaults, not a billing guarantee. Availability and extended-context charges depend on the model and account; consult [Anthropic model configuration](https://code.claude.com/docs/en/model-config#extended-context). Historical Max/Team tests do not establish entitlement for another account.
@@ -206,10 +206,11 @@ second instance pointed at an empty directory starts genuinely empty:
 file when set. `XDG_CONFIG_HOME` is deliberately ignored: honouring it would
 relocate the configuration of everyone who has it set, without them asking.
 
-Two paths do **not** follow it yet — plugins (`plugins/`, `plugins.json`) and
-`design-token.json` still default under `~/.config/meridian` whatever this is set
-to. Point a second instance's plugins elsewhere with `MERIDIAN_PLUGIN_DIR` /
-`MERIDIAN_PLUGIN_CONFIG` / `MERIDIAN_DESIGN_TOKEN_PATH` in the meantime.
+Plugins follow it too: `plugins/` and `plugins.json` default under this
+directory, and `MERIDIAN_PLUGIN_DIR` / `MERIDIAN_PLUGIN_CONFIG` still win when
+set. One path does **not** follow it yet: `design-token.json` still defaults
+under `~/.config/meridian`; point a second instance's elsewhere with
+`MERIDIAN_DESIGN_TOKEN_PATH`.
 
 Running a second instance beside your usual one:
 
