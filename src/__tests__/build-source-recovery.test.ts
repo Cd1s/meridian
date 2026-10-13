@@ -57,6 +57,22 @@ ${body}\n`)
   chmodSync(join(bin, "git"), 0o755)
   return { env: { PATH: bin + delimiter + process.env.PATH }, log }
 }
+// The 400ms boundary is a process timeout, not a Node startup benchmark.
+// Install the ignored signal disposition in the shell, then exec finite sleep
+// in the SAME pid. No descendant survives the direct child's timeout/join.
+function finiteTermResistantGit() {
+  const bin = join(scratch, `bin-${serial++}`)
+  mkdirSync(bin)
+  const log = join(bin, "calls.jsonl")
+  const quotedLog = "'" + log.replaceAll("'", "'\\''") + "'"
+  writeFileSync(join(bin, "git"), `#!/bin/sh
+trap '' TERM
+printf '{"pid":%s,"args":[]}\\n' "$$" >> ${quotedLog}
+exec /bin/sleep 1.5
+`)
+  chmodSync(join(bin, "git"), 0o755)
+  return { env: { PATH: bin + delimiter + process.env.PATH }, log }
+}
 function joined(log: string) {
   const calls: { pid: number, args: string[] }[] = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line))
   for (const call of calls) {
@@ -159,7 +175,12 @@ console.log(JSON.stringify({rejected,elapsed:performance.now()-start}));`, fake.
     expect(calls).toHaveLength(1)
   }, 12000)
   test("TERM-resistant finite Git cannot turn a timeout into clean success", () => {
-    const fake = fakeGit("process.on('SIGTERM',()=>{}); setTimeout(()=>console.log('late-clean-output'),1500);")
+    const fake = finiteTermResistantGit()
+    const control = probe(`import {spawnSync} from 'node:child_process';
+const start=performance.now(); const result=spawnSync('git',[],{timeout:400,killSignal:'SIGTERM'});
+console.log(JSON.stringify({status:result.status,elapsed:performance.now()-start}));`, fake.env)
+    expect(control.status).toBe(0)
+    expect(control.elapsed).toBeGreaterThanOrEqual(1200)
     const result = probe(`import {gitOutput} from ${JSON.stringify(snapshotModule)};
 const start=performance.now(); let rejected=false; try{gitOutput(${JSON.stringify(scratch)},['rev-parse','HEAD'],400)}catch(error){rejected=error instanceof Error}
 console.log(JSON.stringify({rejected,elapsed:performance.now()-start}));`, fake.env)
@@ -167,7 +188,7 @@ console.log(JSON.stringify({rejected,elapsed:performance.now()-start}));`, fake.
     console.log(JSON.stringify({ case: "term-resistant-git", ...result, calls: calls.map(call => call.args), directChildrenJoined: true }))
     expect(result.rejected).toBe(true)
     expect(result.elapsed).toBeLessThan(1000)
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(2)
   })
   test("fingerprint Git boundary also kills and rejects TERM-resistant timeouts", () => {
     const { root } = fixture()

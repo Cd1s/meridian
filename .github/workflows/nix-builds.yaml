@@ -22,7 +22,7 @@ jobs:
       max-parallel: 1
       matrix:
         installable:
-          - ".#checks.x86_64-linux.home-module"
+          - ".#checks.x86_64-linux.home"
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:

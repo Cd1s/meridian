@@ -29,6 +29,8 @@ describe("mapModelToClaudeModel", () => {
 
   it("maps haiku models to haiku", () => {
     expect(mapModelToClaudeModel("claude-haiku-4-5")).toBe("haiku")
+    expect(mapModelToClaudeModel("claude-haiku-5-5", "max")).toBe("haiku")
+    expect(mapModelToClaudeModel("claude-haiku-5-5[1m]", "pro")).toBe("haiku")
     expect(mapModelToClaudeModel("haiku")).toBe("haiku")
   })
 
@@ -543,6 +545,7 @@ describe("resolveSdkModelDefaults", () => {
     expect(pins.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe(CANONICAL_OPUS_MODEL)
     expect(pins.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(CANONICAL_SONNET_MODEL)
     expect(pins.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe(CANONICAL_HAIKU_MODEL)
+    expect(pins.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("claude-haiku-5-5")
   })
 
   it("MERIDIAN_DEFAULT_OPUS_MODEL override wins over the canonical default", () => {

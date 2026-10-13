@@ -61,7 +61,7 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_DEFAULT_PROFILE` | — | *(first profile)* | Default profile ID when no header is sent |
 | `MERIDIAN_ADAPTER_INSTANCES` | — | unset | JSON [adapter instance](agents.md#adapter-instances) definitions, overriding `~/.config/meridian/adapter-instances.json` |
 | `MERIDIAN_BETA_POLICY` | — | `allow-safe` | Client `anthropic-beta` header handling: `allow-safe`, `strip-all`, or `allow-all` |
-| `MERIDIAN_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` | — | canonical ids | Pin the model id the SDK resolves for each tier alias (e.g. `MERIDIAN_DEFAULT_OPUS_MODEL`) |
+| `MERIDIAN_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` | — | canonical ids | Pin the model id the SDK resolves for each tier alias (e.g. `MERIDIAN_DEFAULT_OPUS_MODEL`); Haiku defaults to `claude-haiku-5-5` |
 | `MERIDIAN_SESSION_DIR` | `CLAUDE_PROXY_SESSION_DIR` | `~/.cache/meridian` | Directory for the persisted session store |
 | `MERIDIAN_NO_UPDATE_CHECK` | — | unset | Set to `1` to force the update check off even when the `checkForUpdates` setting is on. No outbound request is made at all when set. See [Build provenance](#build-provenance-and-staying-current). |
 | `MERIDIAN_UPDATE_CHECK_URL` | — | npm dist-tags | Registry endpoint for the update check. Point it at a mirror on restricted networks; it must return `{"latest":"<version>"}`. |
@@ -80,6 +80,46 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_CREDENTIALS_READONLY` | `CLAUDE_PROXY_CREDENTIALS_READONLY` | unset | Set to `1` to forbid this instance from refreshing or writing OAuth credentials. For a second instance sharing another's credential files — see [Read-only credentials](#read-only-credentials). |
 
 †These are Meridian context defaults, not a billing guarantee. Availability and extended-context charges depend on the model and account; consult [Anthropic model configuration](https://code.claude.com/docs/en/model-config#extended-context). Historical Max/Team tests do not establish entitlement for another account.
+
+### Haiku 5.5
+
+The bare `haiku` alias defaults to `claude-haiku-5-5`. Use Claude Code **2.1.293
+or newer** (including when selecting a system/custom executable). Haiku 5.5 has
+a native **1M context window**, up to **128K output tokens**, and adaptive
+thinking controlled by effort; it does not need a `haiku[1m]` SDK alias.
+Explicit `claude-haiku-4-5` and dated 4.5 requests retain their requested model
+and 200k context window (default replay allowance 160k, with a 20k reserve).
+Shell/profile pins and `MERIDIAN_DEFAULT_HAIKU_MODEL`
+still work; replay capacity follows the effective Haiku pin.
+
+The tested Claude Code 2.1.296 / Agent SDK 0.2.141 path cannot reliably honor
+explicit `thinking: disabled` or `thinking.display: omitted` on Haiku 5.5.
+Meridian refuses those requests with HTTP 400 **before generation**, including
+an authoritative adapter-off setting or a beta policy that disables thinking.
+Use adaptive thinking with effort, omit display/use `summarized`, or explicitly
+select Haiku 4.5. The native CLI converts legacy enabled/manual-budget inputs
+to adaptive thinking on Haiku 5.5; a numeric thinking budget is not an adaptive
+hard cap. Use effort for depth, or keep an explicit 4.5 pin for manual thinking.
+The tested native SDK path preserves a 4.5 budget supplied as SDK-style
+`budgetTokens`; conventional Anthropic `budget_tokens` is not translated by the
+existing HTTP builder and was not preserved in the retained control. This change
+does not fix that pre-existing limitation or guarantee snake-case manual budgets.
+The disabled/omitted refusal is a native SDK limitation, not a claim that Haiku
+5.5's API lacks those controls.
+
+Built-in cost estimates use Haiku 5.5's short-prompt rates ($0.10 input / $0.50
+output per million tokens). Above **100,000 prompt tokens**, including cache
+reads and writes, the entire request uses $0.50 / $2.50 instead. Five-minute
+cache writes cost 1.25× input and cache reads 0.10× input. Settings list the
+short-prompt rates; custom overrides remain flat. These are API-value estimates,
+not subscription bills; SDK-aggregated subrequests and one-hour cache writes
+cannot be reconstructed exactly from the retained request totals. New Haiku
+records retain the effective SDK pin for pricing, while request-key overrides
+still win. Historical bare aliases without that pin use today's alias valuation,
+not a reconstruction of the model actually served.
+
+See Anthropic's [overview](https://platform.claude.com/docs/en/models/haiku-5-5/overview)
+and [migration guide](https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide).
 
 ### Read-only credentials
 
@@ -662,7 +702,7 @@ when their opening text and working directory match.
 | `letta` | The `conv-<uuid>` id in the agent-info block Letta places in its opening user message (no session header) |
 | `passthrough` (LiteLLM) | `x-litellm-session-id` |
 | `cherry`, `openai` | Inherit OpenCode header handling; a headerless generic OpenAI tool loop additionally gets a derived `tool-loop:<hash>` key, so it resumes instead of packing |
-| `polytoken` | Valid `x-polytoken-session` |
+| `polytoken` | Nonblank `x-polytoken-conversation`, falling back to `x-polytoken-session` |
 | `droid`, `forgecode` | none — fingerprint fallback |
 
 ### Claude Code behind a gateway

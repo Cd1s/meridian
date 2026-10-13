@@ -210,7 +210,7 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Deadline for one active agy reasoning phase; reset when a tool-result continuation resumes agy |
 | `MERIDIAN_AGY_RUN_MAX_MS` | `1800000` | Absolute lifetime limit for one run, including client tool-result waits |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending client tool-result deadline |
-| `MERIDIAN_AGY_IDLE_CONVERSATION_MS` | tool timeout | How long a completed conversation keeps its live process for the next turn (1–86400000); afterwards that turn replays the full history |
+| `MERIDIAN_AGY_IDLE_CONVERSATION_MS` | tool timeout | How long a completed conversation keeps its live process for the next turn (explicit values: 1–86400000); afterwards that turn replays the full history. Unset preserves the existing tool timeout, including values above this new option's limit. |
 
 Capacity exhaustion returns 429 with `Retry-After`. No unbounded request queue
 is created. Bodies are capped at 8 MiB; upstream stdout is capped at 16 MiB.
