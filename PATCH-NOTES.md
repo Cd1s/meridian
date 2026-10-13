@@ -174,6 +174,13 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 回滚点：`/opt/meridian/node_modules/@rynfar/meridian/dist-accounts.old-neutralize-20261012-103046`；打包备份 `/opt/meridian/backups/live-neutralize-before-ac62621-20261012-103020.tgz`（含 systemd 单元与 drop-in，sha256 `0e0f93f1…`），并已 `agent-backup put`。
 - 验证：部署前后 `/health` 均为 20 个账号、失败 acc20/acc21/acc23（订阅配置检查失败，部署前已存在）；面板 3450 返回 200。实机 agy（`gemini-3.8-flash-medium`）：acc1 返回 `tool_use`（id 为 `toolu_<32 hex>`），用 acc2 的 key 发 tool_result，日志 `agy_account_affinity kind=tool selected=acc2 holder=acc1 status=200`，回答原样包含随机码，未出现 Meridian 字样。
 
+### 2026-10-13 同步上游 1.81.0，发布 v1.81.0-cd1s.1 并部署
+- 同步冲突：上游合并了 rynfar/meridian#1356（即本 fork 的 #1341，`MERIDIAN_AGY_IDLE_CONVERSATION_MS` 改为只在显式设置时校验）。5 个冲突文件的解决见 #34：fork 自有配置项全部保留，空闲保留的校验、文档行和测试用上游版本，`replayBudget.ts` 两边都保留。
+- 自动同步的通知说“已开 issue”，但仓库里没有这个 issue：建 issue 这一步失败了，而且没有报错。
+- 部署：`3c2ce8c`（tag `v1.81.0-cd1s.1`，provenance `package-1.81.0-1-detached-3c2ce8ca`，非 dirty），bundle sha256 `b1091404…`；运行时依赖未变（只有 devDependencies），`node_modules` 未动；约 18s 恢复健康。
+- 回滚点：`dist-accounts.old-ac62621-20261013-111853`；打包备份 `/opt/meridian/backups/live-ac62621-before-3c2ce8c-20261013-111837.tgz`（sha256 `79d45931…`），并已 `agent-backup put`。
+- 验证：部署前后 `/health` 均为 20 个账号、失败 acc20/acc21/acc23（部署前已存在）；面板 200。实机 agy（`gemini-3.8-flash-medium`）：acc1 `tool_use` → acc2 的 key 发 tool_result，`agy_account_affinity kind=tool holder=acc1 status=200`，回答包含随机码，未出现 Meridian 字样；部署后 3 分钟日志没有 error。
+
 ## 同步上游
 
 
