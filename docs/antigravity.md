@@ -20,8 +20,8 @@ on a separate port if you already have a Claude service.
 
 ## Feature status
 
-Validated on macOS arm64 with agy **1.2.7**, Pi **0.72.1** and OpenCode V1
-**1.18.31**. [E2E.md](../E2E.md) records the actual-client evidence.
+Validated on macOS arm64 with agy **1.3.4** and Pi **1.1.0** (Pi 0.72.1 and OpenCode V1
+**1.18.31** with agy 1.2.7). [E2E.md](../E2E.md) records the actual-client evidence.
 
 | Area | Available in 1.74.0 |
 | --- | --- |
@@ -306,7 +306,7 @@ app does not collect Google credentials or repurpose Claude profile login.
 
 ## Compatibility and operational contract
 
-The supported macOS text/client-tools path is gated to official `agy` **1.2.7**.
+The supported macOS text/client-tools path is gated to official `agy` **1.3.4**.
 An unverified CLI update is refused before a new model process starts. Validate
 new versions with the live gates below before changing the compatibility gate.
 Linux remains preview until its actual CLI/client flow is verified. Windows
