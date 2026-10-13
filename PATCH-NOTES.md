@@ -9,7 +9,7 @@
 
 | 补丁 | 涉及文件 | 说明 |
 | :--- | :--- | :--- |
-| 放宽 agy 1.x 版本门禁 | `src/proxy/backends/antigravityRuntime.ts` | 兼容所有 `1.x` 官方 agy 版本（包含 `1.2.16` 及后续自动更新）；支持 `MERIDIAN_AGY_ANY_VERSION=1` 环境变量完全跳过版本检查 |
+| 锁定 agy 版本（同上游） | `src/proxy/backends/antigravityRuntime.ts` | 和上游一样只接受经过验证的 agy 版本，现在是 `1.3.4`（2026-10-13 起；之前是放宽为任意 `1.x`，并可用 `MERIDIAN_AGY_ANY_VERSION=1` 跳过检查，这两项都已去掉）。升级 agy 前要先验证，再改这里 |
 | CloudCode 桥接与资格修复 | `src/proxy/backends/antigravityBridge.ts`、`antigravityRuntime.ts` | **按账号严格 opt-in**：正常账号（未显式配置 `MERIDIAN_AGY_COMPAT_BRIDGE=1`）完全不注入 `CLOUD_CODE_URL`，保留 100% 原始未改写的 Google 原生响应；仅需要兼容的受限账号通过环境变量启用，拦截并修补 `/v1internal:loadCodeAssist` 响应（注入 `currentTier` 并剔除 `ineligibleTiers`），绕过官方客户端对部分地区/账号的 eligibility 拦截，默认 upstream 切换为 `daily-cloudcode-pa.googleapis.com` 消除误报 429；通过原生 Node.js SOCKS5/HTTP 隧道按账号隔离代理，其余 endpoint 原生流式透传 |
 | 屏蔽 Claude 与指定模型 | `src/proxy/backends/antigravityRuntime.ts` | 默认屏蔽 Antigravity 运行时的 Claude 模型（`claude-*`，可通过 `MERIDIAN_AGY_BLOCK_CLAUDE=0` 放开），支持 `MERIDIAN_AGY_BLOCKED_MODELS` 自定义屏蔽列表；被屏蔽模型从 `/v1/models` 剔除，直接请求时返回 400 显式拦截，绝不向 Google 发送请求消耗额度 |
 | 丢弃 `temperature` / `top_p` / `top_k` | `src/proxy/backends/antigravityProtocol.ts` | agy 没有采样参数；上游直接 400，Sub2API 的账号测试固定带 `temperature`，会全部失败。`betas` 仍按上游拒绝 |
@@ -218,6 +218,28 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 新增演练：手动运行时勾选 `drill`，走冲突流程，但不合并、不推送，issue 用 `meridian-sync-drill` 标签，不会唤醒修复 agent。
 - 验证：分支上演练两次（run 38356497828、38356589414）。第一次开了 #39，通知在开 issue 之后发出；第二次同一上游提交没有重复评论；两次都标红。#39 已关闭。
 - 另：工作流注释原来写定时任务从 main 触发，实际默认分支就是生产分支，已改正。
+
+### 2026-10-13 agy 锁定到 1.3.4（同上游的锁版本方式）
+- 改动：
+  - 版本门禁改成和上游一样，只认一个验证过的版本，现在是 `1.3.4`。原来放宽为任意 `1.x`、可用 `MERIDIAN_AGY_ANY_VERSION=1` 跳过检查，这两项都去掉了。
+  - `/health` 的 `verifiedCliVersion` 改为 1.3.4。
+  - 测试、fixture、设置证明 / 工具目录 / idle / 回放轮询这几个脚本里固定的版本和哈希，一并改成 1.3.4。
+  - 新增测试：确认 1.2.7 会在 `/config` 之前就被拒绝。
+- 官方二进制（GitHub release 1.3.4，和发布页公布的 sha256 一致）：
+  - macOS arm64：压缩包 `ede28149…`，可执行文件 `9da414c0…53f5`。
+  - Linux arm64：压缩包 `56161a18…`，可执行文件 `08d619ae…4824`。
+- 验证：
+  - **设置证明**（作者的 `e2e-antigravity-account-settings.mjs`）：macOS 和 Linux 上的 1.3.4 都是 `customModelsConfig` null、`modelProvider` ""、`useG1Credits` false（布尔）、`gcp` null，和 1.2.7 一样。
+  - **单元测试**：上游分支 5341 pass，22 个隔离组全过；fork 的 antigravity / replay 测试 437 pass。
+  - **macOS 实测**（MacBook Air，Pi 1.1.0）：basic、tools、recovery、Pi recovery、expansion、openai-tools、responses-state、Pi extensions、interruption 通过。pi-clients、capabilities、gap-closure、Pi lost-answer / lost-tool / disconnect、idle 没过。
+    - 同样这几项用未修改的上游 main + agy 1.2.7 跑，也一样不过（capabilities 除外）。
+    - capabilities 两次失败的原始响应都是谷歌返回 `Eligibility check failed: UNAVAILABLE (code 503)`；单独复现时，1.3.4 和 1.2.7 的结果完全一样。
+    - 当时生产（agy 1.2.16）同一小时也有 503。没有发现 1.3.4 特有的问题。
+  - **Linux（SG，acc1 环境，单独实例）**：settings、recovery、expansion、openai-tools、responses-state、interruption 通过。gap-closure 先是缺 lark，补上后又遇到谷歌 503。
+  - **账号检查耗时**：MacBook Air 上 1.3.4 和 1.2.7 轮流各 8 次，全部成功；两个版本都偶尔慢到 15–34 秒。
+  - **面板登录脚本**：`agy-login.py` 在 1.3.4 下也能拿到授权链接，结束后不留进程。
+- 未覆盖：OpenCode 相关的测试（含 tool-catalog）、native-tools、media、desktop。
+- 上游：没有提 PR，由用户自己测试几天后再提。上游用的分支 `feat/agy-1.3.4` 保留着。
 
 ## 同步上游
 

@@ -89,9 +89,9 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const shape = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
 try {
   const version = await read(['--version'])
-  if (version?.trim() !== '1.2.7') report.result = 'UNSUPPORTED_OR_UNREADABLE_VERSION'
+  if (version?.trim() !== '1.3.4') report.result = 'UNSUPPORTED_OR_UNREADABLE_VERSION'
   else {
-    report.nativeVersion = '1.2.7'
+    report.nativeVersion = '1.3.4'
     const raw = await read(['-p', '/config', '--output-format', 'json'])
     if (raw === null) report.result = 'CONFIG_COMMAND_FAILED'
     else {
