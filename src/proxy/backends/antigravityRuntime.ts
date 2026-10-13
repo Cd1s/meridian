@@ -14,7 +14,7 @@ import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPrompt, contractKey, historyKey, stable, completedToolTail, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPrompt, contractKey, historyKey, stable, completedToolTail, replayNotice, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
 import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravitySchema"
 import type { ValidateFunction } from "ajv"
@@ -78,9 +78,11 @@ export class AntigravityRun {
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
   private toolCalls = 0
   // NOTE: a new run whose request ends in tool results is a history replay (its live turn is gone). Models then often
-  // request the call that just completed again. Until this run has sent a call to the client, an identical request is
-  // answered from the recorded result instead of executing twice; each recorded call is consumed once.
-  private readonly replayedTail: Map<string, AgResult>
+  // request the call that just completed again. Name and arguments do not identify an operation (a status poll repeats
+  // both), so the recorded result is never returned as if it were fresh. Until this run has sent a call to the client,
+  // the first identical request is not executed: it gets a not-executed notice naming the delivered tool_use id whose
+  // result is already in the history. Repeating the call after that notice dispatches it to the client as usual.
+  private readonly replayedTail: Map<string, string>
   private clientDispatched = false
   private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
   private settledResolve!: () => void
@@ -254,7 +256,7 @@ export class AntigravityRun {
       this.replayedTail.delete(identity)
       this.runtime.replayDuplicates++
       console.log(JSON.stringify({ ts: new Date().toISOString(), event: "agy_replay_duplicate", tool: name }))
-      return this.attachments!.toolResult(recorded)
+      return { type: "tool_result", tool_use_id: recorded, is_error: true, content: replayNotice(recorded) }
     }
     this.clientDispatched = true
     this.toolCalls++

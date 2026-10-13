@@ -129,12 +129,13 @@ export function stable(value: unknown): string {
   return JSON.stringify(value) ?? "null"
 }
 /**
- * Successful calls of the batch a pure tool-result tail completes, keyed by stable({name, input}). A request that
- * reaches a new run with this tail is a history replay: its calls already ran in the client. Identities that occur
- * more than once in the batch are left out, since a repeat of them cannot be told apart from a deliberate one.
+ * Delivered tool_use ids of the successful calls a pure tool-result tail completes, keyed by stable({name, input}).
+ * A request that reaches a new run with this tail is a history replay: these calls already ran in the client and
+ * their results are in the history. Identities that occur more than once in the batch are left out, since a repeat
+ * of them cannot be told apart from a deliberate one.
  */
-export function completedToolTail(messages: AgMessage[]): Map<string, AgResult> {
-  const tail = new Map<string, AgResult>()
+export function completedToolTail(messages: AgMessage[]): Map<string, string> {
+  const tail = new Map<string, string>()
   const results = messages.at(-1), calls = messages.at(-2)
   if (results?.role !== "user" || typeof results.content === "string" || !results.content.length || !results.content.every(b => b.type === "tool_result")) return tail
   if (calls?.role !== "assistant" || typeof calls.content === "string") return tail
@@ -144,10 +145,18 @@ export function completedToolTail(messages: AgMessage[]): Map<string, AgResult> 
     const identity = stable({ name: call.name, input: call.input })
     const result = results.content.find((b): b is AgResult => b.type === "tool_result" && b.tool_use_id === call.id)
     if (seen.has(identity)) tail.delete(identity)
-    else if (result && !result.is_error) tail.set(identity, result)
+    else if (result && !result.is_error) tail.set(identity, call.id)
     seen.add(identity)
   }
   return tail
+}
+/**
+ * Reply to a replayed run's first request identical to a call the history already completed. It carries no client
+ * content: an old result returned as new would hide changes (a polled status, an edited file). The call is not run;
+ * repeating it runs it in the client.
+ */
+export function replayNotice(deliveredId: string): string {
+  return `Not executed: this call is identical to ${deliveredId}, which already completed in the client just before this turn; its result is in the conversation history. Use that result. If you need a fresh result now (for example, polling a status that may have changed), make the same call again and it will run.`
 }
 export function historyKey(messages: AgMessage[]): string {
   return stable(messages.map(m => ({ role: m.role, content: blocks(m) })))

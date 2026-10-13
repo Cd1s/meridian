@@ -1,19 +1,21 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { fileURLToPath } from "node:url"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
-import { completedToolTail, parseAgRequest, stable } from "../proxy/backends/antigravityProtocol"
+import { completedToolTail, parseAgRequest, replayNotice, stable } from "../proxy/backends/antigravityProtocol"
 import { AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
 import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
 
 // A request that reaches a new run ending in tool results is a history replay: the live turn is gone (backend
 // replaced, process reclaimed, other account). Gemini then often requests the call that just completed again; a
-// second write, append or deploy must not run in the client.
+// second write, append or deploy must not run in the client by accident. Name and arguments still do not identify an
+// operation (a status poll repeats both), so the old result must never come back as if it were fresh.
 const tool = { name: "lookup", input_schema: { type: "object", properties: { key: { type: "string" } } } }
-const replay = (prompt: string, result: { content: string; is_error?: boolean }) => ({
-  model: "fixture-model", max_tokens: 100, tools: [tool],
+const read = { name: "read", input_schema: { type: "object", properties: { path: { type: "string" } } } }
+const replay = (prompt: string, result: { content: string; is_error?: boolean }, call = { name: "lookup", input: { key: "probe0" } as Record<string, unknown> }) => ({
+  model: "fixture-model", max_tokens: 100, tools: [tool, read],
   messages: [
     { role: "user", content: prompt },
-    { role: "assistant", content: [{ type: "tool_use", id: "toolu_done", name: "lookup", input: { key: "probe0" } }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "toolu_done", ...call }] },
     { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_done", ...result }] },
   ],
 })
@@ -28,7 +30,7 @@ describe("completedToolTail", () => {
   it("keys successful calls of the completed batch by name and input, independent of argument order", () => {
     const tail = completedToolTail(request([use("a", { content: "x", file_path: "/f" }), use("b", { file_path: "/g" })], [result("a"), result("b")]).messages)
     expect([...tail.keys()]).toEqual([stable({ name: "write", input: { file_path: "/f", content: "x" } }), stable({ name: "write", input: { file_path: "/g" } })])
-    expect(tail.get(stable({ name: "write", input: { file_path: "/f", content: "x" } }))?.tool_use_id).toBe("a")
+    expect(tail.get(stable({ name: "write", input: { file_path: "/f", content: "x" } }))).toBe("a")
   })
 
   it("leaves out failed calls and identities repeated within the batch", () => {
@@ -46,7 +48,7 @@ describe("completedToolTail", () => {
 const executable = fileURLToPath(new URL("./fixtures/agy-replay-repeat-cli.cjs", import.meta.url))
 const closing: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of closing.splice(0)) await close() })
-type Reply = { stop_reason: string; content: Array<{ type: string; text?: string; name?: string; input?: unknown }> }
+type Reply = { stop_reason: string; content: Array<{ type: string; id?: string; text?: string; name?: string; input?: unknown }> }
 
 describe.skipIf(process.platform === "win32")("Antigravity history replay does not execute a completed call twice", () => {
   const server = () => {
@@ -61,20 +63,31 @@ describe.skipIf(process.platform === "win32")("Antigravity history replay does n
     return { runtime, send }
   }
 
-  it("answers an identical repeat of the completed call from its recorded result", async () => {
+  it("does not run an identical repeat of the completed call, and does not return its old result", async () => {
     const { runtime, send } = server()
     const reply = await send(replay("REPEAT_COMPLETED write the receipt", { content: "receipt" }))
     expect(reply.stop_reason).toBe("end_turn")
     expect(reply.content.filter(block => block.type === "tool_use")).toEqual([])
-    expect(reply.content.map(block => block.text).join("")).toBe("REPLAYED:receipt")
+    const text = reply.content.map(block => block.text).join("")
+    expect(text).toBe("REPLAYED:" + replayNotice("toolu_done"))
+    expect(text).not.toContain("receipt")
     expect(runtime.replayDuplicates).toBe(1)
   })
 
-  it("answers only the first repeat; a second identical request in the same turn goes to the client", async () => {
+  it("dispatches a repeated identical call after the notice; a polled status is read fresh, never answered stale", async () => {
+    // Maintainer negative control: polling read({path:"/owned/status"}) returned "running" before the backend was
+    // replaced; the next identical read is legitimate and must reach the client, and "running" must not be reused.
     const { runtime, send } = server()
-    const reply = await send(replay("REPEAT_COMPLETED REPEAT_TWICE", { content: "receipt" }))
+    const first = replay("REPEAT_COMPLETED REPEAT_TWICE poll until done", { content: "running" }, { name: "read", input: { path: "/owned/status" } })
+    const reply = await send(first)
     expect(reply.stop_reason).toBe("tool_use")
-    expect(reply.content.filter(block => block.type === "tool_use").map(block => [block.name, block.input])).toEqual([["lookup", { key: "probe0" }]])
+    const fresh = reply.content.filter(block => block.type === "tool_use")
+    expect(fresh.map(block => [block.name, block.input])).toEqual([["read", { path: "/owned/status" }]])
+    expect(fresh[0]!.id).not.toBe("toolu_done")
+    const done = await send({ ...first, messages: [...first.messages, { role: "assistant", content: reply.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: fresh[0]!.id, content: "done" }] }] })
+    const text = done.content.map(block => block.text).join("")
+    expect(text).toBe("REPLAYED:" + replayNotice("toolu_done") + "|done")
+    expect(text).not.toContain("running")
     expect(runtime.replayDuplicates).toBe(1)
   })
 
