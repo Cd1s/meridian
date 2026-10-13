@@ -181,6 +181,17 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 回滚点：`dist-accounts.old-ac62621-20261013-111853`；打包备份 `/opt/meridian/backups/live-ac62621-before-3c2ce8c-20261013-111837.tgz`（sha256 `79d45931…`），并已 `agent-backup put`。
 - 验证：部署前后 `/health` 均为 20 个账号、失败 acc20/acc21/acc23（部署前已存在）；面板 200。实机 agy（`gemini-3.8-flash-medium`）：acc1 `tool_use` → acc2 的 key 发 tool_result，`agy_account_affinity kind=tool holder=acc1 status=200`，回答包含随机码，未出现 Meridian 字样；部署后 3 分钟日志没有 error。
 
+### 2026-10-13 回放保护不再把旧结果当新结果（#36，同 rynfar/meridian#1340 修订）
+- 原因：上游维护者审 #1340 时指出，只看工具名和参数分不清是不是同一次操作。例如轮询状态读到 `running`，后台被替换、历史回放后，模型再读一次是正常轮询，但旧保护直接把记录的 `running` 当新结果返回。#30 的保护也有这个问题。
+- 改动（#36）：回放后的新 run 在还没向客户端发出任何调用之前，第一个完全相同的调用不执行，也不返回旧内容，而是返回一条“未执行”提示（`is_error`），提示里写明已完成调用的 `tool_use_id`。模型再调用一次，就照常发给客户端执行。
+- 测试脚本：`scripts/e2e-antigravity-replay-poll.mjs`，和上游 PR 是同一套。本 fork 的 MCP 结果字段叫 `client_result`，脚本两种字段名都认。
+- 实测：
+  - SG（Linux，`gemini-3.8-flash-medium`）：旧保护 3/3 次把 `running` 当新结果返回；新版 3/3 次先返回提示，模型再读，读到 `done`。
+  - MacBook Air（macOS arm64）：官方 agy 1.2.7（可执行文件 sha256 `8c01ef82…`）、Pi 1.1.0（`dist/bundle/cli.js` sha256 `e79626f2…`）、`gemini-3.8-flash-low`，使用 Meridian Pi 插件并先做 fixture 预检。四组结果：上游 main PASS，旧保护 FAIL（回放后收到 `running`），新版 PASS，打包安装版 PASS。本 fork 版本 `e87104b1` 也 PASS（提示 → 再读 → `done`）。证据在 rynfar/meridian#1340 的 `docs/maintenance/evidence/1340-replay-notice-20261013.md`。
+- MacBook Air 环境说明：
+  - agy 登录信息存在钥匙串里，SSH 会话读不到。测试改为用 `open` 让桌面会话里的“终端”运行 `.command` 脚本。
+  - 测试用的 agy 1.2.7 放在 `~/meridian-e2e/owned/agy-1.2.7/`，并设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true`；全局的 `~/.local/bin/agy` 是 1.3.3，保持不动。
+
 ## 同步上游
 
 
