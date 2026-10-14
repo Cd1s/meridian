@@ -10,7 +10,8 @@
  *    OpenCode uses.
  */
 import { describe, it, expect } from "bun:test"
-import { claudeCodeAdapter, isClaudeCodeAuxiliaryRequest } from "../proxy/adapters/claudecode"
+import type { Context } from "hono"
+import { CLAUDE_CODE_AGENT_ID_HEADER, claudeCodeAdapter, claudeCodeSessionKey, isClaudeCodeAuxiliaryRequest } from "../proxy/adapters/claudecode"
 
 describe("claudeCodeAdapter — identity", () => {
   it("has name 'claude-code'", () => {
@@ -20,8 +21,9 @@ describe("claudeCodeAdapter — identity", () => {
 
 describe("claudeCodeAdapter.getSessionId", () => {
   it("extracts a session ID from Claude Code's JSON-string metadata", () => {
+    // Any unrelated header value is ignored; only the agent-id header keys.
     const ctx = {
-      req: { header: () => "any-value" },
+      req: { header: (name: string) => name === CLAUDE_CODE_AGENT_ID_HEADER ? undefined : "any-value" },
     }
     const body = {
       metadata: {
@@ -78,6 +80,50 @@ describe("claudeCodeAdapter.getSessionId", () => {
       },
     }
     expect(claudeCodeAdapter.getSessionId(ctx as any, {})).toBeUndefined()
+  })
+})
+
+describe("Claude Code subagent session keys", () => {
+  const body = { metadata: { user_id: JSON.stringify({ session_id: "parent-sid" }) } }
+  const withAgent = (agentId?: string): Context => {
+    const ctx = { req: { header: (name: string) => (name === CLAUDE_CODE_AGENT_ID_HEADER ? agentId : undefined) } }
+    return ctx as unknown as Context
+  }
+
+  it("keys the main conversation by its bare session id", () => {
+    expect(claudeCodeAdapter.getSessionId(withAgent(), body)).toBe("parent-sid")
+  })
+
+  it("keys an Agent-tool subagent by session id and agent id", () => {
+    expect(claudeCodeAdapter.getSessionId(withAgent("a4a81dc1bbf7ee837"), body))
+      .toBe("parent-sid:agent:a4a81dc1bbf7ee837")
+  })
+
+  it("gives parallel subagents distinct keys", () => {
+    const first = claudeCodeAdapter.getSessionId(withAgent("a9b1a8c1cf8639b90"), body)
+    const second = claudeCodeAdapter.getSessionId(withAgent("a974a04cc37ab3ce8"), body)
+    expect(first).not.toBe(second)
+  })
+
+  it("ignores a malformed or oversized agent id", () => {
+    for (const agentId of ["", "has space", "a/b", "é", "x".repeat(129)]) {
+      expect(claudeCodeAdapter.getSessionId(withAgent(agentId), body)).toBe("parent-sid")
+    }
+    expect(claudeCodeSessionKey("x".repeat(128), body)).toBe(`parent-sid:agent:${"x".repeat(128)}`)
+  })
+
+  it("never manufactures a key from an agent id alone", () => {
+    expect(claudeCodeAdapter.getSessionId(withAgent("a4a81dc1bbf7ee837"), {})).toBeUndefined()
+    expect(claudeCodeSessionKey("a4a81dc1bbf7ee837", { metadata: { user_id: "not-json" } })).toBeUndefined()
+  })
+
+  it("roots main and subagent requests at the bare session id", () => {
+    expect(claudeCodeAdapter.getRootSessionId!(withAgent(), body)).toBe("parent-sid")
+    expect(claudeCodeAdapter.getRootSessionId!(withAgent("a4a81dc1bbf7ee837"), body)).toBe("parent-sid")
+  })
+
+  it("declares no parent lineage for a subagent", () => {
+    expect(claudeCodeAdapter.getParentSessionId!(withAgent("a4a81dc1bbf7ee837"), body)).toBeUndefined()
   })
 })
 
@@ -331,6 +377,27 @@ describe("isClaudeCodeAuxiliaryRequest", () => {
       .toBe(false)
   })
 
+  // The session-state classifier sends one user message and no stop sequence.
+  // Only a request from the CLI itself is recognised by shape alone.
+  it("recognises a tool-less unstreamed side call from the CLI without stop sequences", () => {
+    const stateCard = {
+      model: "claude-opus-4-8",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: "Current state: working (for 3m)\nTool calls so far: Bash\u00d72\nUser's most recent ask: \"go\"\n\nAssistant message tail (last 18 chars):\nRunning the tests." }],
+      metadata: classifier.metadata,
+    }
+    expect(isClaudeCodeAuxiliaryRequest(undefined, stateCard, undefined, true)).toBe(true)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, { ...stateCard, stream: false }, undefined, true)).toBe(true)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, stateCard)).toBe(false)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, { ...stateCard, stream: true }, undefined, true)).toBe(false)
+    expect(isClaudeCodeAuxiliaryRequest(undefined, {
+      ...stateCard,
+      tools: [{ name: "Read", input_schema: { type: "object" } }],
+    }, undefined, true)).toBe(false)
+    const { metadata: _omitted, ...unkeyed } = stateCard
+    expect(isClaudeCodeAuxiliaryRequest(undefined, unkeyed, undefined, true)).toBe(false)
+  })
+
   it("requires a Claude Code session key", () => {
     const { metadata: _omitted, ...unkeyed } = classifier
     expect(isClaudeCodeAuxiliaryRequest(undefined, unkeyed)).toBe(false)
@@ -355,6 +422,14 @@ describe("claudeCodeAdapter.isAuxiliaryRequest", () => {
     messages: [{ role: "user", content: "x" }],
     metadata: { user_id: JSON.stringify({ session_id: "conv-1" }) },
   }
+
+  it("recognises the CLI by its session header for a side call without stop sequences", () => {
+    const { stop_sequences: _omitted, ...withoutStops } = body
+    expect(claudeCodeAdapter.isAuxiliaryRequest?.(contextWith({}), withoutStops)).toBe(false)
+    expect(claudeCodeAdapter.isAuxiliaryRequest?.(
+      contextWith({ "x-claude-code-session-id": "b2004dfc-6042-48d9-9c23-b4475f64b6f5" }), withoutStops,
+    )).toBe(true)
+  })
 
   it("reads the request-class header from the context", () => {
     expect(claudeCodeAdapter.isAuxiliaryRequest?.(contextWith({}), body)).toBe(true)
