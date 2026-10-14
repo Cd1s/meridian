@@ -335,6 +335,12 @@ interface RequestMeta {
    * where in the chain a hop sits, and that it is one at all.
    */
   routeAttempt?: number
+  /**
+   * The adapter declared this a side call sharing the conversation's session
+   * key (`AgentIdentity.isAuxiliaryRequest`). Decided once, before the turn
+   * lease, so skipping the lease and skipping session lookup cannot disagree.
+   */
+  auxiliaryRequest?: boolean
 }
 
 interface PriorityAttemptExposure {
@@ -2793,6 +2799,10 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         // and otherwise text-free bodies) has no stable cache identity either,
         // and runs fresh rather than manufacturing a generation for an empty key.
         //
+        // An adapter-declared auxiliary request is the one keyed request that
+        // is independent anyway: it carries the conversation's key without
+        // being a turn of it (see AgentIdentity.isAuxiliaryRequest).
+        //
         // One decision, one reported cause: deriving the flag from the cause is
         // what keeps the log honest. #820 was a log full of `lineage=new` whose
         // only explanation lived in this file, and a label computed separately
@@ -2803,6 +2813,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
           isSubagent: isSubagentRequest,
           clientDrivenLoop: isClientDrivenLoop,
           hasDurableKey: Boolean(durableMappingKey),
+          isAuxiliary: requestMeta.auxiliaryRequest === true,
         })
         const isIndependentSession = independentCause !== undefined
         // Once per process: the operator cannot see this in success metrics.
@@ -2961,6 +2972,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         const lostRaceWhileWaiting = Boolean(
           agentSessionId &&
           profileSessionId &&
+          !isIndependentSession &&
           !advancesDurableCheckpoint &&
           (requestMeta.sessionTurnLease?.advancedWhileWaiting(profileSessionId) || advancedAcrossProcesses) &&
           lineageResult.type !== "continuation" &&
@@ -3484,7 +3496,9 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         }
       }
       const recoveryToolKey = profileSessionId ?? (firstResultId ? anonymousRecoveryKey(firstResultId) : undefined)
-      if (passthrough && recoveryToolKey) {
+      // A side call under the conversation's key must not spend the
+      // conversation's one-shot recovery grant.
+      if (passthrough && recoveryToolKey && independentCause !== "auxiliary-request") {
         const cached = sessionToolCache.get(recoveryToolKey)
         const recovered = cached?.recovery
         if (cached && recovered) {
@@ -7325,13 +7339,19 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
                 if (!messageStartEmitted || streamClosed || (pendingTerminalDelta && !confirmedToolUnavailable)) return false
                 if (durableWritesRevoked) return false
                 if (requestAbort.abortSnapshot().aborted) return false
-                // Every streamed block must be complete AND name a declared
-                // client tool (after alias resolution — records store the
-                // resolved name already).
+                // Every streamed block must be complete. Without the CLI's
+                // rejection there is no proof the call did not run, so it
+                // must also name a declared client tool (after alias
+                // resolution — records store the resolved name already). A
+                // rejected call ran nowhere, so an undeclared name (#1364:
+                // `bash_placeholder`, `mcp:oc__bash`) goes to the client as
+                // the model wrote it, as the API itself would deliver it, and
+                // the client's own invalid-tool result lets the model correct
+                // itself.
                 for (const record of streamedToolBlockRecords.values()) {
                   if (!isStreamedToolBlockComplete(record)) return false
                   const declared = requestTools.some((t: { name: string }) => t.name === record.name)
-                  if (!declared) return false
+                  if (!declared && !confirmedToolUnavailable) return false
                 }
                 // The tracker must cover every streamed id; a divergence
                 // (e.g. a block the buffered path skipped tracking) is a veto.
@@ -8233,6 +8253,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
 
     let body: any
     let sharedSessionRevisionsAtArrival: Record<string, string | null> | undefined
+    let auxiliaryRequest = false
     let routingTurnIdentity: RequestMeta["routingTurnIdentity"]
     try {
       try {
@@ -8261,6 +8282,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         const adapter = detectAdapter(c)
         routingTurnIdentity = adapter.getRoutingTurnIdentity?.(c, body)
         const agentSessionId = adapter.getSessionId(c, body)
+        auxiliaryRequest = agentSessionId !== undefined && adapter.isAuxiliaryRequest?.(c, body) === true
         if (agentSessionId) {
           // Registered BEFORE the turn lease is acquired: a child queued behind
           // its own session's running turn is exactly the request a parent abort
@@ -8287,6 +8309,13 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
             clientSignal.addEventListener("abort", onClientAbort, { once: true })
             detachSubtreeAbortWatch = () => clientSignal.removeEventListener("abort", onClientAbort)
           }
+        }
+        // A side call has no turn: it never reads or publishes the mapping, so
+        // there is nothing to serialize. Queueing it behind the conversation's
+        // running turn only delayed the permission check that turn is waiting
+        // on. It stays registered in the session tree above, so a client abort
+        // still reaches it like any keyed request.
+        if (agentSessionId && !auxiliaryRequest) {
           const arrivalProfileIds = new Set(
             getEffectiveProfiles(finalConfig.profiles).map((profile) => profile.id),
           )
@@ -8389,6 +8418,7 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         sessionTurnLease,
         sharedSessionRevisionsAtArrival,
         routingTurnIdentity,
+        auxiliaryRequest,
         retainSessionTurnFence: () => { retainSessionTurnFence = true },
         cascadeSubtreeCancel,
         inflight: inflightEntry,

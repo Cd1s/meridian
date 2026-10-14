@@ -2952,7 +2952,7 @@ describe("Integration: passthrough early stop", () => {
   // The SDK can stream a declared client call but reject its bare name before
   // PreToolUse runs ("No such tool available: read"). The proxy must deliver
   // that complete call to the client, then evict the unusable SDK checkpoint.
-  // Incomplete or undeclared calls must remain errors.
+  // Incomplete calls must remain errors.
   it("stream: uncaptured declared Pi calls complete the handoff by default", async () => {
     delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
     const sessionHeader = "es-capped-dangling"
@@ -3566,6 +3566,222 @@ describe("Integration: passthrough early stop", () => {
     }, "es-capped-other-error", { "x-meridian-agent": "pi" })
     expect(await res.text()).toContain("event: error")
   })
+
+  // #1364: the model can emit a name the client never declared. The CLI
+  // rejects it like any other unregistered name, so nothing ran, and the
+  // client must get the call back to answer with its own invalid-tool result.
+  const BASH_TOOL = { name: "bash", input_schema: { type: "object",
+    properties: { command: { type: "string" } }, required: ["command"] } }
+  const rejectedTurn = (calls: Array<{ id: string; name: string; rejected?: boolean }>, maxTurns = 1) => {
+    mockMessages = [
+      messageStart("msg_undeclared"),
+      ...calls.flatMap(({ id, name }, index) => [
+        toolUseBlockStart(index, name, id), inputJsonDelta(index, '{"command":"ls"}'), blockStop(index),
+      ]),
+      messageDelta("tool_use"),
+      messageStop(),
+      { ...assistantMessage(calls.map(({ id, name }) => ({ type: "tool_use", id, name, input: { command: "ls" } }))),
+        test_skip_pre_tool_hook: true },
+      ...calls.filter(call => call.rejected !== false).map(({ id, name }) => unavailableToolMessage(id, name)),
+      { type: "result", subtype: "error_max_turns", is_error: true, session_id: "test-session" },
+    ]
+    mockTerminalError = new Error(`Claude Code returned an error result: Reached maximum number of turns (${maxTurns})`)
+  }
+  const streamedToolCalls = (events: ReturnType<typeof parseSSE>) => events.flatMap(({ event, data }) => {
+    const block = data.content_block as { type?: string; id?: string; name?: string } | undefined
+    return event === "content_block_start" && block?.type === "tool_use" ? [`${block.id}:${block.name}`] : []
+  })
+  const stopReasons = (events: ReturnType<typeof parseSSE>) => events.flatMap(({ event, data }) => {
+    const delta = data.delta as { stop_reason?: string } | undefined
+    return event === "message_delta" && typeof delta?.stop_reason === "string" ? [delta.stop_reason] : []
+  })
+
+  for (const name of ["bash_placeholder", "mcp:oc__bash"]) {
+    it(`stream: a CLI-rejected undeclared call (${name}) is handed to the client`, async () => {
+      delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+      const sessionHeader = `es-undeclared-${name.replace(/\W/g, "-")}`
+      mockMessages = [assistantMessage([{ type: "text", text: "seed" }])]
+      await (await post(app, {
+        model: "claude-sonnet-4-5", max_tokens: 400, stream: false,
+        tools: [BASH_TOOL], messages: [{ role: "user", content: "seed" }],
+      }, sessionHeader)).text()
+      expect(lookupSharedSession(`${sessionHeader}-${TEST_RUN_ID}`)).toBeDefined()
+      rejectedTurn([{ id: "toolu_undeclared", name }])
+
+      const res = await post(app, {
+        model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+        messages: [
+          { role: "user", content: "seed" },
+          { role: "assistant", content: "seed" },
+          { role: "user", content: "list the files" },
+        ],
+      }, sessionHeader)
+      expect(res.status).toBe(200)
+      const events = parseSSE(await res.text())
+      expect(events.filter(e => e.event === "error")).toHaveLength(0)
+      expect(streamedToolCalls(events)).toEqual([`toolu_undeclared:${name}`])
+      expect(stopReasons(events)).toEqual(["tool_use"])
+      expect(events.filter(e => e.event === "message_stop")).toHaveLength(1)
+      // The SDK session holds the rejection, not the client's result.
+      expect(lookupSharedSession(`${sessionHeader}-${TEST_RUN_ID}`)).toBeUndefined()
+    })
+  }
+
+  it("stream: a rejected batch mixing declared and undeclared names is handed over whole", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_bare", name: "bash" }, { id: "toolu_invented", name: "bash_placeholder" }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-batch")
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    expect(streamedToolCalls(events)).toEqual(["toolu_bare:bash", "toolu_invented:bash_placeholder"])
+    expect(stopReasons(events)).toEqual(["tool_use"])
+  })
+
+  it("stream: a rejected undeclared call recovers at the deferred-tools turn budget", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder" }], 4)
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true,
+      tools: [BASH_TOOL, { name: "lsp_diagnostics", defer_loading: true, input_schema: { type: "object", properties: {} } }],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-deferred")
+    const events = parseSSE(await res.text())
+    expect(capturedQueryParamsAll[0]?.options.maxTurns).toBe(4)
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    expect(streamedToolCalls(events)).toEqual(["toolu_invented:bash_placeholder"])
+    expect(stopReasons(events)).toEqual(["tool_use"])
+  })
+
+  // Controls: the rejection is the only thing that excuses an undeclared name.
+  it("stream: an undeclared call without a CLI rejection still errors under the opt-in", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "1"
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder", rejected: false }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-unproven")
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+    expect(stopReasons(events)).not.toContain("tool_use")
+  })
+
+  it("stream: one unrejected call keeps an undeclared rejected call an error", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "1"
+    rejectedTurn([
+      { id: "toolu_unproven", name: "bash", rejected: false },
+      { id: "toolu_invented", name: "bash_placeholder" },
+    ])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-partial-proof")
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+    expect(stopReasons(events)).not.toContain("tool_use")
+  })
+
+  it("stream: a rejection naming another tool does not cover an undeclared call", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder", rejected: false }])
+    mockMessages.splice(-1, 0, unavailableToolMessage("toolu_invented", "bash"))
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-name-mismatch")
+    expect(parseSSE(await res.text()).filter(e => e.event === "error")).toHaveLength(1)
+  })
+
+  // A batch where the hook captured one call is the captured recovery's, with
+  // or without #1364: both blocks already streamed, so the client gets both
+  // and answers the invented one itself.
+  it("stream: a captured call beside a rejected undeclared call hands over both", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    const sessionHeader = "es-undeclared-beside-captured"
+    mockMessages = [
+      messageStart("msg_mixed"),
+      toolUseBlockStart(0, "mcp__oc__bash", "toolu_real"), inputJsonDelta(0, '{"command":"ls"}'), blockStop(0),
+      toolUseBlockStart(1, "bash_placeholder", "toolu_invented"), inputJsonDelta(1, '{"command":"ls"}'), blockStop(1),
+      messageDelta("tool_use"),
+      messageStop(),
+      { type: "test_pre_tool_hook", tool_name: "mcp__oc__bash", tool_use_id: "toolu_real", tool_input: { command: "ls" } },
+      { ...assistantMessage([
+        { type: "tool_use", id: "toolu_real", name: "mcp__oc__bash", input: { command: "ls" } },
+        { type: "tool_use", id: "toolu_invented", name: "bash_placeholder", input: { command: "ls" } },
+      ]), test_skip_pre_tool_hook: true },
+      userDenyMessage("toolu_real"),
+      unavailableToolMessage("toolu_invented", "bash_placeholder"),
+      { type: "result", subtype: "error_max_turns", is_error: true, session_id: "test-session" },
+    ]
+    mockTerminalError = new Error("Claude Code returned an error result: Reached maximum number of turns (1)")
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, sessionHeader)
+    const events = parseSSE(await res.text())
+    expect(events.filter(e => e.event === "error")).toHaveLength(0)
+    expect(streamedToolCalls(events)).toEqual(["toolu_real:bash", "toolu_invented:bash_placeholder"])
+    expect(stopReasons(events)).toEqual(["tool_use"])
+    expect(lookupSharedSession(`${sessionHeader}-${TEST_RUN_ID}`)?.passthroughToolCallIds)
+      .toEqual(["toolu_real", "toolu_invented"])
+  })
+
+  // A name under another MCP server's prefix is hidden from the client as an
+  // SDK-internal tool, so there is no streamed call to hand over.
+  it("stream: a rejected call under a foreign MCP prefix was never forwarded and still errors", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_invented", name: "mcp__other__bash" }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-foreign-prefix")
+    const events = parseSSE(await res.text())
+    expect(streamedToolCalls(events)).toEqual([])
+    expect(events.filter(e => e.event === "error")).toHaveLength(1)
+  })
+
+  // Rejection recovery is streaming-only (docs/configuration.md); a declared
+  // and an undeclared name fail alike without it.
+  for (const name of ["bash", "bash_placeholder"]) {
+    it(`non-stream: a CLI-rejected call (${name}) is not recovered`, async () => {
+      delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+      rejectedTurn([{ id: "toolu_rejected", name }])
+      const res = await post(app, {
+        model: "claude-sonnet-4-5", max_tokens: 400, stream: false, tools: [BASH_TOOL],
+        messages: [{ role: "user", content: "list the files" }],
+      }, `es-rejected-nonstream-${name}`)
+      expect(res.status).toBe(500)
+      expect((await res.json()).error.message).toContain("Reached maximum number of turns (1)")
+    })
+  }
+
+  // Claude Code 2.1.296 explains the refusal of a disabled built-in after the
+  // name. Only the bare form is recognized as proof today, so the model
+  // writing `Bash` for a declared `bash` still ends the turn in an error.
+  it("stream: a built-in name refused with an explanation is not yet recognized as rejected", async () => {
+    delete process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY
+    rejectedTurn([{ id: "toolu_builtin", name: "Bash", rejected: false }])
+    mockMessages.splice(-1, 0, unavailableToolMessage("toolu_builtin",
+      "Bash. Bash is disabled for this session, in subagents as well as here."))
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-builtin")
+    expect(parseSSE(await res.text()).filter(e => e.event === "error")).toHaveLength(1)
+  })
+
+  it("stream: disabling uncaptured recovery also keeps an undeclared rejected call an error", async () => {
+    process.env.MERIDIAN_PASSTHROUGH_UNCAPTURED_TOOL_RECOVERY = "0"
+    rejectedTurn([{ id: "toolu_invented", name: "bash_placeholder" }])
+    const res = await post(app, {
+      model: "claude-sonnet-4-5", max_tokens: 400, stream: true, tools: [BASH_TOOL],
+      messages: [{ role: "user", content: "list the files" }],
+    }, "es-undeclared-disabled")
+    expect(parseSSE(await res.text()).filter(e => e.event === "error")).toHaveLength(1)
+  })
+
 
 
   it("stream: uncaptured recovery can be disabled", async () => {
