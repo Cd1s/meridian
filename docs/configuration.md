@@ -47,6 +47,9 @@ Environment variables, endpoints, authentication, SDK feature toggles, passthrou
 | `MERIDIAN_SILENT_TURN_RECOVERY` | `CLAUDE_PROXY_SILENT_TURN_RECOVERY` | `1` | Set to `0` to stop spending a recovery turn on a [silent turn](#silent-turns). Detection and telemetry stay on either way |
 | `MERIDIAN_UPSTREAM_IDLE_MS` | `CLAUDE_PROXY_UPSTREAM_IDLE_MS` | `90000` | Milliseconds the upstream stream may go quiet before the turn is treated as stalled. Raise it for long-thinking turns that were being killed mid-flight; `0` disables the guard entirely. Applies to the recovery turn too. |
 | `MERIDIAN_UPSTREAM_IDLE_MAX_CONSECUTIVE` | `CLAUDE_PROXY_UPSTREAM_IDLE_MAX_CONSECUTIVE` | `3` | Consecutive idle stalls for the same request and session before returning a terminal error. Identical retries are then rejected before another SDK query for one idle window (at least 60 seconds). A changed request or completed turn resets the streak; rejected retries do not extend the pause. `0` disables this ceiling. Tracking is bounded and local to the proxy instance; requests without a correlatable session are not pooled. |
+| `MERIDIAN_UPSTREAM_UNREACHABLE_AFTER_MS` | `CLAUDE_PROXY_UPSTREAM_UNREACHABLE_AFTER_MS` | `120000` | How long connection failures must keep arriving, with no observed configured-Claude-egress answer in between, before `/readyz` reports this instance's Claude connection failed. See [Readiness and upstream reachability](#readiness-and-upstream-reachability). Wins over `upstreamUnreachableAfterMs` in `settings.json`. |
+| `MERIDIAN_UPSTREAM_UNREACHABLE_HOLD_MS` | `CLAUDE_PROXY_UPSTREAM_UNREACHABLE_HOLD_MS` | `300000` | How long `/readyz` keeps failing after the latest connection failure before it lets traffic back in to observe the configured Claude egress again. `0` never fails readiness. Wins over `upstreamUnreachableHoldMs`. |
+| `MERIDIAN_UPSTREAM_UNREACHABLE_MIN_FAILURES` | `CLAUDE_PROXY_UPSTREAM_UNREACHABLE_MIN_FAILURES` | `3` | Connection failures a run needs before it counts, however long it lasted. Wins over `upstreamUnreachableMinFailures`. |
 | `MERIDIAN_SUPPRESS_SCRATCHPAD` | — | `1` | Set to `0` to disable prompt-level scratchpad suppression in passthrough mode (#627, #1049) |
 | `MERIDIAN_SUPPRESS_SCRATCHPAD_ENV` | — | `0` | Set to `1` to also pass `CLAUDE_CODE_SESSION_KIND=bg` to the SDK subprocess. Disabled by default to prevent CLI 2.1.274+ from registering persistent phantom background jobs under `~/.claude/jobs/` (#1049) |
 | `MERIDIAN_SUPPRESS_IMPLICIT_ATTACHMENTS` | — | `1` | Set to `0` to stop defaulting `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` in passthrough mode. Does not clear an explicitly inherited CLI setting. See [known limitations](#known-limitations). |
@@ -323,8 +326,12 @@ adapter lets the subprocess run the built-in WebFetch at all.
 | `POST /v1/sessions/:key/cancel` | Cancel live requests in a session subtree |
 | `GET/POST /v1/design/*` | Claude Design MCP proxy (see [Claude Design MCP](agents.md#claude-design-mcp)) |
 | `GET/POST /design-login` | OAuth flow for the design scopes |
-| `GET /health` | Auth status, mode, plugin status |
+| `GET /health` | Auth status, mode, plugin status, upstream reachability |
+| `GET /livez` | `ok` while the process is turning; for restart supervisors |
+| `GET /readyz` | `ok`, or `503` naming the failed checks: whether traffic should come to this instance. See [Readiness and upstream reachability](#readiness-and-upstream-reachability) |
+| `PUT /upstream-reachability` | Force or clear the upstream reachability state, to test a load balancer; loopback clients only |
 | `GET /inflight` | Client requests in flight per upstream; loopback clients only. See [Restarting when idle](#restarting-when-idle) |
+| `POST /drain`, `DELETE /drain` | Best-effort bounded generation hold for local supervisors; configured API key required. See [Draining for a restart](#draining-for-a-restart) |
 | `POST /auth/refresh` | Manually refresh the OAuth token |
 | `GET /telemetry` | Performance dashboard |
 | `GET /telemetry/requests` | Recent request metrics (JSON) |
@@ -362,6 +369,8 @@ Illustrative health response excerpt (versions and status vary by installation):
 ```
 
 `plugin.opencode` is `"configured"` when `meridian setup` has been run, `"not-configured"` otherwise.
+Claude and combined-provider health responses also carry `upstream.claude`, described under
+[Readiness and upstream reachability](#readiness-and-upstream-reachability).
 
 With `"showHostname": true` in `settings.json` (or the switch under **Site
 Header** at `/settings`), `/health` also carries `"hostname"`, the machine's
@@ -577,6 +586,120 @@ Restart=no
 
 The idle exit setting is optional. It starts a graceful shutdown after the configured period without a model request; the socket unit starts a new process on the next connection. The inherited fd is not passed on to the SDK subprocess. [E59](../E2E.md#e59-node-socket-activation-and-idle-exit) describes the process-level probe.
 
+## Readiness and upstream reachability
+
+Two probes for whatever sits in front of Meridian, shaped like
+kube-apiserver's: plain text `ok` when everything passes, and with `?verbose`
+one `[+]name ok` / `[-]name failed: reason` line per check.
+
+- `GET /livez` answers whether a restart would help. It has no checks: reaching
+  it means the process is turning. Point a restart supervisor here.
+- `GET /readyz` answers whether traffic should come to this instance rather
+  than another one. It answers `503` naming the failed checks: `profiles` (no
+  account configured), `claude-executable` (no CLI resolved) and
+  `upstream-claude` (native Claude traffic from this instance has definite connection failures).
+
+Neither needs the API key: a load balancer reads a `401` as "down".
+
+`upstream-claude` exists for a host whose network still serves HTTP while it
+has definite connection failures to its configured Claude egress: a dead resolver, a broken route, a firewall. Without it
+such an instance looks ready, keeps its share of traffic, and every request
+spends the CLI's whole retry budget before failing with "API Error: Can't reach
+the API server".
+
+- **Only connection failures count**: DNS (`ENOTFOUND`, `EAI_AGAIN`), refused,
+  reset, no route, connect-only timeouts, TLS and proxy-tunnel failures, read
+  from validated native terminal error envelopes on real SDK queries. A null
+  retry status is ambiguous (it includes slow/read timeouts) and supplies no
+  evidence. Generic timeout text, bare timeout codes, arbitrary model/tool
+  text, replay and synthetic normal answers do not change the check.
+- **Transport answers**: a valid native `system/api_retry` integer HTTP status
+  from 100 through 599, or a fresh real response start, clears the failure run
+  for this instance. This includes configured-egress refusals; it does not
+  establish Anthropic origin, usable credentials or successful inference.
+  HTTP-looking strings and bare error enums are insufficient. Old streaming
+  completions cannot clear an outage that began after their response start.
+- **When it fails**: after at least 3 connection failures spanning 2 minutes
+  with no answer in between.
+- **For how long**: until 5 minutes after the latest failure. Then the check
+  passes again, so real traffic can observe the configured Claude egress: the first
+  answer clears it, and the first failure fails it again at once.
+- **Passive**: Meridian never sends a request just to test reachability.
+
+```text
+[-]upstream-claude failed: This instance's configured Claude egress failed since 2026-10-01T21:00:00.000Z (last error: dns, 7 connection failures, last answered 2026-10-01T20:59:58.000Z)
+readyz check failed
+```
+
+The thresholds are `upstreamUnreachableAfterMs`, `upstreamUnreachableHoldMs`
+and `upstreamUnreachableMinFailures` in `settings.json`, or the
+`MERIDIAN_UPSTREAM_UNREACHABLE_*` variables in the
+[environment table](#configuration). `MERIDIAN_*` takes precedence over its
+`CLAUDE_PROXY_*` alias, then a valid persisted numeric setting, then the default;
+invalid environment values fall back to the persisted value. Values must be
+non-negative safe integers: timing values are bounded by the representable Date
+range, and the minimum failure count is at least one. Non-object or malformed
+settings and incorrectly typed values are ignored. They are re-read on every
+evaluation. A hold of `0` records the observations without failing readiness.
+State is ephemeral and local to each server instance, including embedded
+instances that share SDK capacity. Accounts on that instance aggregate; another
+instance or Antigravity traffic cannot clear it. `ok` means there is no currently
+declared outage; it can retain failures below the detection threshold, and a
+forced-ok override can mask a natural outage. It is not a fresh reachability
+guarantee.
+
+`/health` reports the state as `upstream.claude` (timestamps ISO-8601 or `null`;
+no error text, account or token):
+
+```json
+"upstream": {
+  "claude": {
+    "state": "unreachable",
+    "since": "2026-10-01T21:02:00.000Z",
+    "failingSince": "2026-10-01T21:00:00.000Z",
+    "consecutiveFailures": 7,
+    "lastReachedAt": "2026-10-01T20:59:58.000Z",
+    "lastFailureAt": "2026-10-01T21:03:10.000Z",
+    "lastErrorKind": "dns",
+    "holdUntil": "2026-10-01T21:08:10.000Z",
+    "override": null
+  }
+}
+```
+
+`state` is `ok`, `unreachable` or `probing` (the hold has expired and traffic is
+let back in). The site header shows it too: a red "Claude connection failed" pill and a
+yellow "Rechecking Claude connection" one while probing. Details name this
+instance's configured Claude egress and open on hover or button activation;
+Escape or blur dismisses them.
+Draining and offline status retain precedence. Combined instances label the
+Claude observation explicitly; it does not describe Antigravity availability.
+The hostname and build provenance retain their existing header positions.
+
+To test a load balancer's failover without breaking a host's DNS, force the
+state from the host itself:
+
+```bash
+curl -X PUT http://127.0.0.1:3456/upstream-reachability \
+  -H 'content-type: application/json' -d '{"state": "unreachable", "ttlMs": 300000}'
+curl -X PUT http://127.0.0.1:3456/upstream-reachability \
+  -H 'content-type: application/json' -d '{"state": null}'
+```
+
+`state` is `"unreachable"`, `"ok"` or `null` to clear; `ttlMs` defaults to ten
+minutes and is capped at a day, so a forgotten override expires. Like
+`/inflight`, only a loopback peer without forwarding headers gets an answer;
+when `MERIDIAN_API_KEY` is set the key is required as well. Browser writes must
+pass the same Origin policy as header settings: exact origin, or the narrow
+HTTPS-to-HTTP TLS-termination bridge preserving Host/port (including explicit
+default 443). Foreign, opaque, malformed and different-port origins are
+rejected. CLI requests without Origin are permitted after the loopback/key
+checks. Forwarding headers never confer authority. Responses are no-store.
+Forced `ok` masks only the reachability check, preserving executable/profile
+checks and shutdown behavior. Natural observations continue underneath an
+override and resume after expiry or clear; `since` describes the visible forced
+state truthfully.
+
 ## Restarting when idle
 
 `GET /inflight` lets a supervisor on the same host observe admitted client
@@ -621,6 +744,75 @@ probe. Use the [graceful shutdown](#graceful-shutdown) drain; this endpoint
 is not an admission barrier. Background Responses jobs are not restart
 resumable, so a supervisor must also wait for those jobs and pending client
 tool continuations to finish through their own lifecycle APIs.
+
+### Draining for a restart
+
+Overlapping traffic can prevent `total` reaching zero. `POST /drain` opens a
+best-effort idle opportunity by delaying new generation requests while already
+admitted work continues. A zero snapshot does not authorize a safe restart or
+transfer accepted client connections. Long requests, time caps, saturation and
+background work can still prevent idle; a supervisor must give up or retry.
+
+- DELETE or the drain timeout releases held requests normally. Each request
+  also proceeds after its individual `holdMs` cap. There is no guarantee that
+  a client will tolerate the delay without its own timeout or retry.
+- A drain ends on `DELETE /drain`, after `timeoutMs`, or when Meridian begins
+  shutting down. At shutdown the held requests get the shutdown `503` with
+  `Retry-After`, as any new request does.
+- Held requests are not in `total`; `drain.held` counts them.
+- It holds Claude Messages and public OpenAI generation translations once,
+  plus combined Antigravity generation submissions (`/v1/messages`,
+  `/messages`, `/v1/chat/completions`, `/v1/responses` under `/antigravity`).
+  Cancellation, token estimates, polling/retrieval/deletion and other control
+  operations remain usable. Every admitted combined-provider POST retains its
+  existing HTTP count. Background Responses
+  jobs and pending client tool continuations keep running and are not held, so
+  a supervisor still waits for them through their own lifecycle APIs.
+- Body (optional JSON): `holdMs` (default 60000, 1000-240000) and `timeoutMs`
+  (default 600000, 10000-3600000). A `POST` while a drain is active changes
+  nothing and answers `started: false`.
+- The options body is limited to 1 KiB and a two-second read deadline. Shutdown
+  or socket abort revokes a pending read's authority. At the internal limit of
+  128 retained held reservations, additional requests proceed normally;
+  saturation does not increment `admittedAtCap`. This bounds held reservations,
+  timers and listeners, not all HTTP payloads or total server memory.
+- POST/DELETE require the actual loopback peer, no Forwarded/X-Forwarded-For/
+  X-Real-IP headers, and no Origin header, including empty or `null`. If
+  `MERIDIAN_API_KEY` is configured, the matching `x-api-key` or Bearer key is
+  also required. GET `/inflight` keeps its existing keyless read-only policy.
+- Same-key and declared subtree cancellation reaches live, parsed held
+  requests without remembering a cancellation for later requests. Socket
+  abort removes its waiter before any SDK/session-store work. A body-only
+  identity cannot be registered before its JSON bytes arrive. Held requests
+  keep the existing opt-in idle-exit lifetime busy.
+- State belongs to this instance and disappears at restart. Authorized local
+  operators share it; the first caller has no exclusive lease. Standalone
+  Antigravity is unchanged. Soft-hold `draining` is distinct from shutdown
+  health/readiness and does not change them.
+
+`GET /inflight` reports it:
+
+```json
+{
+  "scope": "client-http",
+  "total": 0,
+  "draining": true,
+  "drain": {
+    "active": true,
+    "startedAt": "2026-09-30T12:00:00.000Z",
+    "endsAt": "2026-09-30T12:10:00.000Z",
+    "holdMs": 60000,
+    "held": 2,
+    "admittedAtCap": 0,
+    "lastEnded": null
+  }
+}
+```
+
+A supervisor that gives up calls idempotent `DELETE /drain`. During shutdown,
+held clients receive the existing route-appropriate 503/Retry-After response;
+their client must retry if appropriate. A replacement process has no previous
+hold or accepted connection ownership.
 
 ## Graceful shutdown
 
