@@ -806,9 +806,9 @@ export class AntigravityRuntime {
     const options = { env: this.childEnv, signal: this.shutdown.signal }
     this.cliVersion = (await readAgProbe(this.executable, "version", options)).trim()
     // Validate the binary before asking it to inspect subscription configuration.
-    if (this.cliVersion !== "1.3.4") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.3.4. Validate a CLI upgrade before updating the compatibility gate.`)
+    if (this.cliVersion !== "1.3.5") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.3.5. Validate a CLI upgrade before updating the compatibility gate.`)
     const config = await readAgProbe(this.executable, "configuration", options)
-    // The verified 1.2.7 and 1.3.4 effective settings expose an explicit boolean here.
+    // The verified 1.2.7, 1.3.4 and 1.3.5 effective settings expose an explicit boolean here.
     // Missing or malformed credits are indeterminate, not verified disabled.
     const settings = z.object({ command: z.object({ data: z.object({ config: z.object({ customModelsConfig: z.unknown().optional(), modelProvider: z.unknown().optional(), useG1Credits: z.boolean(), gcp: z.unknown().optional() }) }) }) }).parse(JSON.parse(config)).command.data.config
     const customModels = settings.customModelsConfig
