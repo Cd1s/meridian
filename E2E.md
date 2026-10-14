@@ -6595,6 +6595,64 @@ overlap (`total: 2`). The run proves the hold in-process under Bun with a real
 model; it does not drive a real supervisor or restart.
 [Evidence](docs/maintenance/evidence/1224-drain-live-20261013/README.md).
 
+## E75: Readiness follows the instance's real Claude egress
+
+**What it proves:** `/readyz` fails `upstream-claude` after real connection
+failures and recovers on a real answer (#1232, contract #1281).
+
+```bash
+bun scripts/e2e-upstream-reachability-live.mjs
+```
+
+The proxy runs in-process with shortened `MERIDIAN_UPSTREAM_UNREACHABLE_*`
+thresholds. One real request records an answer; the egress is then cut for
+real by pointing the SDK subprocess at a proxy port nothing listens on, with
+retries off. Pass criteria: requests fail; `/health` reports `upstream.claude`
+`unreachable` with the failure kind; `/readyz` fails `upstream-claude` while
+`/livez` stays up; after the hold `/readyz` admits traffic (`probing`) and one
+real answer clears the run. The isolated config has no profiles, so `/readyz`
+also fails its separate `profiles` check; the gate reads only the
+`upstream-claude` line.
+[Evidence](docs/maintenance/evidence/1232-reachability-live-20261014/candidate-report.json).
+
+## E76: Consecutive auxiliary replays reuse their cached history
+
+**What it proves:** a run of Claude Code side calls over a growing history
+reads the shared prefix from the prompt cache instead of rewriting it (#1297).
+
+```bash
+bun scripts/e2e-auxiliary-cache-live.mjs                     # build with the fix
+bun scripts/e2e-auxiliary-cache-live.mjs --expect-baseline   # build without it
+```
+
+Sends three caption-shaped requests (agent id header, streaming, the client's
+tools, the caption prompt appended to the last user message) over one subagent
+history that grows by a tool round each time, with a fresh nonce so no earlier
+run's cache is hit (`E2E_MODEL`, default `claude-sonnet-5-5`). Every caption
+must be handled as an auxiliary request. With the fix, captions 2 and 3 read at
+least 80% of what caption 1 wrote and write under half of it.
+[Evidence](docs/maintenance/evidence/1297-auxiliary-cache-20261014/README.md).
+
+## E77: Progress captions from the interactive client
+
+**What it proves:** a subagent's progress captions leave its working session
+alone with the real interactive Claude Code client (#1288, #1292).
+
+```bash
+bun scripts/e2e-claude-code-captions-interactive.mjs [--expect-baseline]
+```
+
+Print mode never sends captions, so the script drives the interactive TUI in a
+PTY (`scripts/e2e-claude-code-captions-interactive-driver.py`, Python 3 only)
+with two subagents kept busy for two minutes. A recording relay ties each proxy
+log line to its agent id. Pass: at least one caption is handled as an auxiliary
+request and the next request of each captioned subagent resumes
+(`lineage=continuation`). `--expect-baseline` requires no isolated caption and a
+`modified-history` divergence. Both builds also show early divergences in the
+interactive flow (a tool-less streamed request at startup, each subagent's first
+request repeated); those are outside this gate.
+[Evidence](docs/maintenance/evidence/1292-captions-interactive-20261014/README.md).
+
 ## Concurrent transcript publication
 
 Run `bun scripts/e2e-publication-lifetime.mjs` and again with `--stream` after lifecycle or publication changes. This gate uses real Claude Max queries and two concurrent HTTP conversations, each with a fresh and resumed turn. A timing hook pauses each request after its real SDK writer lease is released, promotes its request pin as the owning proxy would, and runs a separate collector process before publication. The collector uses zero grace periods and the supported SDK deleter, exercising the destructive race in an isolated session store and disposable project.

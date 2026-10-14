@@ -37,6 +37,9 @@ Each landed as the contributor's own PR. Author is the output of
 | #1211 | `eb1f46211` | passabilities.eth (@passabilities) | merge of `main` only | direct, explicit `--body`, no maintainer trailer |
 | #1231 | `84e161b9c` | passabilities.eth (@passabilities) | merge of `main` after #1211 (conflicts resolved to the PR's side) | direct, explicit `--body`, no maintainer trailer |
 | #1224 | `09ae9316f` | Damian Nowak (@Nowaker) | contract corrections for #1282 (`948336443`), two merges of `main` | direct, explicit `--body` with a maintainer `Co-authored-by` (the fix changed) |
+| #1292 | `cbed8faaa` | Aleksey Proshutinskiy (@justprosh) | merge of `main`, one test and comment update for #1349 (`7bc3f87fe`) | `--admin` (unsigned), explicit `--body`, no maintainer trailer |
+| #1232 | `0559c554d` | Damian Nowak (@Nowaker) | contract corrections for #1281 (`4539ece6b`) | direct, explicit `--body` with a maintainer `Co-authored-by` (the fix changed) |
+| #1297 | `74ee96752` | Aleksey Proshutinskiy (@justprosh) | merge of `main` only | `--admin` (unsigned), explicit `--body`, no maintainer trailer |
 
 - #1213: [evidence](evidence/1213-sonnet-native-context-20261013/README.md).
   5,773 local tests, build, final-head CI, live OpenCode 2.0.16 / Sonnet 5.5
@@ -66,6 +69,22 @@ Each landed as the contributor's own PR. Author is the output of
   `npm test` and build, final-head CI, live E74 before/after with Opus 5.5.
   Known limitation: under Bun a held client that disconnects is not released
   until the hold ends.
+- #1292: [evidence](evidence/1292-captions-interactive-20261014/README.md).
+  Live interactive Claude Code 2.1.299: on `main` each subagent's turn after a
+  caption replays (`modified-history`); with the fix captions are auxiliary and
+  the next turn resumes. Escrowed as E77. Fixes #1288.
+- #1232: [evidence](evidence/1232-reachability-live-20261014/README.md). Nine
+  contract gaps corrected on the branch; live E75 outage and recovery on real
+  egress. Closes #1281.
+- #1297: [evidence](evidence/1297-auxiliary-cache-20261014/README.md). Live E76
+  with Sonnet 5.5: later captions write 4.8k cache tokens instead of 11–13k.
+- #1260 (@Nowaker, login expiry): reviewed against contract #1270. Most of the
+  PR (the `auth-lifecycle.json` history, five extra `/profiles/list` fields,
+  login/logout UI rows) is outside the approved contract. A maintainer commit
+  narrowing it to #1270 is prepared locally on `pr-1260` (`8e86d8144`; full
+  suite and build pass) but not pushed: it deletes about 600 lines of the
+  contributor's work, so pushing it versus asking the contributor to narrow the
+  PR is the owner's decision.
 - #1373 (maintainer fix for #1364, reported and isolated by @imarshallwidjaja):
   merged `8d447ea35`. A CLI-rejected tool call with an undeclared name now
   reaches the client as `tool_use` in streaming passthrough. Fixture stand with

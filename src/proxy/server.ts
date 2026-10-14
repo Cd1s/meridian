@@ -74,7 +74,7 @@ import { detectSupervision } from "./supervision"
 import type { RequestMetric } from "../telemetry"
 import { canRecoverCapturedToolUses, canRecoverUncapturedToolUses, isStreamedToolBlockComplete, unavailableToolResults, type StreamedToolBlockRecord, classifyError, extractSdkTermination, formatSdkTermination, classifyResumeRefusal, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError, isAccountFailoverError, isQuotaRefusal, isOutputTokenCapExceeded } from "./errors"
 import { createSseRelayStream, relayStreamAttempt } from "./sseFailureSniff"
-import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, readStoredCredentialPresence, getAuthRenewalStatus, getStoredPlanFields, resolveRenewalWarnDays, type CredentialStore, type StoredPlanFields } from "./tokenRefresh"
+import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, readStoredCredentialSnapshot, getAuthRenewalStatus, getStoredPlanFields, renewalStatusFor, resolveRenewalWarnDays, type CredentialStore, type StoredPlanFields } from "./tokenRefresh"
 import { planAllowance } from "./planAllowance"
 import { isCredentialsReadOnly, logCredentialsModeBanner } from "./credentialsMode"
 import {
@@ -9312,6 +9312,8 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
   app.get("/profiles/list", async (c) => {
     const profiles = listProfiles(finalConfig.profiles, finalConfig.defaultProfile)
     const organizations = organizationNames()
+    const expiryObservedAt = Date.now()
+    const renewalWarnDays = resolveRenewalWarnDays(process.env.MERIDIAN_AUTH_RENEWAL_WARN_DAYS)
     // Enrich with live auth status
     const enriched = await Promise.all(profiles.map(async (p) => {
       const resolved = resolveProfile(finalConfig.profiles, finalConfig.defaultProfile, p.id)
@@ -9356,7 +9358,9 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
       // `readStoredCredentialPresence` for why `unknown` must not.
       // A supplied API key/setup token is not the grant in this store; an
       // empty stored OAuth grant cannot invalidate those credentials.
-      const presence = profileStore ? await readStoredCredentialPresence(profileStore) : "unknown"
+      const stored = profileStore ? await readStoredCredentialSnapshot(profileStore) : undefined
+      const presence = stored?.presence ?? "unknown"
+      const renewal = renewalStatusFor(stored?.refreshTokenExpiresAt, renewalWarnDays, expiryObservedAt)
       return {
         ...p,
         email: auth?.email || null,
@@ -9380,6 +9384,12 @@ function createProxyServerWithAuthOwner(config: Partial<ProxyConfig>, authOwner:
         // the caller's wait — is a different fact from "cached" and must not
         // render as the same blank, nor as a live "not logged in".
         authProvenance: !auth ? "never" : cacheInfo.isFailure ? "cached" : "live",
+        // Current stored metadata only: deadlines are advisory and do not
+        // establish authentication, logout or the creation of a new grant.
+        refreshTokenExpiresAt: renewal.refreshTokenExpiresAt ?? null,
+        daysUntilRenewal: renewal.daysUntilRenewal ?? null,
+        renewalRequiredSoon: renewal.renewalRequiredSoon,
+        accessTokenExpiresAt: stored?.accessTokenExpiresAt ?? null,
         // Present for EVERY profile, null included, so a follower can tell an
         // instance too old to answer (field absent) from one saying this
         // profile cannot be shared (field null). Never a secret — see
