@@ -33,6 +33,7 @@ Each landed as the contributor's own PR. Author is the output of
 | #1360 | `58c4126c3` | Damian Nowak (@Nowaker) | tests, CLI help, evidence, merge of `main` | direct (signed) |
 | #1213 | `55edbcc35` | Robert (@robertn702) | conflict resolution, two test corrections, doc correction, live gate | `--admin` (unsigned) |
 | #1201 | `fa4266e16` | jmuz (@XInTheDark) | conflict-free merge of `main` only | `--admin` (unsigned), explicit `--body`, no maintainer trailer |
+| #1370 | `431ec2014` | Aleksey Proshutinskiy (@justprosh) | none | `--admin` (unsigned), explicit `--body`, no maintainer trailer |
 
 - #1213: [evidence](evidence/1213-sonnet-native-context-20261013/README.md).
   5,773 local tests, build, final-head CI, live OpenCode 2.0.16 / Sonnet 5.5
@@ -44,6 +45,27 @@ Each landed as the contributor's own PR. Author is the output of
   before/after. Its CI runs needed first-time-contributor approval. The landed
   patch is identical to the contributor's commit. The reporter's own client was
   not run.
+- #1370: [evidence](evidence/1370-digest-turn-live-20261013/README.md). Local
+  `npm test` and build, final-head CI, live Opus 5.5 before/after: three model
+  requests per deferred hand-off on unchanged `main`, one with the fix. Issue
+  #1367 closed by the merge.
+- #1361 (@jaedync, raw control characters in tool arguments) is reviewed and
+  held for an owner decision, not merged. Head `b07e11254`, CI green, merges
+  cleanly. Its fixture stands were rerun here with real Claude Code 2.1.296 and
+  real Pi 1.2.0: `e2e-capped-turns.mjs --case=unparsed-input --stream` (plus
+  `--headerless`, `--deferred`) and `e2e-pi-unparsed-tool-input.mjs` pass on
+  the PR and the Pi stand fails as expected on `f8eea2c35`. The live gate is
+  open: in 10 live Opus 5.5 edits of TAB-indented source with fine-grained tool
+  streaming on, the model never emitted a raw TAB, so the defect was not
+  reproduced with a real model here or by the contributor. Review ruled out
+  double execution (the rejection match needs the error envelope, the id and
+  the resolved name, and any captured sibling vetoes recovery). Two product
+  questions remain: the repair also doubles invalid backslash escapes, which
+  for clients other than Pi turns a rejected call into an executable one whose
+  argument is a guess (`C:\Users\new` reads `\n` as a newline); and tools
+  with only string arguments are not buffered, so a strict client gets
+  `stop_reason: tool_use` over arguments it cannot parse. Narrower options:
+  keep only the control-character escaping, or limit the unbuffered case to Pi.
 - A squash with an explicit `--body` carries no automatic `Co-authored-by`
   line (observed on #1201); without one, every commit author on the branch is
   added (#1213).

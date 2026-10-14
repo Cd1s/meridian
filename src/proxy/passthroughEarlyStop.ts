@@ -23,8 +23,10 @@
  * combination an immediate abort could not give — it skipped the commit.
  *
  * This module still drains rather than aborts, because the cap is lifted for
- * deferred tools, advisors, structured output, and the kill switch. In those
- * configurations the digest turn does generate and is discarded here.
+ * deferred tools, advisors, structured output, and the kill switch. With
+ * deferred tools or an advisor, a PostToolBatch hook ends the query after the
+ * forwarded batch (see stopAfterForwardedBatch), so no digest turn runs. With
+ * structured output or the kill switch it does generate and is discarded here.
  *
  * Settlement is necessary but NOT sufficient to freeze the checkpoint. Two
  * further conditions belong to the caller, which owns the wire:
