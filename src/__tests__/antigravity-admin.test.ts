@@ -17,7 +17,7 @@ const K1 = "secret-key-acc1-0123456789", K2 = "secret-key-acc2-0123456789"
 const OK_AGY = "Usage: 5h 20%", BAD_AGY = "error: Eligibility check failed: not eligible. Verify your account to continue.\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/signin/continue?plt=X\n"
 const sub2 = (data: unknown) => Response.json({ code: 0, message: "ok", data })
 
-function setup(files: Record<string, string>, options: { sub2: boolean; agy?: string } = { sub2: false }) {
+function setup(files: Record<string, string>, options: { sub2: boolean; agy?: string; template?: unknown } = { sub2: false }) {
   const dir = mkdtempSync(join(tmpdir(), "meridian-admin-"))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   for (const [name, text] of Object.entries(files)) { mkdirSync(join(dir, name)); writeFileSync(join(dir, name, "env"), text) }
@@ -40,7 +40,7 @@ function setup(files: Record<string, string>, options: { sub2: boolean; agy?: st
     calls.push({ url, method, body })
     if (url.startsWith("http://s2/admin/accounts?")) return sub2({ items: sub2Items })
     if (url.endsWith("/admin/groups/all")) return sub2([{ id: 9, name: "antigravity", platform: "anthropic", status: "active" }, { id: 1, name: "default", platform: "anthropic", status: "active" }])
-    if (url === "http://s2/admin/accounts/1001") return sub2({ concurrency: 4, priority: 3, group_ids: [9], credentials: { model_mapping: { a: "b" } } })
+    if (url === "http://s2/admin/accounts/1001") return sub2(options.template ?? { concurrency: 4, priority: 3, group_ids: [9], credentials: { model_mapping: { a: "b" } } })
     if (url === "http://s2/admin/accounts" && method === "POST") return sub2({ id: 99 })
     if (url.startsWith("http://s2/admin/accounts/") && method === "PUT") return sub2({})
     return new Response("?", { status: 500 })
@@ -149,6 +149,19 @@ describe("Antigravity admin API", () => {
       credentials: { base_url: "http://127.0.0.1:3451", api_key: K1, model_mapping: { a: "b" } },
     })
     expect(existsSync(join(dir, "acc1/.gemini/antigravity-cli/antigravity-oauth-token"))).toBe(true)
+  })
+  it("gives a new Sub2API account the template's pool mode and passthrough so a Meridian restart cannot pause it", async () => {
+    const template = { concurrency: 4, priority: 3, group_ids: [9], extra: { anthropic_passthrough: true, upstream_billing_probe_enabled: false },
+      credentials: { base_url: "http://127.0.0.1:3451", model_mapping: { a: "b" }, pool_mode: true, pool_mode_retry_count: 3, pool_mode_retry_status_codes: [401, 403, 429, 503] } }
+    const { post, calls, sub2Items } = setup({ acc1: base.acc1 }, { sub2: true, agy: OK_AGY, template })
+    sub2Items.length = 0
+    await post("/api/accounts/acc1/login")
+    await post("/api/accounts/acc1/code", { code: "4/abc" })
+    expect(calls.find(c => c.method === "POST")?.body).toEqual({
+      name: "new@x.com", platform: "anthropic", type: "apikey", concurrency: 4, priority: 3, group_ids: [9], notes: "Antigravity Meridian acc1",
+      credentials: { base_url: "http://127.0.0.1:3451", api_key: K1, model_mapping: { a: "b" }, pool_mode: true, pool_mode_retry_count: 3, pool_mode_retry_status_codes: [401, 403, 429, 503] },
+      extra: { anthropic_passthrough: true },
+    })
   })
   it("answers a failed login with the cleaned result", async () => {
     const { post } = setup({ acc1: base.acc1 })
