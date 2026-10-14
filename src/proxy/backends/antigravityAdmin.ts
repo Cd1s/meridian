@@ -911,9 +911,15 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     const template = cfg.templateId ? await s2(`/admin/accounts/${cfg.templateId}`) : {}
     const groupIds = cfg.groupIds.length ? cfg.groupIds : template.group_ids ?? []
     if (!groupIds.length) fail(409, "Sub2API group is not configured")
+    // Pool mode keeps a Meridian restart (connection refused, 503) from pausing every account for 10 minutes in
+    // Sub2API, so a new account inherits it from the template along with the model mapping and passthrough.
+    const templateCredentials: Json = template.credentials ?? {}
+    const inherited = Object.fromEntries(["model_mapping", "pool_mode", "pool_mode_retry_count", "pool_mode_retry_status_codes"]
+      .filter(key => templateCredentials[key] !== undefined && templateCredentials[key] !== null).map(key => [key, templateCredentials[key]]))
     const created = await s2("/admin/accounts", { method: "POST", body: {
       name: address ?? name, platform: "anthropic", type: "apikey", concurrency: cfg.concurrency ?? template.concurrency ?? 5, priority: cfg.priority ?? template.priority ?? 1, group_ids: groupIds,
-      notes: `Antigravity Meridian ${name}`, credentials: { base_url: options.baseUrl, api_key: apiKey, ...(template.credentials?.model_mapping ? { model_mapping: template.credentials.model_mapping } : {}) },
+      notes: `Antigravity Meridian ${name}`, credentials: { base_url: options.baseUrl, api_key: apiKey, ...inherited },
+      ...(template.extra?.anthropic_passthrough === true ? { extra: { anthropic_passthrough: true } } : {}),
     } })
     // The template's mapping may carry a family this account lacks; correct it soon instead of at the next tick.
     if (options.modelSyncMs && options.modelSyncMs > 0) setTimeout(() => { syncSub2Models().catch(() => {}) }, 30_000).unref()

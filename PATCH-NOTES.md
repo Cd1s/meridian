@@ -17,6 +17,7 @@
 | 授权检查可选缓存 `MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 上游每个请求都冷启动一次 `agy -p /config`（经代理约 5s）。设 TTL 后，成功结果在 TTL 内复用；失败不缓存。默认 0 = 上游行为，上限 600000 |
 | 单进程多账号、单端口 `MERIDIAN_AGY_ACCOUNTS_DIR` | `bin/cli.ts`（`runAccountsCli`）、`src/proxy/backends/antigravityAccounts.ts` | 一个 Node 进程、一个端口（`MERIDIAN_PORT`）服务目录下所有账号，**按请求的 API key（`x-api-key` 或 `Authorization: Bearer`）选账号**；未知 key 返回 401，不带 key 的 `/health` 返回汇总。每个账号 `<dir>/<名>/env` 只需 `MERIDIAN_API_KEY`（≥16 位、不可重复）和代理变量，agy 登录在 `<dir>/<名>/.gemini`；每个账号仍是独立的后端实例、独立 HOME/代理/临时目录，官方 agy 的启动参数与工具调度（每账号一个 127.0.0.1 随机端口的 MCP 工具桥）不变。SIGHUP（`systemctl reload`）重读目录：新增的启动、删除的停止、env 改过的重启，其余不动；目录有错误时整次拒绝。启动失败的账号记录原因、每 60s 重试 |
 | Sub2API 模型映射跟随账号 | `src/proxy/backends/antigravityAdmin.ts`、`bin/cli.ts` | 只有部分账号有的 Gemini 系列（如只给 Ultra 的 Gemini 4 Argon）只能调度到有它的账号：每 10 分钟（`MERIDIAN_SUB2API_MODEL_SYNC_MS`，0 关闭，最小 60000）按各账号 `/v1/models` 调整它在 Sub2API 的 `model_mapping`——列出的系列补上各档 slug 和纯名（纯名指向最低档，同模板的 `-low`），别的账号有、它没有的系列删掉；没有任何账号列出的旧条目和已有的值不动，空映射（放行全部模型）不动。谁先服务由账号优先级决定（数值越小越先）。`MERIDIAN_SUB2API_MODEL_SYNC_EXCLUDE=accN:gemini-家族[,…][;…]` 让某账号即使列出也不接某系列（同步时删掉）；改动后映射为空时不写（Sub2API 把空映射当成放行全部）；这两个环境变量写错时只关掉同步、记错误日志，不影响服务。新镜像的账号 30 秒后补跑一次；`POST /api/sub2api/models` 立即执行 |
+| Sub2API 池模式继承 | `src/proxy/backends/antigravityAdmin.ts` | 面板新镜像到 Sub2API 的账号，从模板账号继承 `pool_mode`、`pool_mode_retry_count`、`pool_mode_retry_status_codes` 和 `extra.anthropic_passthrough`（原来只继承模型映射）。池模式下 Meridian 重启时的 connection refused / 503 只在原账号重试，不会把账号暂停 10 分钟 |
 | 账号级 agy 环境 `antigravity.env` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 叠加到 agy 子进程环境（HOME、代理）；`MERIDIAN_API_KEY` 等敏感变量照旧剔除 |
 | 每个服务独立 API key `apiKey` | `src/proxy/types.ts`、`src/proxy/auth.ts`、`antigravity.ts` | 未设置时仍读 `MERIDIAN_API_KEY`，与上游一致 |
 | 共享 agy 进程池 `MERIDIAN_AGY_POOL_MAX` | `antigravityRuntime.ts`（`AgProcessPool`） | 所有账号合计的 agy 进程上限。满了时新请求可以回收任意账号的**空闲**热进程（上游原本只在本账号内回收）；都在忙就 429。单账号上限 `MAX_CONCURRENT` 照旧生效 |
@@ -310,6 +311,15 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - 同一会话先 Gemini 4、再 3.8 Flash：Argon 落在 Ultra，Flash 落在 Pro（之前会粘在 Ultra 上）。
   - Argon 计费按渠道定价：输入 $2、输出 $10、缓存读 $0.10（每百万 token）。
 - **部署注意（教训）**：重启 Meridian 的几十秒里，Sub2API 收到 `connection refused` 会把对应账号“临时不可调度”10 分钟。23:11 那次部署后，Pro 账号被暂停约 10 分钟，期间 18 个请求报“没有可用账号”，部分 Flash 落到了 Ultra。23:29 那次在部署后约 3 分钟内手动清除。以后部署：服务恢复健康后立即对 Meridian 的 Sub2API 账号调用 `DELETE /admin/accounts/:id/temp-unschedulable` 清除暂停。
+
+### 2026-10-14 Sub2API 池模式 + 专用错误提示（Meridian 重启不再暂停账号）
+- 背景：Meridian 重启时端口约 20 秒不可用（收到 SIGTERM 到旧进程退出约 1 秒，新进程启动全部账号后才监听约 19 秒）。Sub2API 普通模式把 `connection refused` 当成账号故障，暂停调度 10 分钟。
+- Sub2API 侧（运营配置）：
+  - 所有 Meridian 账号开池模式：`pool_mode` true、同账号重试 3 次、重试状态码 401/403/429/503。账号没有单独代理，所以连接失败也按 503 在原账号重试，不暂停。实测死端口：约 24 秒重试后返回 502 `Upstream service temporarily unavailable`，账号状态不变。
+  - 新增错误透传规则：anthropic 平台、状态码 502/503、且错误里含 `Antigravity` / `Eligibility check failed` / `127.0.0.1:3451` 之一（`match_mode` all），改为 503 并返回专用提示。实测 Meridian 风格的 503 返回专用提示，不含关键词的 503 不受影响。连接失败（端口不通）是 Sub2API 自己生成的错误，不走规则，仍是 `Upstream service temporarily unavailable`。
+  - 池模式的副作用：上游错误不再标记账号。Meridian 近 7 天只有 6×400、1×499、4×503、1×504，没有 429；本机容量满的 429 只是瞬时，所以影响很小。
+- 代码：新账号继承池模式（见上表）。
+- 部署：上面的“部署后清除暂停”保留作为保险。
 
 ## 同步上游
 
