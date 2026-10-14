@@ -14,7 +14,7 @@ const [serverPath, pluginPath, piPath, executable, reportPath, label] = process.
 assert(reportPath && label, 'Expected server, plugin, Pi CLI, official agy, report, label')
 const hash = async path => createHash('sha256').update(await readFile(path)).digest('hex')
 const nativeHash = await hash(executable)
-assert.equal(nativeHash, '9da414c0624c27aa2969a86030a070b5341c0657700512eba70b21725ce253f5', 'Unqualified official executable')
+assert.equal(nativeHash, 'ebd71c4db14f79fca3fd0160332a38d9037146737422dcfc1f1d21ba01a13fff', 'Unqualified official executable')
 const pluginHash = await hash(pluginPath)
 const root = await mkdtemp(join(tmpdir(), 'meridian-agy-idle-live-'))
 const model = 'gemini-3.8-flash-low', toolMs = 1000, idleMs = 10000, pauseMs = 1600
