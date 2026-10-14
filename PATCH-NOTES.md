@@ -255,6 +255,31 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - 回放测试：直接回答 3/3；轮询 3/3（提示 → 再读 → `done`）。
   - 部署后 11 个请求全部 200，没有出现 “Unsupported agy version”，也没有异常。
 
+### 2026-10-14 agy 锁定到 1.3.5，并同步上游到 74ee967
+- 改动：
+  - 版本门禁从 `1.3.4` 改为 `1.3.5`；`/health` 的 `verifiedCliVersion` 同步改。
+  - 测试、fixture、设置证明 / 工具目录 / idle / 回放轮询脚本里固定的版本和哈希一并改成 1.3.5；“上一个版本被拒绝”的测试改为拒绝 1.3.4。
+  - 合并上游 6 个提交（#1231、#1224、#1375、#1292、#1232、#1297，到 `74ee967`），无冲突。上游 #1224 新增的 combined 模式 drain 测试模拟了 `createAntigravityServer`，fork 的 Antigravity 服务多一个 `holds()`（多账号会话归属），测试的模拟对象补上 `holds: () => undefined` 才能通过类型检查。
+- 官方二进制（GitHub release 1.3.5，和发布页公布的 sha256 一致）：
+  - macOS arm64：压缩包 `60b46713…`，可执行文件 `ebd71c4d…1fff`。
+  - Linux arm64：压缩包 `065505ab…`，可执行文件 `7bf3dfb0…ea69`。
+- Gemini 4 Argon：生产 23 个账号和 Mac 账号用 1.3.4、1.3.5 跑 `agy models`，都没有 Argon（只有 gemini-3.8-flash 三档、claude-sonnet-4-6、claude-opus-4-6-thinking、gpt-oss-120b-medium）。公开信息是 Antigravity / CLI 里只给 AI Ultra，Pro 只在 Gemini App。模型列表来自 `agy models`，账号开通后会自动出现，不用改代码。
+- 验证：
+  - **设置证明**（作者的 `e2e-antigravity-account-settings.mjs`）：macOS 和 Linux（acc1、acc2、acc22）上的 1.3.5 都是 `customModelsConfig` null、`modelProvider` ""、`useG1Credits` false（布尔）、`gcp` null，和 1.3.4 一样；命令前后二进制哈希不变。
+  - **单元测试**：主测试组 5821 pass、2 fail；这 2 个（`proxy-plugin-message-consumption` 的 model fallback 两例）在未修改的上游 `74ee967` 上同样失败，单独跑该文件 36/36 通过。23 个隔离测试组全过。typecheck、build 通过。
+  - **macOS 实测**（MacBook Air，agy 1.3.5）：16 项全部通过。
+    - Pi 1.1.0：basic、tools、pi-clients、recovery、Pi recovery、capabilities、expansion、openai-tools、responses-state、gap-closure、interruption、idle。比 1.3.4 那次多过了 pi-clients、capabilities、idle。
+    - Pi extensions、lost-answer、lost-tool、disconnect 在 Pi 1.1.0 上不过（1.2.7、1.3.4 上一样），原因是 Pi 1.1.0 不再自动重试被中断的续写。按作者当初的客户端 Pi 0.72.1（`@mariozechner/pi-coding-agent`）跑，4 项全部通过。
+    - gap-closure 需要设置 `MERIDIAN_AGY_GRAMMAR_PYTHON` 指向装了 lark 的 Python。
+  - **Linux（SG，acc1 环境，单独实例）**：settings、recovery、expansion、openai-tools、responses-state、gap-closure、interruption 通过（gap-closure 在 `MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS=300000`，即生产设置下）。
+  - **当天 Google 不稳定**：第一轮失败的项，报错都是账号检查超过 20 秒（agy 日志里 loadCodeAssist 迟迟不回）或 Google 直接返回 `Eligibility check failed: UNAVAILABLE (code 503)`，重跑后全部通过。
+    - 同一时间生产（1.3.4）也有同样的检查超时；但生产开了检查缓存，24 小时 1211 个请求里没有一个 503。
+    - SG acc1 上 1.3.4 / 1.3.5 轮流各 15 次 `-p /config`：20 秒内完成分别是 14 次和 13 次；慢的分别是 49 秒，以及 26 秒、33 秒。
+    - “结果已输出、进程迟迟不退出”两个版本都有：Mac 日志里 1.3.4 是 224 次中 6 次，1.3.5 是 145 次中 6 次。
+    - 没有发现 1.3.5 特有的问题。
+- 未覆盖：OpenCode 相关的测试（含 tool-catalog）、native-tools、media、desktop。
+- 上游：不提 PR（同 1.3.4，由用户自己测试后再提）。
+
 ## 同步上游
 
 
