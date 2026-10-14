@@ -635,7 +635,7 @@ describe("POST /drain", () => {
     const backend = spyOn(antigravityBackend, "createAntigravityServer").mockImplementation(config => ({
       config, app: { fetch: async request => { forwarded.push(new URL(request.url).pathname); return Response.json({ fixture: true }) } },
       closeBackend: async () => {}, providerStatus: async () => disabledProvider("antigravity"),
-      beginDrain: () => {}, getInFlightCount: () => 0,
+      beginDrain: () => {}, getInFlightCount: () => 0, holds: () => undefined,
     }))
     const proxy = createProxyServer({ ...TEST_CONFIG, backend: "combined" })
     try {
@@ -667,7 +667,7 @@ describe("POST /drain", () => {
     const backend = spyOn(antigravityBackend, "createAntigravityServer").mockImplementation(config => ({
       config, app: { fetch: async () => { forwards++; return Response.json({ fixture: true }) } },
       closeBackend: async () => {}, providerStatus: async () => disabledProvider("antigravity"),
-      beginDrain: () => {}, getInFlightCount: () => 0,
+      beginDrain: () => {}, getInFlightCount: () => 0, holds: () => undefined,
     }))
     try {
       for (const ending of ["abort", "shutdown"] as const) {
@@ -697,7 +697,7 @@ describe("POST /drain", () => {
     const backend = spyOn(antigravityBackend, "createAntigravityServer").mockImplementation(config => ({
       config, app: { fetch: async () => new Response(new ReadableStream<Uint8Array>({ cancel() { cancelStarted = true; return joined } })) },
       closeBackend: async () => {}, providerStatus: async () => disabledProvider("antigravity"),
-      beginDrain: () => {}, getInFlightCount: () => 0,
+      beginDrain: () => {}, getInFlightCount: () => 0, holds: () => undefined,
     }))
     const proxy = createProxyServer({ ...TEST_CONFIG, backend: "combined" })
     try {
