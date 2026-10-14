@@ -279,6 +279,20 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
     - 没有发现 1.3.5 特有的问题。
 - 未覆盖：OpenCode 相关的测试（含 tool-catalog）、native-tools、media、desktop。
 - 上游：不提 PR（同 1.3.4，由用户自己测试后再提）。
+- 发布与部署：
+  - `v1.81.0-cd1s.4`（`5c26139`，provenance `package-1.81.0-1-detached-5c26139e`，非 dirty），bundle sha256 `1d53907d…`。
+  - 部署顺序：先把 `/usr/local/bin/agy` 原子替换为官方 1.3.5（Linux arm64，sha256 `7bf3dfb0…`），旧的 1.3.4 保留为 `/usr/local/bin/agy-1.3.4`；`agy-pin.conf`（`AGY_CLI_DISABLE_AUTO_UPDATE=true`）沿用；再替换 `dist-accounts` 并重启。
+  - 重启 46 秒后健康。20 个账号在服务，失败的仍是 acc20 / acc21 / acc23（部署前就失败，需要重新登录）。
+- 回滚：
+  - 把 `/usr/local/bin/agy-1.3.4` 复制回 `/usr/local/bin/agy`；
+  - 把 `dist-accounts.old-93db290-20261014-162540` 改回 `dist-accounts`；
+  - 重启服务。
+  - 打包备份在 `/opt/meridian/backups/live-93db290-agy134-before-agy135-20261014-162346.tgz`（sha256 `53e1d53e…`），并已 `agent-backup put`。
+- 验证：
+  - acc1 / acc2 / acc22 的 `/health` 都显示 `cliVersion` 1.3.5、`verifiedCliVersion` 1.3.5。
+  - 跨账号：acc1 发起 `tool_use`，用 acc2 的 key 发 tool_result，日志 `agy_account_affinity holder=acc1 status=200`，回答包含随机码。
+  - 回放测试：直接回答 3/3；轮询 3/3（提示 → 再读 → `done`）。
+  - 部署后 11 个请求全部 200，没有出现 “Unsupported agy version”。
 
 ## 同步上游
 
