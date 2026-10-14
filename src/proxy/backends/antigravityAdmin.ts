@@ -29,6 +29,8 @@ export interface AgAdminOptions {
   fifoPath?: (name: string) => string
   /** Runs agy once as the account and returns its combined output (the eligibility check runs on first use). */
   agyCheck?: (name: string) => Promise<string>
+  /** How often each account's Sub2API model mapping follows the models it lists; 0 or unset disables the timer. */
+  modelSyncMs?: number
 }
 class HttpError extends Error { constructor(readonly status: number, message: string) { super(message) } }
 const NAME = /^acc[0-9]+$/
@@ -52,6 +54,31 @@ export function parseEligibility(output: string): { eligible: boolean; message: 
   const url = /https:\/\/[^\s"'<>\x00-\x1f]+/.exec(text.slice(text.search(/verify your account in your browser/i) >= 0 ? text.search(/verify your account in your browser/i) : 0))?.[0] ?? null
   const message = /Eligibility check failed:\s*([^\n]+)/i.exec(text)?.[1]?.trim() ?? "Account is not eligible"
   return { eligible: false, message, verifyUrl: url }
+}
+
+const AG_EFFORTS = ["low", "medium", "high"] as const
+const AG_EFFORT_FAMILY = /^(gemini-[a-zA-Z0-9._-]+)-(low|medium|high)$/
+/** The Gemini effort families (`gemini-4-argon` for `gemini-4-argon-high`) among listed model ids. */
+export function agModelFamilies(models: readonly string[]): string[] {
+  return [...new Set(models.map(model => AG_EFFORT_FAMILY.exec(model)?.[1]).filter((family): family is string => Boolean(family)))].sort()
+}
+/**
+ * Fork patch: brings one account's Sub2API model mapping in line with the Gemini families it lists.
+ * A listed family gets its listed effort slugs and its bare name (mapped to the lowest listed effort, as the
+ * template maps bare names to -low); a family in `families` the account does not list loses its bare and effort
+ * keys. Families outside `families` and existing values are left as they are.
+ */
+export function syncAgModelMapping(mapping: Record<string, string>, models: readonly string[], families: readonly string[]) {
+  const next = { ...mapping }, added: string[] = [], removed: string[] = []
+  for (const family of families) {
+    const listed = AG_EFFORTS.map(effort => `${family}-${effort}`).filter(slug => models.includes(slug))
+    if (listed.length) {
+      for (const slug of [family, ...listed]) if (!(slug in next)) { next[slug] = slug === family ? listed[0]! : slug; added.push(slug) }
+    } else {
+      for (const slug of [family, ...AG_EFFORTS.map(effort => `${family}-${effort}`)]) if (slug in next) { delete next[slug]; removed.push(slug) }
+    }
+  }
+  return { mapping: next, added, removed }
 }
 
 export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
@@ -736,6 +763,48 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
     return { results }
   }
 
+  // Fork patch: a Gemini family only some accounts list (Gemini 4 Argon on Ultra) must only reach those accounts in
+  // Sub2API; account priority then decides who serves first once more accounts list it.
+  let modelSync: Promise<Json> | undefined
+  function syncSub2Models(): Promise<Json> {
+    modelSync ??= (async () => {
+      if (!getSub2()) return { enabled: false, families: [], results: [] }
+      const items = await sub2Accounts()
+      const listed = new Map<string, string[]>()
+      await Promise.all(set.names.map(async name => {
+        const body = await probe(name, "/v1/models")
+        const ids: string[] = Array.isArray(body?.data) ? body.data.map((model: Json) => model?.id).filter((id: unknown): id is string => typeof id === "string") : []
+        if (ids.length) listed.set(name, ids)
+      }))
+      const families = agModelFamilies([...listed.values()].flat())
+      const results: Json[] = []
+      for (const [name, models] of listed) {
+        const found = findSub2(items, name)
+        const apiKey = readEnv(name)?.vars.MERIDIAN_API_KEY
+        if (!found || !apiKey) continue
+        try {
+          const detail = await s2(`/admin/accounts/${found.id}`)
+          const credentials: Json = typeof detail.credentials === "object" && detail.credentials !== null ? detail.credentials : {}
+          const current = credentials.model_mapping
+          // An empty mapping lets the account take every model; narrowing it is not this sync's call.
+          if (typeof current !== "object" || current === null || !Object.keys(current).length) continue
+          const { mapping, added, removed } = syncAgModelMapping(current, models, families)
+          if (!added.length && !removed.length) continue
+          await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { credentials: { ...credentials, api_key: apiKey, model_mapping: mapping } } })
+          console.log(`[admin] Sub2API ${name}: model mapping +[${added}] -[${removed}]`)
+          results.push({ name, sub2apiId: found.id, added, removed, error: null })
+        } catch (error) { results.push({ name, sub2apiId: found.id, added: [], removed: [], error: safeError(error) }) }
+      }
+      return { enabled: true, families, results }
+    })().finally(() => { modelSync = undefined })
+    return modelSync
+  }
+  if (options.modelSyncMs && options.modelSyncMs > 0) {
+    const tick = () => { syncSub2Models().catch(error => console.warn(`[admin] Sub2API model sync failed: ${safeError(error)}`)) }
+    setTimeout(tick, Math.min(options.modelSyncMs, 60_000)).unref()
+    setInterval(tick, options.modelSyncMs).unref()
+  }
+
   async function testAccount(name: string) {
     const { vars } = existing(name)
     if (!set.names.includes(name)) {
@@ -842,6 +911,8 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       name: address ?? name, platform: "anthropic", type: "apikey", concurrency: cfg.concurrency ?? template.concurrency ?? 5, priority: cfg.priority ?? template.priority ?? 1, group_ids: groupIds,
       notes: `Antigravity Meridian ${name}`, credentials: { base_url: options.baseUrl, api_key: apiKey, ...(template.credentials?.model_mapping ? { model_mapping: template.credentials.model_mapping } : {}) },
     } })
+    // The template's mapping may carry a family this account lacks; correct it soon instead of at the next tick.
+    if (options.modelSyncMs && options.modelSyncMs > 0) setTimeout(() => { syncSub2Models().catch(() => {}) }, 30_000).unref()
     return created.id
   }
   async function toggle(name: string, disable: boolean) {
@@ -878,6 +949,7 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
       if (parts.length === 1 && method === "DELETE") { panel.data.sub2api = null; panel.save(); return sub2Public() }
       if (parts[1] === "test" && method === "POST") return testSub2(body)
       if (parts[1] === "sync" && method === "POST") return syncSub2()
+      if (parts[1] === "models" && method === "POST") return getSub2() ? syncSub2Models() : fail(409, "Sub2API is not configured")
       return fail(404, "Not found")
     }
     if (parts[0] === "proxies") return routeProxies(method, parts.slice(1), body)
