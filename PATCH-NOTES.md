@@ -255,11 +255,11 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - 回放测试：直接回答 3/3；轮询 3/3（提示 → 再读 → `done`）。
   - 部署后 11 个请求全部 200，没有出现 “Unsupported agy version”，也没有异常。
 
-### 2026-10-14 agy 锁定到 1.3.5，并同步上游到 74ee967
+### 2026-10-14 agy 锁定到 1.3.5（含上游到 74ee967）
 - 改动：
   - 版本门禁从 `1.3.4` 改为 `1.3.5`；`/health` 的 `verifiedCliVersion` 同步改。
   - 测试、fixture、设置证明 / 工具目录 / idle / 回放轮询脚本里固定的版本和哈希一并改成 1.3.5；“上一个版本被拒绝”的测试改为拒绝 1.3.4。
-  - 合并上游 6 个提交（#1231、#1224、#1375、#1292、#1232、#1297，到 `74ee967`），无冲突。上游 #1224 新增的 combined 模式 drain 测试模拟了 `createAntigravityServer`，fork 的 Antigravity 服务多一个 `holds()`（多账号会话归属），测试的模拟对象补上 `holds: () => undefined` 才能通过类型检查。
+  - 上游 6 个提交（#1231、#1224、#1375、#1292、#1232、#1297，到 `74ee967`）由同步流程合入：第一次同步因为上游 #1224 新增的 combined 模式 drain 测试没有模拟 fork 的 `holds()`（多账号会话归属）而类型检查失败（#47），Hub 修复 PR #48 补上 `holds: () => undefined` 后合并。本次验证的构建与之代码相同。
 - 官方二进制（GitHub release 1.3.5，和发布页公布的 sha256 一致）：
   - macOS arm64：压缩包 `60b46713…`，可执行文件 `ebd71c4d…1fff`。
   - Linux arm64：压缩包 `065505ab…`，可执行文件 `7bf3dfb0…ea69`。
