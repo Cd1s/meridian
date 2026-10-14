@@ -16,6 +16,7 @@
 | 思考等级选择同系列官方 slug | `src/proxy/backends/antigravityProtocol.ts`、`antigravityRuntime.ts` | Sub2API 把纯名（如 `gemini-3.8-flash`）映射到 `-low`；客户端带 `effort` / `reasoning_effort` 时换成同系列 `-<effort>`（上游 budget 适配也是这样换后缀）。账号没有该档（3.1 Pro 无 medium）时取最近档，优先更高。非 `gemini-*-low/medium/high` 模型仍按上游报错 |
 | 授权检查可选缓存 `MERIDIAN_AGY_ACCOUNT_CHECK_TTL_MS` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 上游每个请求都冷启动一次 `agy -p /config`（经代理约 5s）。设 TTL 后，成功结果在 TTL 内复用；失败不缓存。默认 0 = 上游行为，上限 600000 |
 | 单进程多账号、单端口 `MERIDIAN_AGY_ACCOUNTS_DIR` | `bin/cli.ts`（`runAccountsCli`）、`src/proxy/backends/antigravityAccounts.ts` | 一个 Node 进程、一个端口（`MERIDIAN_PORT`）服务目录下所有账号，**按请求的 API key（`x-api-key` 或 `Authorization: Bearer`）选账号**；未知 key 返回 401，不带 key 的 `/health` 返回汇总。每个账号 `<dir>/<名>/env` 只需 `MERIDIAN_API_KEY`（≥16 位、不可重复）和代理变量，agy 登录在 `<dir>/<名>/.gemini`；每个账号仍是独立的后端实例、独立 HOME/代理/临时目录，官方 agy 的启动参数与工具调度（每账号一个 127.0.0.1 随机端口的 MCP 工具桥）不变。SIGHUP（`systemctl reload`）重读目录：新增的启动、删除的停止、env 改过的重启，其余不动；目录有错误时整次拒绝。启动失败的账号记录原因、每 60s 重试 |
+| Sub2API 模型映射跟随账号 | `src/proxy/backends/antigravityAdmin.ts`、`bin/cli.ts` | 只有部分账号有的 Gemini 系列（如只给 Ultra 的 Gemini 4 Argon）只能调度到有它的账号：每 10 分钟（`MERIDIAN_SUB2API_MODEL_SYNC_MS`，0 关闭，最小 60000）按各账号 `/v1/models` 调整它在 Sub2API 的 `model_mapping`——列出的系列补上各档 slug 和纯名（纯名指向最低档，同模板的 `-low`），别的账号有、它没有的系列删掉；没有任何账号列出的旧条目和已有的值不动，空映射（放行全部模型）不动。谁先服务由账号优先级决定（数值越小越先）。新镜像的账号 30 秒后补跑一次；`POST /api/sub2api/models` 立即执行 |
 | 账号级 agy 环境 `antigravity.env` | `src/proxy/types.ts`、`antigravityRuntime.ts` | 叠加到 agy 子进程环境（HOME、代理）；`MERIDIAN_API_KEY` 等敏感变量照旧剔除 |
 | 每个服务独立 API key `apiKey` | `src/proxy/types.ts`、`src/proxy/auth.ts`、`antigravity.ts` | 未设置时仍读 `MERIDIAN_API_KEY`，与上游一致 |
 | 共享 agy 进程池 `MERIDIAN_AGY_POOL_MAX` | `antigravityRuntime.ts`（`AgProcessPool`） | 所有账号合计的 agy 进程上限。满了时新请求可以回收任意账号的**空闲**热进程（上游原本只在本账号内回收）；都在忙就 429。单账号上限 `MAX_CONCURRENT` 照旧生效 |
@@ -293,6 +294,12 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - 跨账号：acc1 发起 `tool_use`，用 acc2 的 key 发 tool_result，日志 `agy_account_affinity holder=acc1 status=200`，回答包含随机码。
   - 回放测试：直接回答 3/3；轮询 3/3（提示 → 再读 → `done`）。
   - 部署后 11 个请求全部 200，没有出现 “Unsupported agy version”。
+
+### 2026-10-14 Sub2API 模型映射跟随账号（Gemini 4 Argon）
+- 背景：Gemini 4 Argon（`gemini-4-argon-low/medium/high`）目前只有 Ultra 账号列出。Sub2API 按账号的 `model_mapping` 决定账号能接哪些模型，所以 Argon 只能放进有它的账号的映射里；3.8 Flash 优先 Pro 账号，靠账号优先级（Ultra 设得比 Pro 大）。
+- 改动：面板定时把每个账号在 Sub2API 的 `model_mapping` 和它 `/v1/models` 列出的 Gemini 系列对齐（规则见上表）。这样以后 Pro 账号开通 Argon 后，会自动加进它们的映射，并按优先级排在 Ultra 前面；某个账号不再列出时自动移除。
+- 测试：`src/__tests__/antigravity-admin-model-sync.test.ts`（纯函数 4 例；两个账号一个有 Argon、一个带着过期 Argon 条目，一个空映射，确认只改前两个，且 API key 和 base_url 保留、返回里不含 key）。
+- Sub2API 侧的一次性配置（账号优先级、Argon 定价渠道）记在运营记录里，不在本仓库。
 
 ## 同步上游
 
