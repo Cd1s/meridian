@@ -31,6 +31,8 @@ export interface AgAdminOptions {
   agyCheck?: (name: string) => Promise<string>
   /** How often each account's Sub2API model mapping follows the models it lists; 0 or unset disables the timer. */
   modelSyncMs?: number
+  /** Gemini families an account must never take in Sub2API although it lists them, e.g. { acc24: ["gemini-3.8-flash"] }. */
+  modelSyncExclude?: Record<string, string[]>
 }
 class HttpError extends Error { constructor(readonly status: number, message: string) { super(message) } }
 const NAME = /^acc[0-9]+$/
@@ -65,13 +67,13 @@ export function agModelFamilies(models: readonly string[]): string[] {
 /**
  * Fork patch: brings one account's Sub2API model mapping in line with the Gemini families it lists.
  * A listed family gets its listed effort slugs and its bare name (mapped to the lowest listed effort, as the
- * template maps bare names to -low); a family in `families` the account does not list loses its bare and effort
- * keys. Families outside `families` and existing values are left as they are.
+ * template maps bare names to -low); a family in `families` the account does not list, or one in `excluded`,
+ * loses its bare and effort keys. Families outside both and existing values are left as they are.
  */
-export function syncAgModelMapping(mapping: Record<string, string>, models: readonly string[], families: readonly string[]) {
+export function syncAgModelMapping(mapping: Record<string, string>, models: readonly string[], families: readonly string[], excluded: readonly string[] = []) {
   const next = { ...mapping }, added: string[] = [], removed: string[] = []
-  for (const family of families) {
-    const listed = AG_EFFORTS.map(effort => `${family}-${effort}`).filter(slug => models.includes(slug))
+  for (const family of new Set([...families, ...excluded])) {
+    const listed = excluded.includes(family) ? [] : AG_EFFORTS.map(effort => `${family}-${effort}`).filter(slug => models.includes(slug))
     if (listed.length) {
       for (const slug of [family, ...listed]) if (!(slug in next)) { next[slug] = slug === family ? listed[0]! : slug; added.push(slug) }
     } else {
@@ -788,8 +790,10 @@ export function createAgAdmin(set: AgAccountSet, options: AgAdminOptions) {
           const current = credentials.model_mapping
           // An empty mapping lets the account take every model; narrowing it is not this sync's call.
           if (typeof current !== "object" || current === null || !Object.keys(current).length) continue
-          const { mapping, added, removed } = syncAgModelMapping(current, models, families)
+          const { mapping, added, removed } = syncAgModelMapping(current, models, families, options.modelSyncExclude?.[name])
           if (!added.length && !removed.length) continue
+          // Sub2API reads an empty mapping as "every model", the opposite of what removing the last entries means.
+          if (!Object.keys(mapping).length) { results.push({ name, sub2apiId: found.id, added: [], removed: [], error: "Refusing to leave an empty model mapping" }); continue }
           await s2(`/admin/accounts/${found.id}`, { method: "PUT", body: { credentials: { ...credentials, api_key: apiKey, model_mapping: mapping } } })
           console.log(`[admin] Sub2API ${name}: model mapping +[${added}] -[${removed}]`)
           results.push({ name, sub2apiId: found.id, added, removed, error: null })

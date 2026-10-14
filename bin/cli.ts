@@ -448,9 +448,25 @@ export async function runAccountsCli(dir: string, start?: (config: Partial<impor
         : undefined
       const baseUrl = env.MERIDIAN_SUB2API_ACCOUNT_BASE ?? `http://${host}:${port}`
       // Each account's Sub2API model mapping follows its `agy models` list every 10 minutes by default; 0 disables it.
-      const modelSyncMs = env.MERIDIAN_SUB2API_MODEL_SYNC_MS === undefined ? 600_000 : Number(env.MERIDIAN_SUB2API_MODEL_SYNC_MS)
-      if (!Number.isSafeInteger(modelSyncMs) || (modelSyncMs !== 0 && modelSyncMs < 60_000)) throw new Error("MERIDIAN_SUB2API_MODEL_SYNC_MS must be 0 (off) or at least 60000 ms")
-      const app = createAgAdmin(accounts, { token, baseUrl, version, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api, modelSyncMs })
+      // A bad setting turns the sync off rather than taking the serving accounts down with the admin panel.
+      let modelSyncMs = env.MERIDIAN_SUB2API_MODEL_SYNC_MS === undefined ? 600_000 : Number(env.MERIDIAN_SUB2API_MODEL_SYNC_MS)
+      if (!Number.isSafeInteger(modelSyncMs) || (modelSyncMs !== 0 && modelSyncMs < 60_000)) {
+        console.error("[admin] MERIDIAN_SUB2API_MODEL_SYNC_MS must be 0 (off) or at least 60000 ms; Sub2API model sync disabled")
+        modelSyncMs = 0
+      }
+      // "acc24:gemini-3.8-flash;acc30:gemini-3.8-flash,gemini-9-pro" keeps those families off those accounts in Sub2API.
+      const modelSyncExclude: Record<string, string[]> = {}
+      for (const entry of (env.MERIDIAN_SUB2API_MODEL_SYNC_EXCLUDE ?? "").split(/[;\s]+/).filter(Boolean)) {
+        const [name = "", list = ""] = entry.split(":")
+        const families = list.split(",").filter(Boolean)
+        if (!/^acc[0-9]+$/.test(name) || !families.length || families.some(family => !/^gemini-[a-zA-Z0-9._-]+$/.test(family))) {
+          console.error(`[admin] Invalid MERIDIAN_SUB2API_MODEL_SYNC_EXCLUDE entry "${entry}" (use accN:gemini-family[,gemini-family]); Sub2API model sync disabled`)
+          modelSyncMs = 0
+          continue
+        }
+        modelSyncExclude[name] = [...(modelSyncExclude[name] ?? []), ...families]
+      }
+      const app = createAgAdmin(accounts, { token, baseUrl, version, loginScript: env.MERIDIAN_AGY_LOGIN_SCRIPT ?? "/usr/local/bin/agy-login.py", sub2api, modelSyncMs, modelSyncExclude })
       admin = serve({ fetch: app.fetch, port: Number(env.MERIDIAN_ADMIN_PORT), hostname: "127.0.0.1" })
       console.log(`[admin] http://127.0.0.1:${env.MERIDIAN_ADMIN_PORT}`)
     }
