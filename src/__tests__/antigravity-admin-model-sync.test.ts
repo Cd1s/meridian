@@ -39,12 +39,18 @@ describe("syncAgModelMapping", () => {
     expect(syncAgModelMapping({}, ["gemini-9-pro-high", "gemini-9-pro-medium"], ["gemini-9-pro"]).mapping)
       .toEqual({ "gemini-9-pro": "gemini-9-pro-medium", "gemini-9-pro-medium": "gemini-9-pro-medium", "gemini-9-pro-high": "gemini-9-pro-high" })
   })
+  it("removes an excluded family even though the account lists it", () => {
+    const { mapping, added, removed } = syncAgModelMapping({ ...TEMPLATE, ...ARGON_KEYS }, [...ARGON, ...FLASH], ["gemini-3.8-flash", "gemini-4-argon"], ["gemini-3.8-flash"])
+    expect(mapping).toEqual({ "gemini-3.1-pro": "gemini-3.1-pro-low", "gemini-3.1-pro-high": "gemini-3.1-pro-high", ...ARGON_KEYS })
+    expect(added).toEqual([])
+    expect(removed.sort()).toEqual(["gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-low", "gemini-3.8-flash-medium"])
+  })
   it("only treats gemini effort slugs as families", () => {
     expect(agModelFamilies(["gpt-oss-120b-medium", "claude-opus-5-5-high", "gemini-3.8-live", ...ARGON, ...FLASH])).toEqual(["gemini-3.8-flash", "gemini-4-argon"])
   })
 })
 
-function setup(options: { sub2: boolean }) {
+function setup(options: { sub2: boolean; exclude?: Record<string, string[]>; ultraMapping?: Record<string, string> }) {
   const dir = mkdtempSync(join(tmpdir(), "meridian-model-sync-"))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   for (const [name, key] of [["acc1", PRO], ["acc2", ULTRA], ["acc3", EMPTY]] as const) { mkdirSync(join(dir, name)); writeFileSync(join(dir, name, "env"), `MERIDIAN_API_KEY=${key}\n`) }
@@ -60,7 +66,7 @@ function setup(options: { sub2: boolean }) {
   const sub2 = (data: unknown) => Response.json({ code: 0, message: "ok", data })
   const details: Record<number, any> = {
     11: { credentials: { base_url: "http://127.0.0.1:3451", model_mapping: { ...TEMPLATE, ...ARGON_KEYS } } },
-    12: { credentials: { base_url: "http://127.0.0.1:3451", model_mapping: { ...TEMPLATE } } },
+    12: { credentials: { base_url: "http://127.0.0.1:3451", model_mapping: options.ultraMapping ?? { ...TEMPLATE } } },
     13: { credentials: { base_url: "http://127.0.0.1:3451", model_mapping: {} } },
   }
   const calls: Array<{ url: string; method: string; body?: any }> = []
@@ -76,6 +82,7 @@ function setup(options: { sub2: boolean }) {
   const admin = createAgAdmin(set, {
     token: TOKEN, baseUrl: "http://127.0.0.1:3451", loginScript: "/nonexistent", fetch: fakeFetch,
     sub2api: options.sub2 ? { base: "http://s2", key: "s2key", templateId: 11 } : undefined,
+    modelSyncExclude: options.exclude,
   })
   const post = (path: string) => admin.fetch(new Request(`http://local${path}`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }, body: "{}" }))
   return { set, calls, post }
@@ -96,6 +103,21 @@ describe("POST /api/sub2api/models", () => {
     expect(puts.find(call => call.url.endsWith("/12"))!.body).toEqual({ credentials: { base_url: "http://127.0.0.1:3451", api_key: ULTRA, model_mapping: { ...TEMPLATE, ...ARGON_KEYS } } })
     expect(result.results.map((r: any) => [r.name, r.added.length, r.removed.length]).sort()).toEqual([["acc1", 0, 4], ["acc2", 4, 0]])
     expect(JSON.stringify(result)).not.toContain("secret-key")
+  })
+  it("keeps an excluded family off an account that lists it", async () => {
+    const { set, calls, post } = setup({ sub2: true, exclude: { acc2: ["gemini-3.8-flash"] } })
+    await set.sync()
+    await post("/api/sub2api/models")
+    const ultra = calls.find(call => call.method === "PUT" && call.url.endsWith("/12"))!.body.credentials.model_mapping
+    expect(ultra).toEqual({ "gemini-3.1-pro": "gemini-3.1-pro-low", "gemini-3.1-pro-high": "gemini-3.1-pro-high", ...ARGON_KEYS })
+  })
+  it("never leaves an empty mapping, which Sub2API reads as every model", async () => {
+    const flashOnly = { "gemini-3.8-flash": "gemini-3.8-flash-low", "gemini-3.8-flash-low": "gemini-3.8-flash-low" }
+    const { set, calls, post } = setup({ sub2: true, exclude: { acc2: ["gemini-3.8-flash", "gemini-4-argon"] }, ultraMapping: flashOnly })
+    await set.sync()
+    const result = await (await post("/api/sub2api/models")).json() as any
+    expect(calls.some(call => call.method === "PUT" && call.url.endsWith("/12"))).toBe(false)
+    expect(result.results.find((r: any) => r.name === "acc2").error).toContain("empty model mapping")
   })
   it("refuses without Sub2API", async () => {
     const { set, post } = setup({ sub2: false })
