@@ -320,6 +320,11 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - 池模式的副作用：上游错误不再标记账号。Meridian 近 7 天只有 6×400、1×499、4×503、1×504，没有 429；本机容量满的 429 只是瞬时，所以影响很小。
 - 代码：新账号继承池模式（见上表）。
 - 部署：上面的“部署后清除暂停”保留作为保险。
+- 发布与部署：`v1.82.0-cd1s.3`（`a67bb54`）。回滚：把 `dist-accounts.old-c39ef9c3-20261014-235717` 改回 `dist-accounts` 后重启；打包备份在 `/opt/meridian/backups/` 并已 `agent-backup put`。
+- 实测（这次部署就是重启测试）：重启前后每 2 秒经 Sub2API 发一个请求，共 40 个（3.8 Flash 为主，夹 Gemini 4）。服务 19 秒后恢复健康。
+  - 39 个 200：重启期间发出的请求被池模式在原账号重试，最长等了 35 秒后成功。
+  - 1 个失败：重启前 4 秒已在处理中的 Gemini 4 请求被中断，客户端收到 502 `Upstream service temporarily unavailable`。正在处理中的请求只能靠优雅停机（先等完再退出）解决，尚未做。
+  - 重启后 21 个 Meridian 账号都没有被暂停或限流；`select_account_no_available` 0 次；Sub2API 记录了 165 次“池模式连接错误不暂停”。
 
 ## 同步上游
 
