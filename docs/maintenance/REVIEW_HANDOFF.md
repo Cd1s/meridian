@@ -18,7 +18,7 @@ the contributor's PR is what merges:
 |---|---|---|
 | #1362 | @Nowaker `13abefad5` | #1360 — merged; #1362 closed unmerged |
 | #1317 | @Cd1s `80d4b9667` | #1314 (unsigned, `BLOCKED`) |
-| #1322 | @passabilities (10), @justprosh (7), @Nowaker (1) | #1211, #1231, #1292; Nowaker's `52965e113` is from closed #1283 |
+| #1322 | @passabilities (10), @justprosh (7), @Nowaker (1) | #1211 and #1231 — merged; #1292 still open; Nowaker's `52965e113` is from closed #1283 |
 
 Corrections to past PRs (reopening, comment edits, release notes, any rewrite of
 `main`) are the owner's decisions in #1363. Do not start them from this note.
@@ -34,6 +34,9 @@ Each landed as the contributor's own PR. Author is the output of
 | #1213 | `55edbcc35` | Robert (@robertn702) | conflict resolution, two test corrections, doc correction, live gate | `--admin` (unsigned) |
 | #1201 | `fa4266e16` | jmuz (@XInTheDark) | conflict-free merge of `main` only | `--admin` (unsigned), explicit `--body`, no maintainer trailer |
 | #1370 | `431ec2014` | Aleksey Proshutinskiy (@justprosh) | none | `--admin` (unsigned), explicit `--body`, no maintainer trailer |
+| #1211 | `eb1f46211` | passabilities.eth (@passabilities) | merge of `main` only | direct, explicit `--body`, no maintainer trailer |
+| #1231 | `84e161b9c` | passabilities.eth (@passabilities) | merge of `main` after #1211 (conflicts resolved to the PR's side) | direct, explicit `--body`, no maintainer trailer |
+| #1224 | `09ae9316f` | Damian Nowak (@Nowaker) | contract corrections for #1282 (`948336443`), two merges of `main` | direct, explicit `--body` with a maintainer `Co-authored-by` (the fix changed) |
 
 - #1213: [evidence](evidence/1213-sonnet-native-context-20261013/README.md).
   5,773 local tests, build, final-head CI, live OpenCode 2.0.16 / Sonnet 5.5
@@ -49,6 +52,36 @@ Each landed as the contributor's own PR. Author is the output of
   `npm test` and build, final-head CI, live Opus 5.5 before/after: three model
   requests per deferred hand-off on unchanged `main`, one with the fix. Issue
   #1367 closed by the merge.
+- #1211: [evidence](evidence/1211-auto-mode-classifier-live-20261013/README.md).
+  Local `npm test` and build, final-head CI, live E71 with Claude Code 2.1.296:
+  3 of 6 main requests resumed on unchanged `main`, 6 of 6 with the fix. Open
+  follow-up: the classifier's second stage sends no stop sequences and is not
+  detected (not a regression).
+- #1231: [evidence](evidence/1231-subagent-session-live-20261013/README.md).
+  Local `npm test` and build, final-head CI, live E72 with Claude Code 2.1.296:
+  0 of 4 subagent turns resumed and lease waits up to 3.5 s on `main`, 4 of 4
+  and 4 ms with the fix.
+- #1224: [evidence](evidence/1224-drain-live-20261013/README.md). The route
+  follows the #1282 contract after the maintainer correction commit. Local
+  `npm test` and build, final-head CI, live E74 before/after with Opus 5.5.
+  Known limitation: under Bun a held client that disconnects is not released
+  until the hold ends.
+- #1373 (maintainer fix for #1364, reported and isolated by @imarshallwidjaja):
+  merged `8d447ea35`. A CLI-rejected tool call with an undeclared name now
+  reaches the client as `tool_use` in streaming passthrough. Fixture stand with
+  real Claude Code 2.1.296 fails before and passes after; no live model run
+  (a model cannot be made to emit an undeclared name). Non-streaming and the
+  CLI's "… is disabled for this session" refusal wording remain unhandled.
+- #1340 (@Cd1s, Antigravity replayed tool calls) was re-reviewed at
+  `c7e23c75b` and stays held. The revision no longer returns a recorded result,
+  which resolves the stale-poll objection, but nothing live shows it prevents
+  the duplicate write it targets: its shipped gate passes on unchanged `main`
+  and has no baseline mode, the #1317 repeated-write gate was not run on it,
+  and in the one live observation the model repeated the call straight after
+  the notice. Smaller items: a `console.log` in `antigravityRuntime.ts`, tests
+  that still pass with the dispatch gate, the `resume()` clear or `is_error`
+  removed, and six commits authored by `Claude <noreply@anthropic.com>`, so a
+  merge needs an explicit `--body`.
 - #1361 (@jaedync, raw control characters in tool arguments) is reviewed and
   held for an owner decision, not merged. Head `b07e11254`, CI green, merges
   cleanly. Its fixture stands were rerun here with real Claude Code 2.1.296 and
