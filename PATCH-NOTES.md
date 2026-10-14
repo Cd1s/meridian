@@ -301,6 +301,15 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
 - 测试：`src/__tests__/antigravity-admin-model-sync.test.ts`（纯函数 4 例；两个账号一个有 Argon、一个带着过期 Argon 条目，一个空映射，确认只改前两个，且 API key 和 base_url 保留、返回里不含 key）。
 - 补充（同日）：只靠优先级不够。Sub2API 有会话粘连：同一会话先用 Gemini 4（落在 Ultra）后，后续的 3.8 Flash 也粘在 Ultra 上（实测确认；内容不同的请求则都落在 Pro）。所以新增按账号排除：Ultra 账号排除 `gemini-3.8-flash`，Flash 就完全不会调度到它，粘连会话遇到 Flash 会改选 Pro。同时加了“映射不能为空”的保护。
 - Sub2API 侧的一次性配置（账号优先级、Argon 定价渠道）记在运营记录里，不在本仓库。
+- 发布与部署：
+  - `v1.82.0-cd1s.1`（`905bfde`，含上游 1.82.0 版本号）和 `v1.82.0-cd1s.2`（`c39ef9c`，按账号排除）先后部署；agy 仍是 1.3.5。
+  - 生产加了 drop-in `meridian-accounts.service.d/sub2api-model-sync.conf`：`MERIDIAN_SUB2API_MODEL_SYNC_EXCLUDE=acc24:gemini-3.8-flash`。
+  - 回滚：把 `dist-accounts.old-905bfde9-20261014-232945` 改回 `dist-accounts`（再往前是 `dist-accounts.old-5c26139e-20261014-231112`），删掉该 drop-in，`daemon-reload` 后重启。两次部署前的打包备份都在 `/opt/meridian/backups/` 并已 `agent-backup put`。
+- 实测（生产）：
+  - 同步定时任务启动后自动把 3.8 Flash 从 Ultra 账号的映射里删掉；手动同步为空操作；删掉 Ultra 的 `gemini-4-argon-medium` 后同步会补回。
+  - 同一会话先 Gemini 4、再 3.8 Flash：Argon 落在 Ultra，Flash 落在 Pro（之前会粘在 Ultra 上）。
+  - Argon 计费按渠道定价：输入 $2、输出 $10、缓存读 $0.10（每百万 token）。
+- **部署注意（教训）**：重启 Meridian 的几十秒里，Sub2API 收到 `connection refused` 会把对应账号“临时不可调度”10 分钟。23:11 那次部署后，Pro 账号被暂停约 10 分钟，期间 18 个请求报“没有可用账号”，部分 Flash 落到了 Ultra。23:29 那次在部署后约 3 分钟内手动清除。以后部署：服务恢复健康后立即对 Meridian 的 Sub2API 账号调用 `DELETE /admin/accounts/:id/temp-unschedulable` 清除暂停。
 
 ## 同步上游
 
