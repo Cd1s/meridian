@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface, type Interface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPrompt, agEffortFallback, contractKey, historyKey, stable, completedToolTail, replayNotice, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPromptWithinLimit, agEffortFallback, contractKey, historyKey, stable, completedToolTail, replayNotice, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
 import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravitySchema"
 import type { ValidateFunction } from "ajv"
@@ -199,7 +199,7 @@ export class AntigravityRun {
   }
   private prompt(request: AgRequest): string {
     const native = agNativeTools(this.runtime.options)
-    return renderAgPrompt(request, native) + (this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : "")
+    return renderAgPromptWithinLimit(request, native, this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : "")
   }
   async start(): Promise<void> {
     this.armTurnTimer()
