@@ -361,6 +361,11 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = [], o
   const current = clip(latest.text)
   // Work already done for this request, inputs and results cut to 200 chars: enough to see it ran without repeating it.
   const since = request.messages.slice(at + 1).map(m => typeof m.content === "string" ? m : { ...m, content: m.content.map(b => b.type === "tool_result" ? { ...b, content: JSON.stringify(b.content ?? "").slice(0, 200) } : b.type === "tool_use" ? { ...b, input: clipInput(b.input) } : b) })
+  // Over the input limit a long tool loop would restate hundreds of steps: keep only the newest, the history below has them all.
+  let shown = since.length
+  if (omitted) for (let bytes = 0; shown > 0 && (bytes += Buffer.byteLength(JSON.stringify(since[shown - 1]))) <= AG_SINCE_BYTES; ) shown--
+  const steps = omitted ? since.slice(shown) : since
+  const stepsLabel = steps.length < since.length ? ` (newest ${steps.length} of ${since.length} messages; see the history below)` : ""
   // Every earlier tool call as name + target, newest kept when long: lets the model recall what it did without the bulky outputs.
   const actions = request.messages.slice(0, Math.max(at, 0)).flatMap(m => typeof m.content === "string" ? [] : m.content.flatMap(b => b.type === "tool_use" ? [`${b.name} ${toolTarget(b.input)}`] : [])).join("; ").slice(-4000)
   return [
@@ -375,7 +380,7 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = [], o
     "Image attachment references are created from client-supplied bytes. Inspect each relevant attachment with view_file using its exact absolute path. Those are the only permitted filesystem reads.",
     "Client system instructions:\n" + (typeof request.system === "string" ? request.system : request.system?.map(b => b.text).join("\n") ?? ""),
     current && actions ? "Tool calls before this request, oldest first: " + actions : "",
-    current ? "Answer this; prior tool work is done" + (since.length ? ". Since this request:\n" + JSON.stringify(since) : ":") + "\n" + current : "",
+    current ? "Answer this; prior tool work is done" + (since.length ? ". Since this request" + stepsLabel + ":\n" + JSON.stringify(steps) : ":") + "\n" + current : "",
     omitted ? AG_OMIT_NOTE : "",
     // Keep the history last: it is one JSON value that clients of this prompt parse from the end.
     "Client conversation:\n" + JSON.stringify(request.messages),
@@ -387,7 +392,9 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = [], o
 // so the newest messages and tool results are what disappears. Measured in UTF-8 bytes for English, JSON-heavy and
 // Chinese text alike; JSON escaping is not counted twice.
 export const AG_MAX_PROMPT_BYTES = 190_000
-const AG_OMIT_NOTE = "To fit Antigravity's input limit, the gateway omitted the middle of some larger tool results, tool arguments or messages (marked \"omitted by gateway\"). Re-read anything you still need, in smaller parts if it is large."
+const AG_OMIT_NOTE = "To fit Antigravity's input limit, the gateway omitted the middle of some larger tool results, tool arguments or messages, and when that was not enough whole older messages (marked \"omitted by gateway\"). Re-read anything you still need, in smaller parts if it is large."
+/** Fork: bytes of tool work since the current request that an over-limit prompt restates ahead of the history. */
+const AG_SINCE_BYTES = 8000
 /** MERIDIAN_AGY_MAX_PROMPT_BYTES overrides the prompt byte limit; 0 disables it. */
 export function agPromptByteLimit(env: Record<string, string | undefined> = process.env): number {
   const raw = env.MERIDIAN_AGY_MAX_PROMPT_BYTES
@@ -447,6 +454,10 @@ function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number): 
  * last, the newest round's tool results and arguments, including tool results sent with the request. The request's
  * own text is never shrunk: when it alone does not fit, the request fails with a 400 prompt-too-long error. Under the
  * limit the prompt is unchanged.
+ *
+ * Fork: a long session (often from a client that never compacts) can stay over the limit with every older message cut
+ * to a marker. Then whole messages go, oldest first: before the current request, then the tool work since it, except
+ * the newest round. The newest round is shrunk only when dropping every older message is not enough.
  */
 export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = "", limit = agPromptByteLimit()): string {
   const full = renderAgPrompt(request, nativeTools) + suffix
@@ -456,29 +467,73 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
   // Tool results that arrive with the request (some clients add text next to them) count as the newest round.
   const newest = new Set([lastAssistant, lastUser, current].filter(at => at >= 0 && at >= current))
   const size = (message: AgMessage) => Buffer.byteLength(JSON.stringify(message))
+  const fits = (prompt: string) => Buffer.byteLength(prompt) <= limit
   let messages = request.messages, changed = false
-  let excess = Buffer.byteLength(full) - limit + Buffer.byteLength(AG_OMIT_NOTE) + 2
   const render = () => renderAgPrompt({ ...request, messages }, nativeTools, true) + suffix
+  // Fork: the over-limit render restates fewer steps since the request, which may be enough on its own.
+  const restated = render()
+  if (fits(restated)) return restated
+  let excess = Buffer.byteLength(restated) - limit
   const range = (from: number, to: number) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + i)
-  const phases: Array<{ at: number[]; kinds: readonly OmitKind[]; passes: readonly (readonly [number, number])[] }> = [
-    { at: range(0, current), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
-    { at: range(current + 1, messages.length).filter(at => !newest.has(at)), kinds: ["result", "use"], passes: [[300, 2000], [0, 200]] },
-    { at: [...newest].sort((a, b) => a - b), kinds: ["result", "use"], passes: [[4000, 10000], [1000, 2500]] },
-  ]
-  for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
-    const next = omitIn(messages[i]!, kind, keep, min)
-    if (next === messages[i]) continue
-    if (!changed) { messages = [...messages]; changed = true }
-    excess -= size(messages[i]!) - size(next)
-    messages[i] = next
-    if (excess > 0) continue
-    const prompt = render(), over = Buffer.byteLength(prompt) - limit
-    if (over <= 0) return prompt
-    excess = over
+  const shrink = (at: number[], kinds: readonly OmitKind[], passes: readonly (readonly [number, number])[]): string | undefined => {
+    for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
+      const next = omitIn(messages[i]!, kind, keep, min)
+      if (next === messages[i]) continue
+      if (!changed) { messages = [...messages]; changed = true }
+      excess -= size(messages[i]!) - size(next)
+      messages[i] = next
+      if (excess > 0) continue
+      const prompt = render(), over = Buffer.byteLength(prompt) - limit
+      if (over <= 0) return prompt
+      excess = over
+    }
+    return undefined
   }
-  const prompt = changed ? render() : full, bytes = Buffer.byteLength(prompt)
+  const older = [[300, 2000], [0, 200]] as const
+  const shrunk = shrink(range(0, current), ["result", "use", "text"], older)
+    ?? shrink(range(current + 1, request.messages.length).filter(at => !newest.has(at)), ["result", "use"], older)
+  if (shrunk) return shrunk
+  const firstNewest = Math.min(request.messages.length, ...[...newest].filter(at => at > current))
+  const droppable = [...range(0, current), ...range(current + 1, firstNewest)]
+  const withDropped = (from: AgMessage[], count: number): AgMessage[] => {
+    const drop = new Set(droppable.slice(0, count))
+    // Tool results whose calls were dropped go with them.
+    for (const at of droppable) if (!drop.has(at) && drop.has(at - 1) && onlyToolResults(from[at]!)) drop.add(at)
+    const kept: AgMessage[] = []
+    for (let i = 0; i < from.length;) {
+      if (!drop.has(i)) { kept.push(from[i]!); i++; continue }
+      let end = i
+      while (drop.has(end)) end++
+      const calls = from.slice(i, end).reduce((n, m) => n + (typeof m.content === "string" ? 0 : m.content.filter(b => b.type === "tool_use").length), 0)
+      // A user marker after the current request would read as a newer request; an assistant one does not.
+      kept.push({ role: i < current ? "user" : "assistant", content: `[... ${end - i} earlier messages${calls ? ` with ${calls} tool calls` : ""} omitted by gateway: Antigravity input limit ...]` })
+      i = end
+    }
+    return kept
+  }
+  /** The prompt with the fewest oldest messages dropped that fits, if any does. */
+  const dropOldest = (): string | undefined => {
+    const base = messages
+    let low = 1, high = droppable.length, best: string | undefined
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2)
+      messages = withDropped(base, mid)
+      const prompt = render()
+      if (fits(prompt)) { best = prompt; high = mid - 1 } else low = mid + 1
+    }
+    messages = base
+    return best
+  }
+  const fitted = dropOldest() ?? shrink([...newest].sort((a, b) => a - b), ["result", "use"], [[4000, 10000], [1000, 2500]]) ?? dropOldest()
+  if (fitted) return fitted
+  messages = withDropped(messages, droppable.length)
+  const prompt = render(), bytes = Buffer.byteLength(prompt)
   if (bytes > limit) throw promptTooLong(bytes, limit)
   return prompt
+}
+/** A user message made only of tool results: it belongs to the assistant tool calls just before it. */
+function onlyToolResults(message: AgMessage): boolean {
+  return message.role === "user" && typeof message.content !== "string" && message.content.length > 0 && message.content.every(b => b.type === "tool_result")
 }
 
 export type AgEvent =
