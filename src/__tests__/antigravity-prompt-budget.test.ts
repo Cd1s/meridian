@@ -187,13 +187,81 @@ describe("Antigravity prompt byte limit", () => {
     expect(history[2]!.content[0].content[1].text).toMatch(/omitted by gateway/)
   })
 
-  it("still fails when a huge non-text block is all that is left", () => {
-    const messages: unknown[] = [{ role: "user", content: [{ type: "text", text: "see this" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(60_000) } }] }, { role: "assistant", content: "ok" }, { role: "user", content: "next" }]
-    expect(() => renderAgPromptWithinLimit(parseAgRequest({ model: "fixture-model", messages }), [], "", 20_000)).toThrow(/prompt is too long/)
+  it("drops an old message with a huge non-text block, and still fails when that block is in the request itself", () => {
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(60_000) } }
+    const old: unknown[] = [{ role: "user", content: [{ type: "text", text: "see this" }, image] }, { role: "assistant", content: "ok" }, { role: "user", content: "next" }]
+    const history = historyOf(renderAgPromptWithinLimit(parseAgRequest({ model: "fixture-model", messages: old }), [], "", 20_000))
+    expect(history.slice(1)).toEqual([{ role: "assistant", content: "ok" }, { role: "user", content: "next" }])
+    const current: unknown[] = [{ role: "user", content: "hi" }, { role: "assistant", content: "ok" }, { role: "user", content: [{ type: "text", text: "see this" }, image] }]
+    expect(() => renderAgPromptWithinLimit(parseAgRequest({ model: "fixture-model", messages: current }), [], "", 20_000)).toThrow(/prompt is too long/)
   })
 
   it("fails instead of truncating when everything that can shrink already has", () => {
     expect(() => renderAgPromptWithinLimit(session(2, 100, "r", "Q".repeat(1000)), [], "", 3000)).toThrow(/prompt is too long/)
+  })
+
+  /** A long session of small tool rounds: every message is cut to a marker and it still does not fit. */
+  const longSession = (before: number, after: number, typedLast = false) => {
+    const messages: unknown[] = [{ role: "user", content: "Look into the failing build." }]
+    const round = (i: number) => [{ role: "assistant", content: [{ type: "text", text: `Step ${i}: checking the next module.` }, { type: "tool_use", id: `call_${i}`, name: "bash", input: { command: `cat module${i}.ts` } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: `call_${i}`, content: `OUT${i}-` + "o".repeat(3000) }] }]
+    for (let i = 0; i < before; i++) messages.push(...round(i))
+    messages.push({ role: "assistant", content: "Analysis done." }, { role: "user", content: "Now fix it." })
+    for (let i = before; i < before + after; i++) messages.push(...round(i))
+    if (typedLast) messages.push({ role: "assistant", content: "Stopped." }, { role: "user", content: "Why did you stop?" })
+    return parseAgRequest({ model: "fixture-model", messages, tools })
+  }
+  const markers = (history: Hist) => history.flatMap((m, i) => typeof m.content === "string" && /^\[\.\.\. \d+ earlier messages.* omitted by gateway/.test(m.content) ? [i] : [])
+
+  it("drops the oldest whole messages before the request when cutting every message is not enough", () => {
+    const request = longSession(700, 0, true)
+    const prompt = renderAgPromptWithinLimit(request, [])
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
+    const history = historyOf(prompt)
+    expect(markers(history)).toEqual([0])
+    expect(history[0]).toMatchObject({ role: "user", content: expect.stringMatching(/^\[\.\.\. \d+ earlier messages with \d+ tool calls omitted by gateway/) })
+    // The kept part starts with a call, never with results whose calls were dropped.
+    expect(history[1]!.role).toBe("assistant")
+    expect(history.at(-1)!.content).toBe("Why did you stop?")
+    expect(history.at(-2)!.content).toBe("Stopped.")
+    // The newest kept rounds are the newest ones, in order.
+    expect(history.at(-6)!.content[1].id).toBe("call_699")
+    expect(prompt.slice(0, prompt.indexOf("Client conversation:"))).toMatch(/whole older messages/)
+  })
+
+  it("in a long tool loop after one request keeps the request and the newest round, drops the oldest steps after it", () => {
+    const request = longSession(20, 700)
+    const prompt = renderAgPromptWithinLimit(request, [])
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
+    const history = historyOf(prompt)
+    const current = history.findIndex(m => m.content === "Now fix it.")
+    expect(current).toBeGreaterThan(0)
+    // Everything before the request went first, then the oldest steps after it; the marker after the request is not a user message.
+    expect(markers(history)).toEqual([0, current + 1])
+    expect(history[current + 1]!.role).toBe("assistant")
+    expect(history[current + 2]!.role).toBe("assistant")
+    // The newest round is untouched.
+    expect(JSON.stringify(history.slice(-2))).toBe(JSON.stringify(request.messages.slice(-2)))
+    // The restated steps since the request are capped to the newest ones.
+    expect(prompt.slice(0, prompt.indexOf("Client conversation:"))).toMatch(/Since this request \(newest \d+ of \d+ messages; see the history below\):/)
+  })
+
+  it("over the limit only because of the restated steps since the request, caps them and leaves the history alone", () => {
+    const messages: unknown[] = [{ role: "user", content: "Run the checks." }]
+    for (let i = 0; i < 400; i++) messages.push({ role: "assistant", content: [{ type: "tool_use", id: `c${i}`, name: "bash", input: { command: `check ${i}`, note: "n".repeat(150) } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: `c${i}`, content: "r".repeat(150) }] })
+    const request = parseAgRequest({ model: "fixture-model", messages, tools })
+    const full = Buffer.byteLength(renderAgPrompt(request, []))
+    const limit = full - 20_000
+    const prompt = renderAgPromptWithinLimit(request, [], "", limit)
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(limit)
+    expect(historyOf(prompt)).toEqual(request.messages as never)
+    expect(prompt).toMatch(/Since this request \(newest \d+ of 800 messages; see the history below\):/)
+  })
+
+  it("still fails when the request and the newest round alone do not fit", () => {
+    const request = longSession(300, 0, true)
+    const tiny = Buffer.byteLength(renderAgPrompt({ ...request, messages: request.messages.slice(-2) }, [])) - 100
+    expect(tooLong(() => renderAgPromptWithinLimit(request, [], "", tiny))).toMatchObject({ status: 400 })
   })
 
   it("does not mutate the request", () => {
