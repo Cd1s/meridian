@@ -49,7 +49,7 @@ for (let n = 1; n <= files; n++) {
 
 const report = { label, result: 'INCOMPLETE', model, idleMs, files, fileBytes, platform: process.platform, arch: process.arch, node: process.version,
   agy: cp.execFileSync(executable, ['--version'], { encoding: 'utf8' }).trim(), agyHash: createHash('sha256').update(await readFile(executable)).digest('hex'),
-  pi: cp.execFileSync(process.execPath, [piPath, '--version'], { encoding: 'utf8' }).trim(), steps, health: [] }
+  pi: (({ stdout, stderr }) => `${stdout}${stderr}`.trim())(cp.spawnSync(process.execPath, [piPath, '--version'], { encoding: 'utf8' })), steps, health: [] }
 let proxy, child, failure
 try {
   proxy = await startProxyServer({ backend: 'antigravity', port: 0, silent: true, antigravity: { executable, allowToolBridge: true, idleConversationMs: idleMs } })

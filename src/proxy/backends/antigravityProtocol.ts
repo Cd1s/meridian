@@ -245,15 +245,17 @@ function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number): 
  * renderAgPrompt plus an optional suffix, kept within `limit` bytes instead of letting agy drop the newest messages.
  * Shrinks the oldest large content first, to head-and-tail snippets and then to markers: tool results, tool_use
  * arguments and long text before the client's current request; then the tool work since it, except the newest round;
- * last, the newest round's tool results and arguments. The current request itself is never shrunk: when it alone does
- * not fit, the request fails with a 400 prompt-too-long error. Under the limit the prompt is unchanged.
+ * last, the newest round's tool results and arguments, including tool results sent with the request. The request's
+ * own text is never shrunk: when it alone does not fit, the request fails with a 400 prompt-too-long error. Under the
+ * limit the prompt is unchanged.
  */
 export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = "", limit = agPromptByteLimit()): string {
   const full = renderAgPrompt(request, nativeTools) + suffix
   if (!limit || Buffer.byteLength(full) <= limit) return full
   const current = latestTypedRequest(request.messages)
   const lastAssistant = request.messages.findLastIndex(m => m.role === "assistant"), lastUser = request.messages.findLastIndex(m => m.role === "user")
-  const newest = new Set([lastAssistant, lastUser].filter(at => at > current))
+  // Tool results that arrive with the request (some clients add text next to them) count as the newest round.
+  const newest = new Set([lastAssistant, lastUser, current].filter(at => at >= 0 && at >= current))
   const size = (message: AgMessage) => Buffer.byteLength(JSON.stringify(message))
   let messages = request.messages, changed = false
   let excess = Buffer.byteLength(full) - limit + Buffer.byteLength(AG_OMIT_NOTE) + 2

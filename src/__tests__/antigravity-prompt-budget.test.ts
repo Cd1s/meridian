@@ -108,6 +108,16 @@ describe("Antigravity prompt byte limit", () => {
     expect(historyOf(prompt)[0]!.content[0].content).toMatch(/omitted by Meridian/)
   })
 
+  it("shrinks a huge tool result sent together with the request's text, never the text", () => {
+    const messages: unknown[] = [{ role: "user", content: "Read the log." }, { role: "assistant", content: [{ type: "tool_use", id: "log", name: "bash", input: { command: "cat app.log" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "log", content: "L".repeat(260_000) }, { type: "text", text: "Which line failed first?" }] }]
+    const prompt = renderAgPromptWithinLimit(parseAgRequest({ model: "fixture-model", messages, tools }), [])
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
+    const last = historyOf(prompt).at(-1)!.content
+    expect(last[0].content).toMatch(/^L{3990}[^]*omitted by Meridian[^]*L{3990}$/)
+    expect(last[1]).toEqual({ type: "text", text: "Which line failed first?" })
+  })
+
   it("fails with the 400 prompt-too-long error when the current request alone does not fit", () => {
     const error = tooLong(() => renderAgPromptWithinLimit(session(2, 100, "r", "Q".repeat(300_000)), []))
     expect(error).toBeInstanceOf(AntigravityError)
