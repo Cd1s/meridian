@@ -381,6 +381,15 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - 测试脚本的教训：同一个固定的工具调用 ID（`toolu_log1`）加同一句开场白重复测试时，Meridian 会把它当成已经回答过的步骤，返回 409（Sub2API 显示为 502 `Upstream request failed`）。测试要用随机的 ID 和开场白；真实客户端不会碰到。
 - 已知限制：删掉的旧消息模型看不到了（只剩一条“省略了 N 条较早消息、K 次工具调用”的标记和最多 4000 字符的“之前的工具调用”列表）；超长会话最好让客户开新会话或在 Codex 里压缩上下文。没有用实际的 Codex Desktop 复测（客户端在客户的 Windows 上），用的是同一个 Sub2API `/v1/responses` 转换路径。
 
+### 2026-10-15 Claude Code 报 `messages.1.role Invalid option`：把对话中的 system 消息并进系统提示（#65），发布 v1.82.0-cd1s.7 并部署
+- 现象：客户用 Claude Code 2.1.296 + `gemini-3.8-flash-high[1M]` 一开口就 400：`Antigravity supports text, images, documents and adapted media; invalid or unsupported request: messages.1.role Invalid option: expected one of "user"|"assistant"`。生产日志：10-13 以来 35 次，cd1s.6 上线后又 33 次。
+- 根因：Claude Code 2.1.29x 对它不认识的模型按最新能力处理，把环境说明（`# Environment …`）作为 `role: "system"` 消息放进 `messages`（Anthropic 新模型支持对话中途的 system 消息）。fork 的 schema 只认 user/assistant。用 `modelPicker` 把模型标成 `behavesAs: claude-sonnet-4-5-20250929` 的客户端不会发，这就是舰队一直没遇到的原因（本地假接口抓包对照确认）。
+- 改动（#65）：`normalizeAgRequest` 在校验前把 system 消息的文本按顺序并进 `system`（字符串用空行连接；text 块数组则追加块；没有就新建），并从 `messages` 移除；非文本块和空消息丢弃。放在"结尾 assistant 补 Continue."之前，所以 `[user, assistant, system]` 仍会补 Continue。系统提示变化不影响续接（`sameAgExecutionContract` 忽略 system/tools）。
+- 测试：`antigravity-system-role.test.ts` 7 例，先红（6 fail）后绿；抓到的 Claude Code 2.1.296 真实请求（23 个工具、角色 `[user, system]`）解析后为 `[user]`，环境说明进了系统提示。基于 cd1s.6：typecheck；`antigravity*`、`replay*`、`proxy-replay*` 492 pass / 4 skip / 0 fail。
+- 发布与部署：`v1.82.0-cd1s.7` = `5bca0c9`（cd1s.6 `d03b98e` + #64 文档 + #65）。`deploy.sh`，34 秒恢复健康，账号 21 个、失败 3 个，部署前后相同。
+- 回滚：把 `dist-accounts.old-5bca0c9` 改回 `dist-accounts` 后重启；另有 `/opt/meridian/backups/dist-accounts-pre5bca0c9-20261015-145734` 和打包备份 `live-d03b98e-before-5bca0c9-20261015-075641.tgz`（含 systemd 单元与 drop-in，sha256 `33783816…`），并已 `agent-backup put`。
+- 实测（生产，经 Sub2API）：带 `[user, system]` 的原始请求两次都 200；照客户配置（不设 `behavesAs`）的 Claude Code 2.1.296 正常回复；重启后 4 个请求全 200，角色错误 0 次，日志里 6 次 `folded system messages`。
+
 ## 同步上游
 
 
