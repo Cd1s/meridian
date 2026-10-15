@@ -25,7 +25,7 @@
 | 账号级临时目录 | `antigravityAccounts.ts`、`antigravityRuntime.ts` | 多账号模式下每个账号的 agy 用 `<账号>/.tmp` 当 `TMPDIR`，XDG 目录也指到账号内；Meridian 给 agy 建的工作目录也放在该 `TMPDIR` 下。之前所有账号共用 `/tmp`，agy 的功能开关缓存 `/tmp/unleash-repo-schema-v1-codeium-language-server.json` 是共享的 |
 | 多账号管理面板 `MERIDIAN_ADMIN_PORT` | `antigravityAdmin.ts`、`antigravityAdminPage.ts`、`bin/cli.ts`、`scripts/agy-login.py` | 同进程内的管理接口 + 单页面（只绑 127.0.0.1，口令 `MERIDIAN_ADMIN_TOKEN` ≥16 位）。功能：账号列表（邮箱、端口、代理（密码打码）、状态/失败原因、请求统计、官方额度分组与重置时间、Sub2API 编号）、添加账号（校验代理并拒绝重复出口 IP → 分配名字/端口/key → 官方 agy 登录 → 自动启动 → 按模板账号自动在 Sub2API 建号）、重新登录、停用/启用（同步 Sub2API 状态）、测出口 IP、重载。额度结果缓存 5 分钟（每次读取都会让账号跑一次 `agy -p /usage`）。登录脚本给 agy 与运行时相同的隔离环境 |
 | 探测结果后台刷新（同一开关） | `antigravityRuntime.ts` | 设了 TTL 时：授权检查和模型列表（`agy models`，上游固定 60s 缓存，此时取 max(60s, TTL)）过期后，若距上次成功不到 6×TTL，请求直接用旧结果，后台跑一次刷新；刷新失败立即清掉缓存，之后请求同步检查/被拦。超过 6×TTL 回到同步检查 |
-| 按字节预算瘦身提示 `MERIDIAN_AGY_MAX_PROMPT_BYTES`（上游 #1382 已合入，保留 fork 措辞） | `antigravityProtocol.ts`（`renderAgPromptWithinLimit`）、`antigravityRuntime.ts` | agy 对一条 user 输入只收约 192,000 字节，超出的尾部（也就是最新的消息和工具结果）被静默丢弃；Meridian 每轮都把整段历史渲染成一条输入。现在用上游 #1382 的算法：超过上限（默认 190000，`0` 关闭，无效值用默认）时从最旧的大块内容开始省略——先是当前请求之前的旧工具结果、旧工具参数（含嵌套字符串）、旧长文本，再是当前请求之后、最新一轮之前的工具结果和参数，都是先留头尾再只留占位；最后才删减最新一轮（最后的 assistant、最后的 user、随请求一起发来的工具结果），保留更大的头尾。用户本次打的字从不删减，只有它本身装不下时返回 400 `prompt is too long`。没超限时逐字节不变。fork 差异：占位写 `omitted by gateway`、说明写 the gateway，提示词不出现 Meridian；`renderAgPrompt` 仍在历史前复述当前请求。 |
+| 按字节预算瘦身提示 `MERIDIAN_AGY_MAX_PROMPT_BYTES`（上游 #1382 已合入，保留 fork 措辞） | `antigravityProtocol.ts`（`renderAgPromptWithinLimit`）、`antigravityRuntime.ts` | agy 对一条 user 输入只收约 192,000 字节，超出的尾部（也就是最新的消息和工具结果）被静默丢弃；Meridian 每轮都把整段历史渲染成一条输入。现在用上游 #1382 的算法：超过上限（默认 190000，`0` 关闭，无效值用默认）时从最旧的大块内容开始省略——先是当前请求之前的旧工具结果、旧工具参数（含嵌套字符串）、旧长文本，再是当前请求之后、最新一轮之前的工具结果和参数，都是先留头尾再只留占位；最后才删减最新一轮（最后的 assistant、最后的 user、随请求一起发来的工具结果），保留更大的头尾。用户本次打的字从不删减，只有它本身装不下时返回 400 `prompt is too long`。没超限时逐字节不变。fork 差异：占位写 `omitted by gateway`、说明写 the gateway，提示词不出现 Meridian；`renderAgPrompt` 仍在历史前复述当前请求，超限时“本次请求以来的步骤”只复述最新约 8KB；所有内容压成占位后仍超限（长会话、客户端不压缩上下文）时，从最旧的整条消息开始删（先删当前请求之前的，再删之后、最新一轮之前的），每段换成一条“N earlier messages … omitted by gateway”标记；最新一轮只有删光旧消息仍装不下时才删减（#63）。 |
 
 ## 线上配置（<生产机>）
 
@@ -362,6 +362,24 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   | 用户直接打 21 万字节 | 400 | 400（符合预期） |
 
   - 模型路由不变：Gemini 4 Argon 走 acc24，3.8 Flash 走 Pro 号。
+
+### 2026-10-15 长会话（Codex）报 prompt is too long：删最旧的整条消息（#63），发布 v1.82.0-cd1s.6 并部署
+- 现象：客户用 Codex Desktop（Windows，经 Sub2API `/v1/responses`，`gemini-3.8-flash-high`）连续执行很多命令后报 400 `prompt is too long: 614474 bytes > 190000`，Codex 停止运行。Sub2API 没有保存请求体；这个账号在部署后的第一个请求就是这次失败的完整重放。
+- 原因：会话里有几百次工具调用，Codex 对这个提供方不会自动压缩上下文。重启、闲置回收或 Sub2API 换账号后，要把整段历史重新发给 agy。所有较早的工具结果、参数和长文本都已压成占位，但几百条小消息的 JSON 本身仍远超上限。fork 在历史前复述“本次请求以来的步骤”时没有上限（每步约 670 字节，不参与瘦身），又放大了一倍。#1382 只删减消息内容，不删整条消息，上游同样有这个缺口。
+- 改动（#63）：见补丁清单"按字节预算瘦身提示"。新增 4 个测试；`antigravity-prompt-budget` + `antigravity-backend` 112 pass；主测试组只有已知的 2 项顺序相关失败；23 个隔离组全过；build 通过。模拟 4000 条消息的会话，瘦身耗时约 180 毫秒。
+- 发布与部署：`v1.82.0-cd1s.6` = `d03b98e`（provenance 非 dirty）。19 秒恢复健康；部署前后都是 21 个账号、失败 3 个；重启后没有账号被暂停。
+- 回滚：把 `dist-accounts.old-4381f4a4-20261015-145059` 改回 `dist-accounts` 后重启；打包备份 `live-4381f4a4-before-d03b98ef-20261015-145059.tgz`（sha256 `c201a2f7…`），并已 `agent-backup put`。
+- 实测（生产，经 Sub2API）：
+
+  | 请求 | 部署前（4381f4a） | 部署后（d03b98e） |
+  | --- | --- | --- |
+  | Codex 形状（`/v1/responses`，流式）：700 次工具调用后提问，请求 2.4MB | 400 `prompt is too long: 291689 bytes` | 200，答对最后一条命令的输出 |
+  | 同上，1500 次工具调用，请求 5.2MB | — | 200，答对 |
+  | `/v1/messages` 最新一轮 26.4 万字节工具结果 | 200 | 200，开头码和结尾码都答对 |
+  | 用户直接打 21 万字节 | 400 | 400（符合预期） |
+
+  - 测试脚本的教训：同一个固定的工具调用 ID（`toolu_log1`）加同一句开场白重复测试时，Meridian 会把它当成已经回答过的步骤，返回 409（Sub2API 显示为 502 `Upstream request failed`）。测试要用随机的 ID 和开场白；真实客户端不会碰到。
+- 已知限制：删掉的旧消息模型看不到了（只剩一条“省略了 N 条较早消息、K 次工具调用”的标记和最多 4000 字符的“之前的工具调用”列表）；超长会话最好让客户开新会话或在 Codex 里压缩上下文。没有用实际的 Codex Desktop 复测（客户端在客户的 Windows 上），用的是同一个 Sub2API `/v1/responses` 转换路径。
 
 ## 同步上游
 
