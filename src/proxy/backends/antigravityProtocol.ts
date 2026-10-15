@@ -102,6 +102,22 @@ export function normalizeAgRequest(value: unknown): unknown {
     delete request.tool_choice
     actions.push("tool_choice→auto")
   }
+  if (Array.isArray(request.messages) && request.messages.some(m => isRecord(m) && m.role === "system")) {
+    // Claude Code 2.1.29x sends its environment block as a mid-conversation system message to models it does not recognise.
+    // agy only speaks user/assistant, so fold the text into `system`; a changed system prompt does not break continuation.
+    const texts: string[] = []
+    let folded = 0
+    request.messages = request.messages.filter(m => {
+      if (!isRecord(m) || m.role !== "system") return true
+      if (typeof m.content === "string") { if (m.content) texts.push(m.content) }
+      else if (Array.isArray(m.content)) for (const b of m.content) if (isRecord(b) && b.type === "text" && typeof b.text === "string" && b.text) texts.push(b.text)
+      folded++
+      return false
+    })
+    if (Array.isArray(request.system)) request.system = [...request.system, ...texts.map(text => ({ type: "text", text }))]
+    else if (request.system === undefined || typeof request.system === "string") { const joined = [request.system, ...texts].filter(Boolean).join("\n\n"); if (joined) request.system = joined }
+    actions.push(`folded system messages ×${folded}`)
+  }
   if (Array.isArray(request.messages)) {
     const lastMessage = request.messages.at(-1)
     if (isRecord(lastMessage) && lastMessage.role === "assistant") {
