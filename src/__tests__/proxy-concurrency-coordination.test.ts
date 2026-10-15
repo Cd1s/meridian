@@ -209,6 +209,46 @@ function claudeCodeSubagentKey(sessionId: string, agentId: string): string {
  * one user message summing up the session, no tools, no stop sequence, and
  * not streamed.
  */
+/**
+ * Interactive Claude Code's startup session-title generator
+ * (`querySource: "generate_session_title"`): streamed, zero tools, one user
+ * message wrapped in `<session>…</session>`, and the session-naming system
+ * prompt block under the conversation's own session id.
+ */
+function claudeCodeSessionTitleRequest(sessionId: string, prompt = "Run the tests"): Request {
+  return new Request("http://localhost/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "user-agent": "claude-cli/2.1.299",
+      "x-claude-code-session-id": "b2004dfc-6042-48d9-9c23-b4475f64b6f5",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 32000,
+      stream: true,
+      tools: [],
+      thinking: { type: "disabled" },
+      system: [
+        { type: "text", text: "x-anthropic-billing-header: cc_version=2.1.299; cc_entrypoint=cli;" },
+        { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        {
+          type: "text",
+          text: "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence describing the task.\n\nReturn JSON with a single \"title\" field. Capitalize the first letter of the title.",
+        },
+      ],
+      messages: [{
+        role: "user",
+        content: [{
+          type: "text",
+          text: `<session>\n${prompt}\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language doesn't change it, and neither does the English of these instructions.`,
+        }],
+      }],
+      metadata: { user_id: JSON.stringify({ session_id: sessionId }) },
+    }),
+  })
+}
+
 function claudeCodeStateCardRequest(sessionId: string): Request {
   return new Request("http://localhost/v1/messages", {
     method: "POST",
@@ -705,6 +745,113 @@ describe("SDK and Session concurrency coordination", () => {
       [...answered, { role: "user", content: PROGRESS_FIRST_PROMPT }],
       [...answered, { role: "user", content: "continue" }],
     )
+  })
+
+  it("isolates the interactive session-title side call from the conversation mapping and lease, while keeping ordinary streamed tool-less turns on the session", async () => {
+    process.env.MERIDIAN_MAX_CONCURRENT = "2"
+    resetProcessSdkSemaphoreForTests()
+    const app = createProxyServer({ port: 0, host: "127.0.0.1", silent: true }).app
+    const sessionId = `claude-code-title-${crypto.randomUUID()}`
+    const turn1 = [
+      { role: "user", content: "Use the Agent tool to launch two subagents" },
+      { role: "system", content: "Today's date is 2026-10-14." },
+    ]
+
+    // Interactive startup sends generate_session_title (msgCount=1, tools=0,
+    // stream=true) immediately before the first real working turn (msgCount=2).
+    const titleP = app.fetch(claudeCodeSessionTitleRequest(sessionId, "Use the Agent tool to launch two subagents"))
+    const titleControl = await waitForControl(0)
+    const turn1P = app.fetch(claudeCodeRequest(turn1, sessionId))
+    const turn1Control = await waitForControl(1)
+
+    // Neither waits on the other's session lease, and the title call never
+    // writes the conversation mapping.
+    expect(maxActiveQueries).toBe(2)
+    titleControl.release()
+    const titleRes = await titleP
+    expect(titleRes.status).toBe(200)
+    expect(await titleRes.text()).toContain("message_stop")
+    expect(readSessionStoreSnapshot()[sessionId]).toBeUndefined()
+
+    turn1Control.release()
+    expect((await turn1P).status).toBe(200)
+    expect(readSessionStoreSnapshot()[sessionId]?.messageCount).toBe(2)
+    expect(telemetryStore.getRecent().find(m => m.sessionQueueWaitMs !== undefined && m.sessionQueueWaitMs > 50))
+      .toBeUndefined()
+
+    const turn2P = app.fetch(claudeCodeRequest([
+      ...turn1,
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "continue" },
+    ], sessionId))
+    ;(await waitForControl(2)).release()
+    expect((await turn2P).status).toBe(200)
+    expect(capturedParams[2]?.options?.resume).toBe(capturedParams[1]?.options?.sessionId)
+
+    // Negative control: an ordinary streamed tool-less single-message turn
+    // without the session-title prompt still creates and resumes its session.
+    const ordinarySessionId = `claude-code-ordinary-${crypto.randomUUID()}`
+    const ordinaryTurn1P = app.fetch(new Request("http://localhost/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "user-agent": "claude-cli/2.1.299",
+        "x-claude-code-session-id": "b2004dfc-6042-48d9-9c23-b4475f64b6f5",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 32000,
+        stream: true,
+        tools: [],
+        system: [{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." }],
+        messages: [{ role: "user", content: "Summarise this module" }],
+        metadata: { user_id: JSON.stringify({ session_id: ordinarySessionId }) },
+      }),
+    }))
+    ;(await waitForControl(3)).release()
+    await (await ordinaryTurn1P).text()
+    expect(readSessionStoreSnapshot()[ordinarySessionId]?.messageCount).toBe(1)
+
+    const ordinaryTurn2P = app.fetch(claudeCodeRequest([
+      { role: "user", content: "Summarise this module" },
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "continue" },
+    ], ordinarySessionId))
+    ;(await waitForControl(4)).release()
+    expect((await ordinaryTurn2P).status).toBe(200)
+    expect(capturedParams[4]?.options?.resume).toBe(capturedParams[3]?.options?.sessionId)
+  })
+
+  it("resumes the subagent session after a first-turn caption whose context attachments trail as a system message", async () => {
+    const systemContext = "The following deferred tools are now available via ToolSearch.\n\n# Environment\n - Primary working directory: /tmp/project\n\nToday's date is 2026-10-14."
+    const turn1 = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>\nAttribution for git commits\n</system-reminder>" },
+          { type: "text", text: "Run `sleep 40` three times." },
+        ],
+      },
+      { role: "system", content: systemContext },
+    ]
+    const firstCaption = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "<system-reminder>\nAttribution for git commits\n</system-reminder>" },
+          { type: "text", text: "Run `sleep 40` three times." },
+          { type: "text", text: PROGRESS_FIRST_PROMPT },
+        ],
+      },
+      { role: "system", content: systemContext },
+    ]
+    const turn2 = [
+      ...turn1,
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "continue" },
+      { role: "system", content: "<system-reminder>\n<total_tokens>4151 / 200000 tokens left</total_tokens>\n</system-reminder>" },
+    ]
+    await expectCaptionLeavesSubagentSession(turn1, firstCaption, turn2)
   })
 
   it("resumes the subagent session after a caption appended after tool results and text", async () => {
