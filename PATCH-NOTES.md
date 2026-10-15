@@ -25,6 +25,7 @@
 | 账号级临时目录 | `antigravityAccounts.ts`、`antigravityRuntime.ts` | 多账号模式下每个账号的 agy 用 `<账号>/.tmp` 当 `TMPDIR`，XDG 目录也指到账号内；Meridian 给 agy 建的工作目录也放在该 `TMPDIR` 下。之前所有账号共用 `/tmp`，agy 的功能开关缓存 `/tmp/unleash-repo-schema-v1-codeium-language-server.json` 是共享的 |
 | 多账号管理面板 `MERIDIAN_ADMIN_PORT` | `antigravityAdmin.ts`、`antigravityAdminPage.ts`、`bin/cli.ts`、`scripts/agy-login.py` | 同进程内的管理接口 + 单页面（只绑 127.0.0.1，口令 `MERIDIAN_ADMIN_TOKEN` ≥16 位）。功能：账号列表（邮箱、端口、代理（密码打码）、状态/失败原因、请求统计、官方额度分组与重置时间、Sub2API 编号）、添加账号（校验代理并拒绝重复出口 IP → 分配名字/端口/key → 官方 agy 登录 → 自动启动 → 按模板账号自动在 Sub2API 建号）、重新登录、停用/启用（同步 Sub2API 状态）、测出口 IP、重载。额度结果缓存 5 分钟（每次读取都会让账号跑一次 `agy -p /usage`）。登录脚本给 agy 与运行时相同的隔离环境 |
 | 探测结果后台刷新（同一开关） | `antigravityRuntime.ts` | 设了 TTL 时：授权检查和模型列表（`agy models`，上游固定 60s 缓存，此时取 max(60s, TTL)）过期后，若距上次成功不到 6×TTL，请求直接用旧结果，后台跑一次刷新；刷新失败立即清掉缓存，之后请求同步检查/被拦。超过 6×TTL 回到同步检查 |
+| 按字节预算瘦身提示 `MERIDIAN_AGY_MAX_PROMPT_BYTES` | `antigravityProtocol.ts`（`renderAgPromptWithinLimit`）、`antigravityRuntime.ts` | agy 1.3.5 对一条 user 输入只收约 192,000 字节，超出的尾部（也就是最新的消息和工具结果）被静默丢弃；Meridian 每轮都把整段历史渲染成一条输入。超过上限（默认 190000，`0` 关闭）时从最旧的大块内容开始省略（旧工具结果 → 旧工具参数含嵌套字符串 → 旧长文本，先留头尾再只留占位，然后是最新请求之后的旧工具结果），最新请求、最后一条 assistant、最后一条 user 不动，并加一句说明；受保护部分本身超限返回 400 `prompt is too long`（Claude Code 据此压缩）。没超限时逐字节不变。 |
 
 ## 线上配置（<生产机>）
 
@@ -325,6 +326,19 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - 39 个 200：重启期间发出的请求被池模式在原账号重试，最长等了 35 秒后成功。
   - 1 个失败：重启前 4 秒已在处理中的 Gemini 4 请求被中断，客户端收到 502 `Upstream service temporarily unavailable`。正在处理中的请求只能靠优雅停机（先等完再退出）解决，尚未做。
   - 重启后 21 个 Meridian 账号都没有被暂停或限流；`select_account_no_available` 0 次；Sub2API 记录了 165 次“池模式连接错误不暂停”。
+
+### 2026-10-15 长上下文：按字节预算瘦身提示（#58），发布 v1.82.0-cd1s.4 并部署
+- 现象：经 Sub2API 的 Gemini（3.8 Flash、4 Argon）请求一大，模型只看到前半段：一条约 39 万字符的日志提示，`input_tokens` 只有约 11 万，7 个目标只找到前 3 个；拆成 3 个 content block 或 3 轮对话结果一样。GPT、Claude 分组同样请求正常。
+- 根因：agy 1.3.5 对一条 user 输入只收约 **192,000 字节**（二进制里有 `max_tokens_per_user_input_step`），超出的尾部被静默丢弃。用 `gemini-4-argon-low` 二分（7 次请求）：截断点夹在渲染后提示的 191,891（可见）和 193,330（缺失）字节之间；十六进制和英文填充截在同一字节位置，所以按字节不按 token。Meridian 每轮（首次和续接）都把整段历史渲染成一条 user 输入，历史在最后，所以丢的正好是最新的消息和工具结果。`input_tokens` 是截断后的数。
+- 改动（#58）：见补丁清单"按字节预算瘦身提示"。Sonnet 5.5 子 agent 按 TDD 实现，GPT-6.1 对抗复核：没有阻断问题；指出的两点（嵌套 tool_use 参数不瘦身、切断 UTF-16 代理对）已修并补回归测试。复核的 200 组随机输入 0 次越界。测试：typecheck；`antigravity*`、`replay*`、`proxy-replay*` 483 pass / 4 skip / 0 fail。
+- 发布与部署：`v1.82.0-cd1s.4` = `66eb697`（`6b009a8` + 本修复）。**没有带上 #57（上游同步，登录有效期跟踪）**，它在分支上（`011f6d1`），等下次部署。部署用 `deploy.sh`，16 秒恢复健康；部署前账号 21 个、失败 3 个，部署后相同。
+- 回滚：把 `dist-accounts.old-66eb697` 改回 `dist-accounts` 后重启；另有 `/opt/meridian/backups/dist-accounts-pre66eb697-20261015-092548` 和打包备份 `live-a67bb54-before-66eb697-20261015-022454.tgz`（含 systemd 单元与 drop-in，sha256 `7459e1ed…`），并已 `agent-backup put`。
+- 实测（生产，经 Sub2API）：
+  - 小请求：Argon medium、3.8 Flash 正常。
+  - 单条 41 万字节的请求：0.6 秒返回 400 `invalid_request_error`，`prompt is too long: 414366 bytes > 190000 …`，Sub2API 原样透传。
+  - Claude Code（Claude-Gemini 配置，Argon medium）连读 5 个各约 6.8 万字节的文件（共约 34 万字节）后报出第 5 个和第 1 个文件末尾的标记：两个都对，共 9 轮（第 1 个文件被省略后模型按提示重读）。
+  - 部署后 21 个请求：20×200，1×400（就是上面那条故意超限的）。
+- 已知限制：192,000 是实测值，agy 升级（现在由 `AGY_CLI_DISABLE_AUTO_UPDATE` 钉在 1.3.5）后要重测；省略有损，模型需要时得重读；`count_tokens` 仍按未瘦身的提示估算。
 
 ## 同步上游
 
