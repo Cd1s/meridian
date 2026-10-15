@@ -25,7 +25,7 @@
 | 账号级临时目录 | `antigravityAccounts.ts`、`antigravityRuntime.ts` | 多账号模式下每个账号的 agy 用 `<账号>/.tmp` 当 `TMPDIR`，XDG 目录也指到账号内；Meridian 给 agy 建的工作目录也放在该 `TMPDIR` 下。之前所有账号共用 `/tmp`，agy 的功能开关缓存 `/tmp/unleash-repo-schema-v1-codeium-language-server.json` 是共享的 |
 | 多账号管理面板 `MERIDIAN_ADMIN_PORT` | `antigravityAdmin.ts`、`antigravityAdminPage.ts`、`bin/cli.ts`、`scripts/agy-login.py` | 同进程内的管理接口 + 单页面（只绑 127.0.0.1，口令 `MERIDIAN_ADMIN_TOKEN` ≥16 位）。功能：账号列表（邮箱、端口、代理（密码打码）、状态/失败原因、请求统计、官方额度分组与重置时间、Sub2API 编号）、添加账号（校验代理并拒绝重复出口 IP → 分配名字/端口/key → 官方 agy 登录 → 自动启动 → 按模板账号自动在 Sub2API 建号）、重新登录、停用/启用（同步 Sub2API 状态）、测出口 IP、重载。额度结果缓存 5 分钟（每次读取都会让账号跑一次 `agy -p /usage`）。登录脚本给 agy 与运行时相同的隔离环境 |
 | 探测结果后台刷新（同一开关） | `antigravityRuntime.ts` | 设了 TTL 时：授权检查和模型列表（`agy models`，上游固定 60s 缓存，此时取 max(60s, TTL)）过期后，若距上次成功不到 6×TTL，请求直接用旧结果，后台跑一次刷新；刷新失败立即清掉缓存，之后请求同步检查/被拦。超过 6×TTL 回到同步检查 |
-| 按字节预算瘦身提示 `MERIDIAN_AGY_MAX_PROMPT_BYTES` | `antigravityProtocol.ts`（`renderAgPromptWithinLimit`）、`antigravityRuntime.ts` | agy 1.3.5 对一条 user 输入只收约 192,000 字节，超出的尾部（也就是最新的消息和工具结果）被静默丢弃；Meridian 每轮都把整段历史渲染成一条输入。超过上限（默认 190000，`0` 关闭）时从最旧的大块内容开始省略（旧工具结果 → 旧工具参数含嵌套字符串 → 旧长文本，先留头尾再只留占位，然后是最新请求之后的旧工具结果），最新请求、最后一条 assistant、最后一条 user 不动，并加一句说明；受保护部分本身超限返回 400 `prompt is too long`（Claude Code 据此压缩）。没超限时逐字节不变。 |
+| 按字节预算瘦身提示 `MERIDIAN_AGY_MAX_PROMPT_BYTES`（上游 #1382 已合入，保留 fork 措辞） | `antigravityProtocol.ts`（`renderAgPromptWithinLimit`）、`antigravityRuntime.ts` | agy 对一条 user 输入只收约 192,000 字节，超出的尾部（也就是最新的消息和工具结果）被静默丢弃；Meridian 每轮都把整段历史渲染成一条输入。现在用上游 #1382 的算法：超过上限（默认 190000，`0` 关闭，无效值用默认）时从最旧的大块内容开始省略——先是当前请求之前的旧工具结果、旧工具参数（含嵌套字符串）、旧长文本，再是当前请求之后、最新一轮之前的工具结果和参数，都是先留头尾再只留占位；最后才删减最新一轮（最后的 assistant、最后的 user、随请求一起发来的工具结果），保留更大的头尾。用户本次打的字从不删减，只有它本身装不下时返回 400 `prompt is too long`。没超限时逐字节不变。fork 差异：占位写 `omitted by gateway`、说明写 the gateway，提示词不出现 Meridian；`renderAgPrompt` 仍在历史前复述当前请求。 |
 
 ## 线上配置（<生产机>）
 
@@ -347,6 +347,21 @@ sshctl run <生产机> 'set -a; . /etc/meridian/admin.env; set +a; curl -s -X PO
   - **已知边界**：一整行连续约 2 万个中文字（中间没有换行或任何英文字符）时，agy 不调用模型，直接返回空回复（status SUCCESS、0 token）；同样的内容每句后加换行就正常。Meridian 的历史是 JSON，正文换行会变成 `\n`，所以只有极长、不分段的纯中文段落才会碰到，#58 不处理这种情况。
 - 同步上游 #1381（Claude Code 交互式会话标题和首条说明的旁路调用隔离），无冲突；连同之前已合入的 #57，生产版本到这里的代码改动都在 Claude 侧，不涉及 Antigravity 后端。
 - 测试：主测试组除上游本身也失败的 2 项外，`antigravity-resilience` 的“长工具循环不超时”偶发失败（未合并的分支上 3 次也失败 1 次，计时敏感，与本次无关）；23 个隔离组全过；build 通过。
+
+### 2026-10-15 同步上游长上下文修复（#1382），发布 v1.82.0-cd1s.5 并部署
+- 上游合入了 #1382（#58 的上游版），fork 改用上游算法（#61），差别：最新一轮工具结果太大时不再直接 400，而是最后才删减并保留更大的头尾；只有用户本次打的字装不下才 400。`assertAgPromptFits` 和 `antigravity-prompt-limit.test.ts` 去掉（上游测试已覆盖）；fork 独有、仍然成立的测试用例保留。
+- 测试：typecheck；`antigravity-prompt-budget` + `antigravity-backend` 108 pass；主测试组只有 `proxy-plugin-message-consumption` 的 2 项在全量顺序下失败（单独跑 36/36 通过，部署前的基线同样如此）；23 个隔离组全过；build 通过。
+- 发布与部署：`v1.82.0-cd1s.5` = `4381f4a`（provenance 非 dirty）。这次也带上了之前没部署的 #57 和 #1381（Claude 侧改动）。17 秒恢复健康；部署前后都是 21 个账号、失败 3 个；重启后没有 Meridian 账号被 Sub2API 暂停。agy 仍是 1.3.5。
+- 回滚：把 `dist-accounts.old-66eb697e-20261015-120247` 改回 `dist-accounts` 后重启；打包备份 `live-66eb697e-before-4381f4a4-20261015-120247.tgz`（含 systemd 单元与 drop-in，sha256 `196c9ac7…`），并已 `agent-backup put`。
+- 实测（生产，经 Sub2API，`gemini-3.8-flash`，部署前后各跑一次同一脚本）：
+
+  | 请求 | 部署前（66eb697） | 部署后（4381f4a） |
+  | --- | --- | --- |
+  | 小请求 | 200 | 200 |
+  | 最新一轮带 26.4 万字节工具结果，问开头和结尾的码 | 400 `prompt is too long: 271414 bytes` | 200，开头码和结尾码都答对（11.6 秒） |
+  | 用户直接打 21 万字节 | 400 | 400（符合预期） |
+
+  - 模型路由不变：Gemini 4 Argon 走 acc24，3.8 Flash 走 Pro 号。
 
 ## 同步上游
 
