@@ -382,14 +382,24 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = [], o
   ].filter(Boolean).join("\n\n")
 }
 
-// agy 1.3.5 silently drops the tail of one user message past ~192,000 bytes (measured; the newest content is what goes), so stay under it.
-const AG_MAX_PROMPT_BYTES = 190_000
-const AG_OMIT_NOTE = "The gateway omitted the middle of some larger earlier tool results and messages (marked \"omitted by gateway\") to fit Antigravity's input limit. Re-read anything you still need."
-const agPromptLimit = () => { const limit = Number(process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES ?? AG_MAX_PROMPT_BYTES); return limit > 0 ? limit : 0 }
-export function assertAgPromptFits(prompt: string): void {
-  const limit = agPromptLimit(), bytes = Buffer.byteLength(prompt)
-  if (limit && bytes > limit) throw new AntigravityError(`prompt is too long: ${bytes} bytes > ${limit} maximum that Antigravity accepts without silently truncating the end of the conversation`)
+// NOTE: agy keeps only about 192,000 bytes of one user input step (`max_tokens_per_user_input_step`, present in 1.2.7
+// through 1.3.5 and apparently set by the service) and silently drops the rest. The history is the end of the prompt,
+// so the newest messages and tool results are what disappears. Measured in UTF-8 bytes for English, JSON-heavy and
+// Chinese text alike; JSON escaping is not counted twice.
+export const AG_MAX_PROMPT_BYTES = 190_000
+const AG_OMIT_NOTE = "To fit Antigravity's input limit, the gateway omitted the middle of some larger tool results, tool arguments or messages (marked \"omitted by gateway\"). Re-read anything you still need, in smaller parts if it is large."
+/** MERIDIAN_AGY_MAX_PROMPT_BYTES overrides the prompt byte limit; 0 disables it. */
+export function agPromptByteLimit(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.MERIDIAN_AGY_MAX_PROMPT_BYTES
+  if (raw === undefined || raw === "") return AG_MAX_PROMPT_BYTES
+  const limit = Number(raw)
+  return Number.isSafeInteger(limit) && limit >= 0 ? limit : AG_MAX_PROMPT_BYTES
 }
+function promptTooLong(bytes: number, limit: number): AntigravityError {
+  return new AntigravityError(`prompt is too long: ${bytes} bytes > ${limit} maximum that Antigravity accepts without silently dropping the end of the conversation`)
+}
+/** The newest user message with typed text: the client's current request. */
+const latestTypedRequest = (messages: AgMessage[]): number => latestRequest(messages).at
 /** Text with its middle replaced by a marker, or undefined when that would not make it shorter. */
 function omitMiddle(text: string, keep: number, min: number): string | undefined {
   if (text.length <= min) return undefined
@@ -407,9 +417,10 @@ function omitDeep(value: unknown, cut: (text: string) => string | undefined): un
   if (value && typeof value === "object") { const entries = Object.entries(value).map(([key, item]) => [key, omitDeep(item, cut)] as const); return entries.some(([key, item]) => item !== (value as Record<string, unknown>)[key]) ? Object.fromEntries(entries) : value }
   return value
 }
+type OmitKind = "result" | "use" | "text"
 type Loose = { type?: string; text?: string; content?: unknown; input?: Record<string, unknown> }
-/** One message with one kind of content shrunk (tool results, tool_use arguments, or text); the same object when nothing qualified. */
-function omitIn(message: AgMessage, kind: "result" | "use" | "text", keep: number, min: number): AgMessage {
+/** One message with one kind of content shrunk (tool results, tool_use arguments or text); the same object when nothing qualified. */
+function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number): AgMessage {
   const cut = (text: string) => omitMiddle(text, keep, min)
   const text = (b: Loose): Loose => { const t = typeof b.text === "string" ? cut(b.text) : undefined; return t === undefined ? b : { ...b, text: t } }
   if (typeof message.content === "string") { const t = kind === "text" ? cut(message.content) : undefined; return t === undefined ? message : { ...message, content: t } }
@@ -419,7 +430,7 @@ function omitIn(message: AgMessage, kind: "result" | "use" | "text", keep: numbe
     if (kind === "text" && b.type === "text") next = text(b)
     else if (kind === "result" && b.type === "tool_result") {
       if (typeof b.content === "string") { const t = cut(b.content); if (t !== undefined) next = { ...b, content: t } }
-      else if (Array.isArray(b.content)) { const parts = (b.content as Loose[]).map(part => part.type === "text" ? text(part) : part); if (parts.some((part, i) => part !== b.content![i as never])) next = { ...b, content: parts } }
+      else if (Array.isArray(b.content)) { const parts = (b.content as Loose[]).map(part => part.type === "text" ? text(part) : part); if (parts.some((part, i) => part !== (b.content as Loose[])[i])) next = { ...b, content: parts } }
     } else if (kind === "use" && b.type === "tool_use" && b.input) {
       const input = omitDeep(b.input, cut)
       if (input !== b.input) next = { ...b, input: input as Record<string, unknown> }
@@ -430,24 +441,31 @@ function omitIn(message: AgMessage, kind: "result" | "use" | "text", keep: numbe
   return changed ? { ...message, content } as AgMessage : message
 }
 /**
- * renderAgPrompt plus an optional suffix, kept within the agy input cap by shrinking the oldest large content first: tool results,
- * then tool_use arguments, then long text, first to head and tail snippets, then to markers only; after that the tool results and
- * arguments since the newest typed request, oldest first. The newest typed request, the last assistant message and the last user
- * message are never touched. Throws the 400 prompt-too-long error when that is not enough.
+ * renderAgPrompt plus an optional suffix, kept within `limit` bytes instead of letting agy drop the newest messages.
+ * Shrinks the oldest large content first, to head-and-tail snippets and then to markers: tool results, tool_use
+ * arguments and long text before the client's current request; then the tool work since it, except the newest round;
+ * last, the newest round's tool results and arguments, including tool results sent with the request. The request's
+ * own text is never shrunk: when it alone does not fit, the request fails with a 400 prompt-too-long error. Under the
+ * limit the prompt is unchanged.
  */
-export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = ""): string {
-  const full = renderAgPrompt(request, nativeTools) + suffix, limit = agPromptLimit()
+export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = "", limit = agPromptByteLimit()): string {
+  const full = renderAgPrompt(request, nativeTools) + suffix
   if (!limit || Buffer.byteLength(full) <= limit) return full
-  const newest = latestRequest(request.messages).at, protectedFrom = newest >= 0 ? newest : request.messages.length - 1
-  // Never shrunk: the newest typed request, the last assistant message and the last user message (normally the newest tool result).
-  const keepWhole = new Set([newest, request.messages.findLastIndex(m => m.role === "assistant"), request.messages.findLastIndex(m => m.role === "user")])
+  const current = latestTypedRequest(request.messages)
+  const lastAssistant = request.messages.findLastIndex(m => m.role === "assistant"), lastUser = request.messages.findLastIndex(m => m.role === "user")
+  // Tool results that arrive with the request (some clients add text next to them) count as the newest round.
+  const newest = new Set([lastAssistant, lastUser, current].filter(at => at >= 0 && at >= current))
   const size = (message: AgMessage) => Buffer.byteLength(JSON.stringify(message))
-  let messages = request.messages, excess = Buffer.byteLength(full) - limit + Buffer.byteLength(AG_OMIT_NOTE) + 2, changed = false
+  let messages = request.messages, changed = false
+  let excess = Buffer.byteLength(full) - limit + Buffer.byteLength(AG_OMIT_NOTE) + 2
   const render = () => renderAgPrompt({ ...request, messages }, nativeTools, true) + suffix
-  // Everything before the newest request goes first; only then the tool work done since it, oldest first.
-  const phases = [{ from: 0, to: protectedFrom, kinds: ["result", "use", "text"] as const }, { from: protectedFrom + 1, to: messages.length, kinds: ["result", "use"] as const }]
-  for (const { from, to, kinds } of phases) for (const [keep, min] of [[300, 2000], [0, 200]] as const) for (const kind of kinds) for (let i = from; i < to; i++) {
-    if (keepWhole.has(i)) continue
+  const range = (from: number, to: number) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + i)
+  const phases: Array<{ at: number[]; kinds: readonly OmitKind[]; passes: readonly (readonly [number, number])[] }> = [
+    { at: range(0, current), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
+    { at: range(current + 1, messages.length).filter(at => !newest.has(at)), kinds: ["result", "use"], passes: [[300, 2000], [0, 200]] },
+    { at: [...newest].sort((a, b) => a - b), kinds: ["result", "use"], passes: [[4000, 10000], [1000, 2500]] },
+  ]
+  for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
     const next = omitIn(messages[i]!, kind, keep, min)
     if (next === messages[i]) continue
     if (!changed) { messages = [...messages]; changed = true }
@@ -458,8 +476,8 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
     if (over <= 0) return prompt
     excess = over
   }
-  const prompt = changed ? render() : full
-  assertAgPromptFits(prompt)
+  const prompt = changed ? render() : full, bytes = Buffer.byteLength(prompt)
+  if (bytes > limit) throw promptTooLong(bytes, limit)
   return prompt
 }
 

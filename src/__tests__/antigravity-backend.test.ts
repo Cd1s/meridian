@@ -650,16 +650,16 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
   })
   it("sends long conversation history on stdin instead of exceeding argv limits", async () => {
     const { send } = fixture()
-    // Above Linux's 128 KiB single-argument limit, below the 190,000-byte cap agy truncates past.
+    // Above Linux's 128 KiB single-argument limit, below the byte limit past which agy drops the end of a prompt.
     expect((await send({ ...initial("a".repeat(150000)), tools: [] })).status).toBe(200)
   })
-  it("rejects a newest request agy would silently truncate with a 400 instead of answering from a partial history", async () => {
+  it("rejects a current request agy would silently cut short with a 400 instead of answering from part of it", async () => {
     const { send } = fixture()
     const response = await send({ ...initial("a".repeat(200000)), tools: [] })
     expect(response.status).toBe(400)
     expect(JSON.stringify(await response.json())).toMatch(/prompt is too long/)
   })
-  it("shrinks old tool results of a replayed history to fit agy's input cap and keeps the newest result intact", async () => {
+  it("shrinks an old tool result of a replayed history to fit agy's input limit and keeps the newest result intact", async () => {
     const { send } = fixture()
     const newest = "NEWEST_RESULT_" + "n".repeat(60000)
     const use = (id: string) => ({ role: "assistant", content: [{ type: "tool_use", id, name: "lookup", input: { key: id } }] })
