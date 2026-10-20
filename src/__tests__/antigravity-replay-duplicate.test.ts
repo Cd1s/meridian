@@ -91,6 +91,41 @@ describe.skipIf(process.platform === "win32")("Antigravity history replay does n
     expect(runtime.replayDuplicates).toBe(1)
   })
 
+  it("dispatches both batch calls after the first fresh client operation", async () => {
+    const { runtime, send } = server()
+    const reply = await send(replay("REPLAY_AFTER_DISPATCH", { content: "receipt" }))
+    expect(reply.stop_reason).toBe("tool_use")
+    expect(reply.content.filter(block => block.type === "tool_use").map(block => [block.name, block.input]))
+      .toEqual([["lookup", { key: "fresh" }], ["lookup", { key: "probe0" }]])
+    expect(runtime.replayDuplicates).toBe(0)
+  })
+
+  it("clears an unused replay match before a fresh turn on the same native run", async () => {
+    const { runtime, send } = server()
+    const first = replay("SKIP_TOOLS idle first", { content: "receipt" })
+    const answer = await send(first)
+    expect(answer.stop_reason).toBe("end_turn")
+    expect(runtime.replayDuplicates).toBe(0)
+    const next = await send({ ...first, messages: [
+      ...first.messages,
+      { role: "assistant", content: answer.content },
+      { role: "user", content: "FRESH_REPEAT_AFTER_IDLE deliberately request the same lookup" },
+    ] })
+    expect(runtime.reused).toBe(1)
+    expect(next.stop_reason).toBe("tool_use")
+    expect(next.content.filter(block => block.type === "tool_use").map(block => [block.name, block.input]))
+      .toEqual([["lookup", { key: "probe0" }]])
+    expect(runtime.replayDuplicates).toBe(0)
+  })
+
+  it("marks the unexecuted replay notice as an MCP error rather than a successful tool result", async () => {
+    const { runtime, send } = server()
+    const reply = await send(replay("REPEAT_COMPLETED REQUIRE_REPLAY_ERROR", { content: "receipt" }))
+    expect(reply.stop_reason).toBe("end_turn")
+    expect(reply.content.map(block => block.text).join("")).toBe("REPLAYED:ERROR:true|" + replayNotice("toolu_done"))
+    expect(runtime.replayDuplicates).toBe(1)
+  })
+
   it("sends a retry of a failed call to the client", async () => {
     const { runtime, send } = server()
     const reply = await send(replay("REPEAT_COMPLETED", { content: "disk full", is_error: true }))
