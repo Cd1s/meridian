@@ -2,6 +2,12 @@
  * Tests for the SDK query options builder.
  */
 import { describe, it, expect } from "bun:test"
+import { installSdkMock } from "./sdkMock"
+installSdkMock(() => ({
+  query: () => { throw new Error("Options builder must not query a model") },
+  createSdkMcpServer: () => ({ type: "sdk", name: "passthrough", instance: {} }),
+  tool: () => ({}),
+}), "query.test.ts")
 import { buildQueryOptions, GIT_STATUS_PROVENANCE_NOTE, REPLAY_PROVENANCE_NOTE, SCRATCHPAD_COUNTER_INSTRUCTION, resolveQueryConfigDir, singleTurnCapLiftRaisesBudget, type QueryContext } from "../proxy/query"
 import { BLOCKED_BUILTIN_TOOLS, CLAUDE_CODE_ONLY_TOOLS, MCP_SERVER_NAME, ALLOWED_MCP_TOOLS } from "../proxy/tools"
 import { CHERRY_BLOCKED_BUILTIN_TOOLS, CHERRY_INCOMPATIBLE_TOOLS, CHERRY_WEB_TOOLS } from "../proxy/adapters/cherry"
@@ -320,6 +326,60 @@ describe("buildQueryOptions", () => {
     expect(result.options.maxTurns).toBe(200)
   })
 
+  describe("forwarded-batch stop on a lifted budget", () => {
+    const isForwardedToolUse = (id: string) => id === "toolu_client"
+    const postToolBatch = (result: ReturnType<typeof buildQueryOptions>) =>
+      (result.options as any).hooks?.PostToolBatch as Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }> | undefined
+
+    it("ends a deferred-tools query after the batch forwarded to the client", async () => {
+      const result = buildQueryOptions(makeContext({ passthrough: true, hasDeferredTools: true, isForwardedToolUse }))
+      expect(result.options.maxTurns).toBe(4)
+      const hooks = postToolBatch(result)
+      expect(hooks).toHaveLength(1)
+      const hook = hooks![0]!.hooks[0]!
+      expect(await hook({ tool_calls: [{ tool_name: "mcp__oc__read", tool_use_id: "toolu_client" }] }))
+        .toMatchObject({ continue: false })
+      expect(await hook({ tool_calls: [{ tool_name: "ToolSearch", tool_use_id: "toolu_search" }] })).toEqual({})
+    })
+
+    it("keeps the caller's own hooks alongside the stop", () => {
+      const own = { matcher: "", hooks: [async () => ({})] }
+      const sdkHooks = { PreToolUse: [own], PostToolBatch: [own] }
+      const result = buildQueryOptions(makeContext({ passthrough: true, hasDeferredTools: true, isForwardedToolUse, sdkHooks }))
+      expect((result.options as any).hooks.PreToolUse).toEqual([own])
+      expect(postToolBatch(result)).toHaveLength(2)
+      expect(postToolBatch(result)![0]).toBe(own)
+    })
+
+    it("leaves the one-turn cap alone — its error_max_turns result is the expected terminal shape", () => {
+      const sdkHooks = { PreToolUse: [] }
+      const result = buildQueryOptions(makeContext({ passthrough: true, isForwardedToolUse, sdkHooks }))
+      expect(result.options.maxTurns).toBe(1)
+      expect((result.options as any).hooks).toBe(sdkHooks)
+    })
+
+    it("stays off under the early-stop kill switch", () => {
+      const result = buildQueryOptions(makeContext({ passthrough: true, hasDeferredTools: true, earlyStop: false, isForwardedToolUse }))
+      expect(postToolBatch(result)).toBeUndefined()
+    })
+
+    it("stays off outside passthrough", () => {
+      const result = buildQueryOptions(makeContext({ isForwardedToolUse }))
+      expect(postToolBatch(result)).toBeUndefined()
+    })
+
+    it("stays off with structured output — its answer is a StructuredOutput call after the denial", () => {
+      const result = buildQueryOptions(makeContext({
+        passthrough: true,
+        hasDeferredTools: true,
+        isForwardedToolUse,
+        outputFormat: { type: "json_schema", schema: { type: "object" } } as any,
+      }))
+      expect(result.options.maxTurns).toBe(4)
+      expect(postToolBatch(result)).toBeUndefined()
+    })
+  })
+
   it("includes system prompt as preset in normal mode", () => {
     const result = buildQueryOptions(makeContext({ systemContext: "Be helpful" }))
     const sp = (result.options as any).systemPrompt
@@ -557,10 +617,51 @@ describe("buildQueryOptions", () => {
     expect((result.options as any).hooks).toEqual(hooks)
   })
 
-  it("sets ENABLE_TOOL_SEARCH=true when hasDeferredTools is true", () => {
-    const result = buildQueryOptions(makeContext({ passthrough: true, hasDeferredTools: true }))
+  it("sets ENABLE_TOOL_SEARCH=true and keeps ToolSearch in tools when hasDeferredTools is true (#1368)", () => {
+    const passthroughMcp = createPassthroughMcpServer(
+      [
+        { name: "read" },
+        { name: "deferred_alpha", defer_loading: true },
+        { name: "deferred_beta", defer_loading: true },
+      ],
+      undefined,
+      "passthrough",
+    )
+    expect(passthroughMcp.deferredToolNames).toEqual([
+      "mcp__passthrough__deferred_alpha",
+      "mcp__passthrough__deferred_beta",
+    ])
+    const result = buildQueryOptions(makeContext({
+      passthrough: true,
+      hasDeferredTools: true,
+      passthroughMcp,
+    }))
     const env = (result.options as any).env
     expect(env.ENABLE_TOOL_SEARCH).toBe("true")
+    expect((result.options as any).tools).toEqual(["ToolSearch"])
+    const sp = (result.options as any).systemPrompt
+    const promptText = typeof sp === "string" ? sp : sp.append
+    expect(promptText).toContain("The following deferred tools are available via ToolSearch")
+    expect(promptText).toContain("mcp__passthrough__deferred_alpha")
+    expect(promptText).toContain("mcp__passthrough__deferred_beta")
+    expect(promptText).not.toContain("mcp__passthrough__read")
+  })
+
+  it("omits the deferred-tools note when CLAUDE_CODE_DISABLE_ATTACHMENTS is explicitly disabled (#1368)", () => {
+    const passthroughMcp = createPassthroughMcpServer(
+      [{ name: "deferred_alpha", defer_loading: true }],
+      undefined,
+      "passthrough",
+    )
+    const result = buildQueryOptions(makeContext({
+      passthrough: true,
+      hasDeferredTools: true,
+      passthroughMcp,
+      envOverrides: { CLAUDE_CODE_DISABLE_ATTACHMENTS: "0" },
+    }))
+    const sp = (result.options as any).systemPrompt
+    const promptText = typeof sp === "string" ? sp : sp.append
+    expect(promptText).not.toContain("The following deferred tools are available via ToolSearch")
   })
 
   it("sets ENABLE_TOOL_SEARCH=false when hasDeferredTools is false", () => {

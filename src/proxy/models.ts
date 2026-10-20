@@ -311,10 +311,12 @@ export function mapModelToClaudeModel(model: string, subscriptionType?: string |
     return "opus"
   }
 
-  // Sonnet [1m]: requires Extra Usage on Max plans per Anthropic docs.
-  // Unlike Opus, Sonnet 1M is NOT included with the Max subscription —
-  // it is always billed as Extra Usage. Default to sonnet (200k) to
-  // avoid unexpected charges. Users opt in via MERIDIAN_SONNET_MODEL=sonnet[1m].
+  // Sonnet [1m]: Sonnet 4.x 1M requires Extra Usage on every plan per
+  // Anthropic docs — unlike Opus, it is NOT included with Max. Default to
+  // sonnet (200k) to avoid unexpected charges. Users opt in via
+  // MERIDIAN_SONNET_MODEL=sonnet[1m]. Sonnet 5+ (the canonical pin) serves
+  // its native 1M window on plain `sonnet` with no Extra Usage, so the [1m]
+  // tier is a no-op there; see sonnetHasNative1mContext (#1212).
   const sonnetOverride = process.env.MERIDIAN_SONNET_MODEL ?? process.env.CLAUDE_PROXY_SONNET_MODEL
   if (sonnetOverride === "sonnet[1m]") {
     if (!use1m || isSubagent || isExtendedContextKnownUnavailable(profileId, sessionKey)) return "sonnet"
@@ -508,7 +510,21 @@ export function hasExtendedContext(model: ClaudeModel): boolean {
 }
 
 /**
- * Subscription tiers that include the Opus/Fable 1M extended context window
+ * Whether the concrete Sonnet id behind the `sonnet` alias runs with a native
+ * 1M window on every plan, with no [1m] variant and no Extra Usage (#1212).
+ * Sonnet 5 and later do, per
+ * https://code.claude.com/docs/en/model-config#extended-context; Sonnet 4.x
+ * keeps the MERIDIAN_SONNET_MODEL=sonnet[1m] opt-in. `sonnetModel` is what
+ * ANTHROPIC_DEFAULT_SONNET_MODEL resolves to, since the alias alone does not
+ * say which generation is served. Any non-Sonnet id returns false.
+ */
+export function sonnetHasNative1mContext(sonnetModel?: string): boolean {
+  const match = /^claude-sonnet-(\d+)(?:[-.[]|$)/.exec(sonnetModel?.trim().toLowerCase() ?? "")
+  return match !== null && Number(match[1]) >= 5
+}
+
+/**
+ * Subscription tiers that include legacy Opus 4.6's 1M extended context window
  * at no Extra Usage cost, per Anthropic's docs
  * (https://code.claude.com/docs/en/model-config#extended-context): Max, Team,
  * and Enterprise. Pro and unknown tiers are not included.
@@ -519,7 +535,8 @@ export function hasExtendedContext(model: ClaudeModel): boolean {
 const EXTENDED_CONTEXT_SUBSCRIPTION_PREFIXES: readonly string[] = ["max", "team", "enterprise"]
 
 /**
- * Whether a subscription tier includes 1M context on the Opus/Fable tiers.
+ * Whether a subscription tier includes legacy Opus 4.6's [1m] variant.
+ * Native Opus 4.7+ and Fable windows do not use this tier restriction.
  *
  * This is the single source of truth for *advertising* the extended window
  * (e.g. `GET /v1/models`). It deliberately does NOT gate routing:
