@@ -79,8 +79,134 @@ export type AgMessage = z.infer<typeof message>
 export type AgBlock = z.infer<typeof block>
 export type AgCall = z.infer<typeof callBlock>
 export type AgResult = z.infer<typeof resultBlock>
-export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): AgRequest {
-  const parsed = schema.safeParse(value)
+const KNOWN_MESSAGE_BLOCKS = new Set(["text", "image", "document", "audio", "video", "tool_use", "tool_result"])
+const KNOWN_RESULT_BLOCKS = new Set(["text", "image", "document", "audio", "video"])
+const DROPPED_THINKING_BLOCKS = new Set(["thinking", "redacted_thinking"])
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+function describeUnknownBlock(block: Record<string, unknown>): string {
+  const type = typeof block.type === "string" ? block.type : "unknown"
+  if (type === "tool_reference" && typeof block.tool_name === "string") return `[tool reference: ${block.tool_name}]`
+  const body: Record<string, unknown> = {}
+  for (const [key, val] of Object.entries(block)) {
+    if (key !== "type" && key !== "cache_control") body[key] = val
+  }
+  let json = JSON.stringify(body) ?? "{}"
+  if (json.length > 20_000) json = json.slice(0, 20_000) + "...(truncated)"
+  return `[${type}] ${json}`
+}
+function normalizeBlockList(blocksInput: unknown[], insideResult: boolean): unknown[] {
+  const known = insideResult ? KNOWN_RESULT_BLOCKS : KNOWN_MESSAGE_BLOCKS
+  const out: unknown[] = []
+  for (const item of blocksInput) {
+    if (!isRecord(item) || typeof item.type !== "string") { out.push(item); continue }
+    if (DROPPED_THINKING_BLOCKS.has(item.type)) continue
+    if (!insideResult && item.type === "tool_result" && Array.isArray(item.content)) {
+      out.push({ ...item, content: normalizeBlockList(item.content, true) })
+    } else if (known.has(item.type)) {
+      out.push(item)
+    } else {
+      out.push({ type: "text", text: describeUnknownBlock(item) })
+    }
+  }
+  return out
+}
+function systemMessageText(content: unknown): string | undefined {
+  if (typeof content === "string") return content
+  if (Array.isArray(content) && content.every(item => isRecord(item) && item.type === "text" && typeof item.text === "string")) {
+    return content.map(item => (item as { text: string }).text).join("\n")
+  }
+  return undefined
+}
+const VALID_TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/
+const HOSTED_SERVER_TOOL_TYPE = /^(web_search|web_fetch|code_execution)_/
+
+function isEmptyMessageContent(content: AgMessage["content"]): boolean {
+  if (typeof content === "string") return content.trim().length === 0
+  if (content.length === 0) return true
+  return content.every(block => block.type === "text" && block.text.trim().length === 0)
+}
+
+function normalizeAgRequestInput(value: unknown): { value: unknown; droppedTools: string[] } {
+  if (!isRecord(value)) return { value, droppedTools: [] }
+  const next: Record<string, unknown> = { ...value }
+  if (Array.isArray(value.messages)) {
+    const messages: unknown[] = []
+    let pendingSystemTexts: string[] = []
+    const flushPendingSystem = () => {
+      if (!pendingSystemTexts.length) return
+      const text = pendingSystemTexts.join("\n\n")
+      pendingSystemTexts = []
+      messages.push({ role: "user", content: text })
+    }
+    for (const msg of value.messages) {
+      if (!isRecord(msg)) { flushPendingSystem(); messages.push(msg); continue }
+      if (msg.role === "system") {
+        const text = systemMessageText(msg.content)
+        if (text !== undefined) {
+          if (text.trim()) pendingSystemTexts.push(`[system]\n${text}`)
+          continue
+        }
+      }
+      // Coalesce synthetic [system] blocks into the immediately following user message
+      // (retaining order) so role:system between assistant tool_use and user tool_result
+      // keeps strict pending-pair validation intact without merging unrelated user turns.
+      if (msg.role === "user" && pendingSystemTexts.length && (typeof msg.content === "string" || Array.isArray(msg.content))) {
+        const prefixBlocks = pendingSystemTexts.map(text => ({ type: "text", text }))
+        pendingSystemTexts = []
+        const userBlocks = typeof msg.content === "string"
+          ? (msg.content.trim() ? [{ type: "text", text: msg.content }] : [])
+          : normalizeBlockList(msg.content, false)
+        messages.push({ ...msg, content: [...prefixBlocks, ...userBlocks] })
+        continue
+      }
+      flushPendingSystem()
+      if (Array.isArray(msg.content)) {
+        const normalized = normalizeBlockList(msg.content, false)
+        if (msg.role === "assistant" && normalized.length === 0 && msg.content.length > 0) continue
+        messages.push({ ...msg, content: normalized })
+      } else {
+        messages.push(msg)
+      }
+    }
+    flushPendingSystem()
+    next.messages = messages
+  }
+  const dropped = new Set<string>()
+  if (Array.isArray(value.tools)) {
+    const kept: unknown[] = []
+    for (const tool of value.tools) {
+      if (
+        isRecord(tool) &&
+        typeof tool.type === "string" &&
+        HOSTED_SERVER_TOOL_TYPE.test(tool.type) &&
+        tool.input_schema === undefined &&
+        typeof tool.name === "string" &&
+        VALID_TOOL_NAME.test(tool.name) &&
+        (tool.description === undefined || typeof tool.description === "string")
+      ) {
+        dropped.add(tool.name)
+        continue
+      }
+      kept.push(tool)
+    }
+    if (dropped.size) {
+      next.tools = kept
+      const keptNames = new Set(kept.filter(isRecord).map(t => t.name).filter((n): n is string => typeof n === "string"))
+      if (isRecord(value.tool_choice)) {
+        const tc = value.tool_choice
+        if ((tc.type === "tool" && typeof tc.name === "string" && dropped.has(tc.name) && !keptNames.has(tc.name)) || (tc.type === "any" && !kept.length)) {
+          delete next.tool_choice
+        }
+      }
+    }
+  }
+  return { value: next, droppedTools: Array.from(dropped) }
+}
+export function parseAgRequestWithMeta(value: unknown, adaptThinkingBudgets = false): { request: AgRequest; droppedTools: string[] } {
+  const normalized = normalizeAgRequestInput(value)
+  const parsed = schema.safeParse(normalized.value)
   if (!parsed.success) throw new AntigravityError("Antigravity supports text, images, documents and adapted media; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
   const request = parsed.data
   if (request.thinking?.type === "enabled") {
@@ -99,9 +225,10 @@ export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): Ag
     request.output_config = { ...request.output_config, format: request.output_format }
     delete request.output_format
   }
-  for (const key of ["temperature", "top_p", "top_k", "betas"]) {
-    if (request[key] !== undefined) throw new AntigravityError(`Antigravity does not support ${key}`)
+  for (const key of ["temperature", "top_p", "top_k"] as const) {
+    delete request[key]
   }
+  if (request.betas !== undefined) throw new AntigravityError("Antigravity does not support betas")
   if (request.output_config?.effort && !request.model.endsWith("-" + request.output_config.effort)) throw new AntigravityError("This agy model does not support the requested effort override; select the matching low/medium/high model slug from /v1/models")
   const choice = request.tool_choice
   if (choice?.type === "tool" && !request.tools.some(t => t.name === choice.name)) throw new AntigravityError("tool_choice names an unknown tool")
@@ -109,6 +236,7 @@ export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): Ag
 
   if (new Set(request.tools.map(t => t.name)).size !== request.tools.length) throw new AntigravityError("Duplicate tool names")
   if (request.messages.at(-1)?.role !== "user") throw new AntigravityError("The last message must be a user message")
+  if (isEmptyMessageContent(request.messages.at(-1)!.content)) throw new AntigravityError("The last user message must not be empty")
   // A replay must never turn an unpaired historical action into a fresh instruction.
   const seen = new Set<string>()
   let pending = new Set<string>()
@@ -128,7 +256,10 @@ export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): Ag
     if (pending.size) throw new AntigravityError("Missing historical tool result")
     pending = new Set(content.filter(b => b.type === "tool_use").map(b => b.id))
   }
-  return request
+  return { request, droppedTools: normalized.droppedTools }
+}
+export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): AgRequest {
+  return parseAgRequestWithMeta(value, adaptThinkingBudgets).request
 }
 export function blocks(message: AgMessage): AgBlock[] {
   return typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content
