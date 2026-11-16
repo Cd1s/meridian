@@ -45,6 +45,36 @@ const resultBlock = z.object({
 const block = z.discriminatedUnion("type", [textBlock, imageBlock, documentBlock, audioBlock, videoBlock, callBlock, resultBlock])
 const message = z.object({ role: z.enum(["user", "assistant"]), content: z.union([z.string(), z.array(block)]) })
 const outputFormat = z.object({ type: z.literal("json_schema"), schema: z.record(z.string(), z.unknown()) }).strict()
+const EFFORT_INPUT = z.enum(["minimal", "low", "medium", "high", "xhigh", "max"])
+export type AgEffort = "low" | "medium" | "high"
+const EFFORT_FALLBACK: Record<AgEffort, readonly AgEffort[]> = {
+  low: ["low", "medium", "high"],
+  medium: ["medium", "high", "low"],
+  high: ["high", "medium", "low"],
+}
+function clampAgEffort(effort: z.infer<typeof EFFORT_INPUT>): AgEffort {
+  if (effort === "minimal") return "low"
+  if (effort === "xhigh" || effort === "max") return "high"
+  return effort
+}
+const GEMINI_SUFFIXED = /^(gemini-[a-zA-Z0-9._-]+)-(low|medium|high)$/
+const GEMINI_UNSUFFIXED = /^(gemini-[a-zA-Z0-9._-]+)$/
+function parseGeminiModel(model: string): { family: string; suffix?: AgEffort } | undefined {
+  const suffixed = GEMINI_SUFFIXED.exec(model)
+  if (suffixed) return { family: suffixed[1]!, suffix: suffixed[2] as AgEffort }
+  const unsuffixed = GEMINI_UNSUFFIXED.exec(model)
+  return unsuffixed ? { family: unsuffixed[1]! } : undefined
+}
+function hasGeminiFamilyVariant(family: string, availableModels: readonly string[]): boolean {
+  return (["low", "medium", "high"] as const).some(level => availableModels.includes(`${family}-${level}`))
+}
+function resolveFamilyEffort(family: string, desired: AgEffort, availableModels?: readonly string[]): { model: string; effort: AgEffort } {
+  if (availableModels?.length && hasGeminiFamilyVariant(family, availableModels)) {
+    const matched = EFFORT_FALLBACK[desired].find(level => availableModels.includes(`${family}-${level}`))
+    if (matched) return { model: `${family}-${matched}`, effort: matched }
+  }
+  return { model: `${family}-${desired}`, effort: desired }
+}
 const schema = z.object({
   meridian_tool_grammars: z.record(z.string(), z.object({ syntax: z.enum(['lark', 'regex']), definition: z.string().max(65536) }).strict()).refine(value => Object.keys(value).length <= 16, 'At most 16 custom grammars').optional(),
   meridian_session_key: z.string().max(512).optional(),
@@ -66,7 +96,7 @@ const schema = z.object({
     z.object({ type: z.literal("adaptive"), display: z.enum(["summarized", "omitted"]).optional() }),
   ]).optional(),
   output_config: z.object({
-    effort: z.enum(["low", "medium", "high"]).optional(),
+    effort: EFFORT_INPUT.transform(clampAgEffort).optional(),
     format: outputFormat.optional(),
   }).strict().optional(),
   output_format: outputFormat.optional(),
@@ -79,164 +109,27 @@ export type AgMessage = z.infer<typeof message>
 export type AgBlock = z.infer<typeof block>
 export type AgCall = z.infer<typeof callBlock>
 export type AgResult = z.infer<typeof resultBlock>
-const KNOWN_MESSAGE_BLOCKS = new Set(["text", "image", "document", "audio", "video", "tool_use", "tool_result"])
-const KNOWN_RESULT_BLOCKS = new Set(["text", "image", "document", "audio", "video"])
-const DROPPED_THINKING_BLOCKS = new Set(["thinking", "redacted_thinking"])
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
-function describeUnknownBlock(block: Record<string, unknown>): string {
-  const type = typeof block.type === "string" ? block.type : "unknown"
-  if (type === "tool_reference" && typeof block.tool_name === "string") return `[tool reference: ${block.tool_name}]`
-  const body: Record<string, unknown> = {}
-  for (const [key, val] of Object.entries(block)) {
-    if (key !== "type" && key !== "cache_control") body[key] = val
-  }
-  let json = JSON.stringify(body) ?? "{}"
-  if (json.length > 20_000) json = json.slice(0, 20_000) + "...(truncated)"
-  return `[${type}] ${json}`
-}
-function normalizeBlockList(blocksInput: unknown[], insideResult: boolean): unknown[] {
-  const known = insideResult ? KNOWN_RESULT_BLOCKS : KNOWN_MESSAGE_BLOCKS
-  const out: unknown[] = []
-  for (const item of blocksInput) {
-    if (!isRecord(item) || typeof item.type !== "string") { out.push(item); continue }
-    if (DROPPED_THINKING_BLOCKS.has(item.type)) continue
-    if (!insideResult && item.type === "tool_result" && Array.isArray(item.content)) {
-      out.push({ ...item, content: normalizeBlockList(item.content, true) })
-    } else if (known.has(item.type)) {
-      out.push(item)
-    } else {
-      out.push({ type: "text", text: describeUnknownBlock(item) })
-    }
-  }
-  return out
-}
-function systemMessageText(content: unknown): string | undefined {
-  if (typeof content === "string") return content
-  if (Array.isArray(content) && content.every(item => isRecord(item) && item.type === "text" && typeof item.text === "string")) {
-    return content.map(item => (item as { text: string }).text).join("\n")
-  }
-  return undefined
-}
-const VALID_TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/
-const HOSTED_SERVER_TOOL_TYPE = /^(web_search|web_fetch|code_execution)_/
-
-function isEmptyMessageContent(content: AgMessage["content"]): boolean {
-  if (typeof content === "string") return content.trim().length === 0
-  if (content.length === 0) return true
-  return content.every(block => block.type === "text" && block.text.trim().length === 0)
-}
-
-function normalizeAgRequestInput(value: unknown): { value: unknown; droppedTools: string[] } {
-  if (!isRecord(value)) return { value, droppedTools: [] }
-  const next: Record<string, unknown> = { ...value }
-  if (Array.isArray(value.messages)) {
-    const messages: unknown[] = []
-    let pendingSystemTexts: string[] = []
-    const flushPendingSystem = () => {
-      if (!pendingSystemTexts.length) return
-      const text = pendingSystemTexts.join("\n\n")
-      pendingSystemTexts = []
-      messages.push({ role: "user", content: text })
-    }
-    for (const msg of value.messages) {
-      if (!isRecord(msg)) { flushPendingSystem(); messages.push(msg); continue }
-      if (msg.role === "system") {
-        const text = systemMessageText(msg.content)
-        if (text !== undefined) {
-          if (text.trim()) pendingSystemTexts.push(`[system]\n${text}`)
-          continue
-        }
-      }
-      // Coalesce synthetic [system] blocks into the immediately following user message
-      // (retaining order) so role:system between assistant tool_use and user tool_result
-      // keeps strict pending-pair validation intact without merging unrelated user turns.
-      if (msg.role === "user" && pendingSystemTexts.length && (typeof msg.content === "string" || Array.isArray(msg.content))) {
-        const prefixBlocks = pendingSystemTexts.map(text => ({ type: "text", text }))
-        pendingSystemTexts = []
-        const userBlocks = typeof msg.content === "string"
-          ? (msg.content.trim() ? [{ type: "text", text: msg.content }] : [])
-          : normalizeBlockList(msg.content, false)
-        messages.push({ ...msg, content: [...prefixBlocks, ...userBlocks] })
-        continue
-      }
-      flushPendingSystem()
-      if (Array.isArray(msg.content)) {
-        const normalized = normalizeBlockList(msg.content, false)
-        if (msg.role === "assistant" && normalized.length === 0 && msg.content.length > 0) continue
-        messages.push({ ...msg, content: normalized })
-      } else {
-        messages.push(msg)
-      }
-    }
-    flushPendingSystem()
-    next.messages = messages
-  }
-  const dropped = new Set<string>()
-  if (Array.isArray(value.tools)) {
-    const kept: unknown[] = []
-    for (const tool of value.tools) {
-      if (
-        isRecord(tool) &&
-        typeof tool.type === "string" &&
-        HOSTED_SERVER_TOOL_TYPE.test(tool.type) &&
-        tool.input_schema === undefined &&
-        typeof tool.name === "string" &&
-        VALID_TOOL_NAME.test(tool.name) &&
-        (tool.description === undefined || typeof tool.description === "string")
-      ) {
-        dropped.add(tool.name)
-        continue
-      }
-      kept.push(tool)
-    }
-    if (dropped.size) {
-      next.tools = kept
-      const keptNames = new Set(kept.filter(isRecord).map(t => t.name).filter((n): n is string => typeof n === "string"))
-      if (isRecord(value.tool_choice)) {
-        const tc = value.tool_choice
-        if ((tc.type === "tool" && typeof tc.name === "string" && dropped.has(tc.name) && !keptNames.has(tc.name)) || (tc.type === "any" && !kept.length)) {
-          delete next.tool_choice
-        }
-      }
-    }
-  }
-  return { value: next, droppedTools: Array.from(dropped) }
-}
-export function parseAgRequestWithMeta(value: unknown, adaptThinkingBudgets = false): { request: AgRequest; droppedTools: string[] } {
-  const normalized = normalizeAgRequestInput(value)
-  const parsed = schema.safeParse(normalized.value)
+function validateAgBase(value: unknown, adaptThinkingBudgets: boolean): AgRequest {
+  const parsed = schema.safeParse(value)
   if (!parsed.success) throw new AntigravityError("Antigravity supports text, images, documents and adapted media; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
   const request = parsed.data
-  if (request.thinking?.type === "enabled") {
-    if (!adaptThinkingBudgets) throw new AntigravityError("Numeric thinking budgets require MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1; this maps budgets to approximate Gemini effort, not token limits")
-    const family = /^(gemini-[a-zA-Z0-9._-]+)-(low|medium|high)$/.exec(request.model)?.[1]
-    if (!family) throw new AntigravityError("Thinking-budget adaptation requires a Gemini low/medium/high model slug from /v1/models")
-    const budget = request.thinking.budget_tokens
-    const effort = budget <= 2048 ? "low" : budget <= 8192 ? "medium" : "high"
-    if (request.output_config?.effort && request.output_config.effort !== effort) throw new AntigravityError("Explicit effort conflicts with the adapted thinking budget")
-    request.model = `${family}-${effort}`
-    request.thinking = { type: "adaptive", ...(request.thinking.display ? { display: request.thinking.display } : {}) }
-    request.output_config = { ...request.output_config, effort }
+  if (request.thinking?.type === "enabled" && !adaptThinkingBudgets) {
+    throw new AntigravityError("Numeric thinking budgets require MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1; this maps budgets to approximate Gemini effort, not token limits")
   }
   if (request.output_format) {
     if (request.output_config?.format) throw new AntigravityError("Use only one of output_format and output_config.format")
     request.output_config = { ...request.output_config, format: request.output_format }
     delete request.output_format
   }
-  for (const key of ["temperature", "top_p", "top_k"] as const) {
-    delete request[key]
+  for (const key of ["temperature", "top_p", "top_k", "betas"]) {
+    if (request[key] !== undefined) throw new AntigravityError(`Antigravity does not support ${key}`)
   }
-  if (request.betas !== undefined) throw new AntigravityError("Antigravity does not support betas")
-  if (request.output_config?.effort && !request.model.endsWith("-" + request.output_config.effort)) throw new AntigravityError("This agy model does not support the requested effort override; select the matching low/medium/high model slug from /v1/models")
   const choice = request.tool_choice
   if (choice?.type === "tool" && !request.tools.some(t => t.name === choice.name)) throw new AntigravityError("tool_choice names an unknown tool")
   if (request.tool_choice?.type === "any" && !request.tools.length) throw new AntigravityError("tool_choice any requires tools")
 
   if (new Set(request.tools.map(t => t.name)).size !== request.tools.length) throw new AntigravityError("Duplicate tool names")
   if (request.messages.at(-1)?.role !== "user") throw new AntigravityError("The last message must be a user message")
-  if (isEmptyMessageContent(request.messages.at(-1)!.content)) throw new AntigravityError("The last user message must not be empty")
   // A replay must never turn an unpaired historical action into a fresh instruction.
   const seen = new Set<string>()
   let pending = new Set<string>()
@@ -256,10 +149,56 @@ export function parseAgRequestWithMeta(value: unknown, adaptThinkingBudgets = fa
     if (pending.size) throw new AntigravityError("Missing historical tool result")
     pending = new Set(content.filter(b => b.type === "tool_use").map(b => b.id))
   }
-  return { request, droppedTools: normalized.droppedTools }
+  return request
 }
-export function parseAgRequest(value: unknown, adaptThinkingBudgets = false): AgRequest {
-  return parseAgRequestWithMeta(value, adaptThinkingBudgets).request
+function applyAgEffortAndBudget(request: AgRequest, availableModels?: readonly string[]): AgRequest {
+  const gemini = parseGeminiModel(request.model)
+  if (request.thinking?.type === "enabled") {
+    const family = gemini && (gemini.suffix || availableModels === undefined || hasGeminiFamilyVariant(gemini.family, availableModels)) ? gemini.family : undefined
+    if (!family) throw new AntigravityError("Thinking-budget adaptation requires a Gemini low/medium/high model slug from /v1/models")
+    const budget = request.thinking.budget_tokens
+    const desired: AgEffort = budget <= 2048 ? "low" : budget <= 8192 ? "medium" : "high"
+    if (request.output_config?.effort && request.output_config.effort !== desired) {
+      throw new AntigravityError("Explicit effort conflicts with the adapted thinking budget")
+    }
+    const resolved = resolveFamilyEffort(family, desired, availableModels)
+    request.model = resolved.model
+    request.thinking = { type: "adaptive", ...(request.thinking.display ? { display: request.thinking.display } : {}) }
+    request.output_config = { ...request.output_config, effort: resolved.effort }
+    return request
+  }
+  if (request.output_config?.effort) {
+    if (gemini) {
+      if (gemini.suffix) {
+        request.output_config = { ...request.output_config, effort: gemini.suffix }
+        return request
+      }
+      if (availableModels === undefined || hasGeminiFamilyVariant(gemini.family, availableModels)) {
+        const resolved = resolveFamilyEffort(gemini.family, request.output_config.effort, availableModels)
+        request.model = resolved.model
+        request.output_config = { ...request.output_config, effort: resolved.effort }
+        return request
+      }
+    }
+    if (!request.model.endsWith("-" + request.output_config.effort)) {
+      throw new AntigravityError("This agy model does not support the requested effort override; select the matching low/medium/high model slug from /v1/models")
+    }
+  }
+  return request
+}
+export function parseAgRequest(value: unknown, adaptThinkingBudgets = false, availableModels?: readonly string[]): AgRequest {
+  return applyAgEffortAndBudget(validateAgBase(value, adaptThinkingBudgets), availableModels)
+}
+export async function resolveAgRequest(
+  value: unknown,
+  adaptThinkingBudgets: boolean,
+  discoverModels: () => Promise<readonly string[]>,
+): Promise<AgRequest> {
+  const request = validateAgBase(value, adaptThinkingBudgets)
+  const gemini = parseGeminiModel(request.model)
+  const needsDiscovery = Boolean(gemini && ((adaptThinkingBudgets && request.thinking?.type === "enabled") || (!gemini.suffix && request.output_config?.effort !== undefined)))
+  const availableModels = needsDiscovery ? await discoverModels() : undefined
+  return applyAgEffortAndBudget(request, availableModels)
 }
 export function blocks(message: AgMessage): AgBlock[] {
   return typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content

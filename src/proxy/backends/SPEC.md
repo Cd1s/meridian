@@ -129,5 +129,13 @@ undergo bounded compatibility normalization:
   budgets (opt-in approximate mapping to effort variants only), sampling
   controls (numeric `temperature`/`top_p`/`top_k` are accepted and ignored) or
   native media APIs; documents/speech/video go through local conversion.
+  budgets (opt-in approximate mapping via `MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1`
+  to the closest discovered Gemini effort variant, preferring `-high` over `-low`
+  when `-medium` is absent; without numeric thinking, explicit
+  `-low`/`-medium`/`-high` suffixes remain authoritative over
+  `output_config.effort`, while unsuffixed explicit effort clamping/Gemini slug
+  selection remains active and emits `x-meridian-effective-model` /
+  `x-meridian-effective-effort` when rewritten), sampling controls or native
+  media APIs; documents/speech/video go through local conversion.
 - Some provider-specific plugins, hosted-tool/file contracts and client versions
   still need adapters and acceptance tests.

@@ -66,6 +66,14 @@ without `input_schema` (and matching `tool_choice`), and ignores numeric `temper
 Its opt-in numeric thinking-budget normalization maps to Gemini
 effort variants before continuation identity is calculated; runtime model discovery
 checks availability, and responses expose the effective model.
+`backends/antigravityProtocol.ts` owns pure validation, history identity and
+prompt rendering. Its opt-in numeric thinking-budget normalization
+(`MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1`) and effort clamping (`minimal` -> `low`,
+`xhigh`/`max` -> `high`) map unsuffixed Gemini models to the closest discovered
+Gemini effort variant (while keeping explicit `-low`/`-medium`/`-high` suffixes
+authoritative) before continuation identity is calculated; runtime model
+discovery checks availability, and responses expose the effective model when
+adapted.
 `antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport.
 Its bounded interrupted-continuation fingerprints permit only exact completed-result
 replay after cancellation, a retryable failed response (401/408/429/499/5xx) or a deadline joins the old process, before any subsequent client

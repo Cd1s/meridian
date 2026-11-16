@@ -42,8 +42,8 @@ describe("Antigravity request contract", () => {
 
   it("rejects images and unsupported controls before creating a process", () => {
     expect(() => parseAgRequest({ ...initial(), messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })).toThrow("text")
-    expect(() => parseAgRequest({ ...initial(), betas: ["interleaved-thinking-2025-05-14"] })).toThrow("betas")
-    expect(() => parseAgRequest({ ...initial(), thinking: { type: "enabled", budget_tokens: 100 } })).toThrow()
+    expect(() => parseAgRequest({ ...initial(), temperature: 0 })).toThrow("temperature")
+    expect(() => parseAgRequest({ ...initial(), thinking: { type: "enabled", budget_tokens: 100 } }, false)).toThrow()
     expect(() => parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "unknown" } })).toThrow()
   })
   it("supports native effort and binds it to a pending tool contract", () => {
@@ -51,12 +51,15 @@ describe("Antigravity request contract", () => {
     expect(() => parseAgRequest({ ...initial(), model: "claude-sonnet-4-6", output_config: { effort: "high" } })).toThrow("model slug")
     expect(base.output_config?.effort).toBe("high")
     expect(contractKey(base)).not.toBe(contractKey({ ...base, output_config: { effort: "low" } }))
-    expect(() => parseAgRequest({ ...initial(), output_config: { effort: "max" } })).toThrow()
+    expect(parseAgRequest({ ...initial(), model: "fixture-model-high", output_config: { effort: "max" } }).output_config?.effort).toBe("high")
+    expect(() => parseAgRequest({ ...initial(), model: "fixture-model-high", output_config: { effort: "low" } })).toThrow("model slug")
     expect(parseAgRequest({ ...initial(), output_config: { format: { type: "json_schema", schema: {} } } }).output_config?.format?.type).toBe("json_schema")
   })
-  it("adapts numeric budgets only by explicit opt-in, without mutating client input", () => {
+  it("adapts numeric budgets only when opted in, without mutating client input", () => {
     const original = { ...initial(), model: "gemini-fixture-low", thinking: { type: "enabled", budget_tokens: 8192 } }
-    expect(() => parseAgRequest(original)).toThrow("ADAPT_THINKING_BUDGETS")
+    expect(() => parseAgRequest(original)).toThrow("MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1")
+    expect(() => parseAgRequest(original, false)).toThrow("MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1")
+    expect(parseAgRequest(original, true).model).toBe("gemini-fixture-medium")
     for (const [budget, effort] of [[1, "low"], [2048, "low"], [2049, "medium"], [8192, "medium"], [8193, "high"], [32768, "high"]] as const) {
       const adapted = parseAgRequest({ ...original, thinking: { type: "enabled", budget_tokens: budget } }, true)
       expect(adapted.model).toBe(`gemini-fixture-${effort}`)
@@ -264,6 +267,9 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const text = { type: "text", text: "Do not write a file; explain the receipt instead." }
     const suffix = separateMessage ? [{ role: "user", content: [result] }, { role: "user", content: [text] }] : [{ role: "user", content: [result, text] }]
     const followup = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, ...suffix] }
+    const changed = { ...followup, messages: [{ role: "user", content: "changed" }, ...followup.messages.slice(1)] }
+    expect((await send(changed)).status).toBe(409)
+    expect(runtime.runs.size).toBe(1)
     const answer = await decode(await send(followup))
     expect(answer.stop_reason).toBe("end_turn")
     expect(JSON.parse(answer.content[0]!.text!)).toEqual([{ role: "user", content: [text] }])
@@ -607,7 +613,7 @@ describe("Antigravity thinking-budget client compatibility", () => {
   })
   it("does not spawn a model for disabled adaptation or missing account variants", async () => {
     const request = { ...initial(), model: "gemini-missing-low", thinking: { type: "enabled", budget_tokens: 8192 } }
-    const strict = fixture()
+    const strict = fixture({ adaptThinkingBudgets: false })
     expect((await strict.send(request)).status).toBe(400)
     expect(strict.runtime.runs.size).toBe(0)
     const enabled = fixture({ adaptThinkingBudgets: true })
@@ -665,7 +671,7 @@ describe("Antigravity client plugin context changes", () => {
     expect((await decode(await send(updated))).content[0]?.text).toBe("ONCE")
     expect((await send(updated)).headers.get("x-meridian-response-replayed")).toBe("true")
   })
-  it("rejects retargeted execution controls but replays complete edited history with refreshed plugin context", async () => {
+  it("does not relax pending model or history identity when a plugin changes context", async () => {
     const { send, runtime } = fixture()
     const request = initial()
     const first = await decode(await send(request))
@@ -673,13 +679,9 @@ describe("Antigravity client plugin context changes", () => {
     expect((await send({ ...updated, model: "fixture-model-high" })).status).toBe(409)
     expect((await send({ ...updated, max_tokens: 200 })).status).toBe(409)
     expect((await send({ ...updated, meridian_session_key: "other-session" })).status).toBe(409)
+    expect((await send({ ...updated, messages: [{ role: "user", content: "Edited history" }, ...updated.messages.slice(1)] })).status).toBe(409)
     expect(runtime.runs.size).toBe(1)
-    const old = [...runtime.runs.values()][0]!
-    const edited = { ...updated, messages: [{ role: "user", content: "Edited history" }, ...updated.messages.slice(1)] }
-    expect((await send(edited)).status).toBe(200)
-    await old.settled
-    expect(runtime.runs.has(old.id)).toBe(false)
-    expect(runtime.requests[0]?.continuation).toBe("history-replay")
+    expect((await send(updated)).status).toBe(200)
   })
 })
 
