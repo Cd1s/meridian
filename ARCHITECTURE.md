@@ -58,25 +58,19 @@ plugins or background maintenance start. Claude remains the default. The
 existing `AgentAdapter` describes incoming clients and is not reused as a
 backend selector.
 
-`backends/antigravityProtocol.ts` owns pure request normalization, validation, history identity and
-prompt rendering. Before strict schema validation, it folds mid-conversation `role: "system"`
-messages into `system`, drops historical `thinking`/`redacted_thinking` blocks, renders unknown
-content blocks as text (preserving strict malformed known-block rejection), drops server tools
-without `input_schema` (and matching `tool_choice`), and ignores numeric `temperature`/`top_p`/`top_k`.
-Its opt-in numeric thinking-budget normalization maps to Gemini
-effort variants before continuation identity is calculated; runtime model discovery
-checks availability, and responses expose the effective model.
 `backends/antigravityProtocol.ts` owns pure validation, history identity and
-prompt rendering. Its opt-in numeric thinking-budget normalization
-(`MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1`) and effort clamping (`minimal` -> `low`,
-`xhigh`/`max` -> `high`) map unsuffixed Gemini models to the closest discovered
-Gemini effort variant (while keeping explicit `-low`/`-medium`/`-high` suffixes
-authoritative) before continuation identity is calculated; runtime model
-discovery checks availability, and responses expose the effective model when
-adapted.
+prompt rendering. Under explicit opt-in (`MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1`),
+numeric thinking-budget normalization retains baseline threshold remapping to the
+closest discovered Gemini effort variant for both suffixed and unsuffixed Gemini
+slugs; without enabled numeric thinking, effort clamping (`minimal` -> `low`,
+`xhigh`/`max` -> `high`) maps unsuffixed Gemini models to the closest discovered
+variant while keeping explicit `-low`/`-medium`/`-high` suffixes authoritative
+over `output_config.effort`, all before continuation identity is calculated.
+Runtime model discovery checks availability, and responses expose the effective
+model when adapted.
 `antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport.
 Its bounded interrupted-continuation fingerprints permit only exact completed-result
-replay after cancellation, a retryable failed response (401/408/429/499/5xx) or a deadline joins the old process, before any subsequent client
+replay after cancellation joins the old process, before any subsequent client
 call was emitted and with native actions disabled. Exact concurrent retries wait
 for joining and use the existing result-ID claim; successful replay removes the
 exception without clearing consumed IDs. Optional SQLite preserves only the
@@ -185,10 +179,7 @@ tool validates a whole batch before delivery; reverse-order results remain corre
 may change between responses without changing the remaining pending contract.
 Client plugin changes to system instructions or tool definitions use completed-
 history replay after claiming all results and joining the old pending process.
-Model, session and execution controls must still match. With native grants
-disabled, a complete changed delivered history or batch can also retire and join
-its single idle owner before cold replay; mixed owners and active responses
-remain conflicts. The
+Model, session, execution controls and delivered history must still match. The
 new process installs its own tool catalog and deny hook; telemetry records
 `client-context-replay`. Failed preflight releases the replay claim for retry.
 Native schema mode permits `finish`, withholds prose and emits only the final
@@ -292,7 +283,6 @@ src/
 │   ├── query.ts               ← SDK query options builder (shared between stream/non-stream paths)
 │   ├── transcriptRetention.ts ← Opt-in Claude Code retention period per SDK config root (off by default)
 │   ├── transcriptRetentionSettings.ts ← GET/PUT /settings/api/transcripts (same-origin browser writes)
-│   ├── transcriptSweep.ts     ← Idle-root retention sweep with process custody; pinned-transcript protection
 │   ├── errors.ts              ← Error classification (SDK errors → HTTP responses)
 │   ├── toolInputJson.ts       ← Tool input JSON repair for raw control characters in strings (PURE)
 │   ├── retryAfter.ts          ← Retry-After computation for 429/503/529 (PURE)
@@ -474,8 +464,7 @@ Agent-specific behavior is isolated behind the `AgentAdapter` interface (`adapte
 | `getSessionId(c)` | Extract session ID from request headers |
 | `getAgentMode(c, body)` | Normalize an adapter-specific primary/subagent declaration |
 | `getRootSessionId(c, body)` | Optional conversation root for account routing (sticky and priority assignment): a subagent with a session key of its own stays on its parent's account (Claude Code's Agent tool) |
-| `isAuxiliaryRequest(c, body)` | Declare a side call that shares the conversation's session key: it skips publication and the turn lease and never touches the mapping (Claude Code's auto-mode classifier, progress captions and tool-less side calls; Oh My Pi's side calls) |
-| `forksAuxiliaryRequests` | The client's side calls send the conversation's own system prompt and tools: one that only adds user text after a completed turn resumes the conversation's session as an unpublished fork that leases only its own target (`auxiliaryLineage`); every other side call replays fresh (Oh My Pi) |
+| `isAuxiliaryRequest(c, body)` | Declare a side call that shares the conversation's session key: it skips session lookup, publication and the turn lease (Claude Code's auto-mode classifier, progress captions and tool-less side calls) |
 | `extractWorkingDirectory(body)` | Parse working directory from request body |
 | `normalizeContent(content)` | Normalize message content for hashing |
 | `getBlockedBuiltinTools()` | SDK tools replaced by agent's MCP equivalents |
@@ -841,7 +830,7 @@ E2E tests (`E2E.md`) should be run before releases or after major refactors.
 
 Publication leases use the existing unarmed active-lease representation with `purpose: "publication"`. Older collectors also retain them while the owner process is alive; exact process-incarnation death permits recovery. They do not count as exclusive SDK writers, and abandoning publication never removes an actual writer lease. Published transcripts are retained by their durable mappings and become collectible after eviction.
 
-Exception, only with opt-in transcript retention (`MERIDIAN_TRANSCRIPT_RETENTION_DAYS` or `transcriptRetentionDays`, off by default): Meridian then passes `cleanupPeriodDays` to its request children and runs an idle sweep child in roots that serve none, and Claude Code's own cleanup deletes files in the config root by modification time alone. It does not see publication leases, durable mappings or request pins. Before a child whose cleanup is due starts, Meridian gives every mapped or pinned transcript the cleanup could reach a current modification time, so its own children retire none of them; a cleanup started elsewhere in the root (another process, interactive Claude Code in a shared `~/.claude`) still can. The next resume of an affected conversation is refused as unresumable and replays from the client's history into a fresh session (flattened text; SDK thinking is not restored). A cleanup racing a resume that is still loading the transcript can lose that conversation's SDK-side history; see the `session` spec's *Known limitations*. With retention off, Meridian passes no period and this lifetime contract holds without exception.
+Exception, only with opt-in transcript retention (`MERIDIAN_TRANSCRIPT_RETENTION_DAYS` or `transcriptRetentionDays`, off by default): Meridian then passes `cleanupPeriodDays` to its request children, and Claude Code's own cleanup deletes files in the config root by modification time alone. It does not see publication leases, durable mappings or request pins, so it can retire a published or pinned transcript once it is older than the period. The next resume of an affected conversation is refused as unresumable and replays from the client's history into a fresh session (flattened text; SDK thinking is not restored). A cleanup racing a resume that is still loading the transcript can lose that conversation's SDK-side history; see the `session` spec's *Known limitations*. With retention off, Meridian passes no period and this lifetime contract holds without exception.
 
 An SDK writer lease is released once its writer has been joined. If the lifecycle lock is busy at that point, the next GC sweep, including the shutdown sweep, retries the release; the completed turn does not fail. On win32 an executor's death does not prove its descendants gone, so a writer lease left by a crashed proxy is recovered only after the host reboots.
 
@@ -927,14 +916,6 @@ per-request alerts. Recovery exhaustion is critical; individual child exits rema
 in the in-app history.
 
 ## Auth-status refresh lifetime
-
-`planRecheck.ts` bounds Claude plan readings to six-hour freshness and a
-five-minute retry floor. Plan-only writes and token rotations share per-store
-maintenance admission; a forced rotation waits for a plan write rather than
-joining its result. A reported plan field replaces the stored one, an omitted
-field survives, and the facts cache is fenced against reads older than a
-write. Only the 45-second profile maintenance loop asks for plan-only
-readings; request admission with a valid token stays network-free.
 
 Auth-status caches remain shared by profile/default context. Each proxy instance
 owns only the refreshes its routes or keepalive requested; closing one owner

@@ -241,12 +241,16 @@ trimOldestTurns }` on
 - Exact numeric thinking budgets, sampling controls, signed reasoning, Claude-specific
   profiles/SDK hooks and signed Claude lineage remain unavailable. Explicit
   Antigravity provider plugins and bounded persistent activity are supported. Unsupported modeled request features fail before execution.
-- `output_config.effort` accepts `low`, `medium`, or `high` only when it matches
-  the selected model slug suffix; it is passed to the native CLI flag. Adaptive
-  thinking is accepted, but no private reasoning transcript is synthesized.
-  Google-hosted Claude does not support this effort override: select its account
-  model as advertised, with client thinking controls off. Gemini effort variants
-  can always be selected as separate model slugs.
+- `output_config.effort` accepts `minimal`, `low`, `medium`, `high`, `xhigh`, and
+  `max` (clamping `minimal` to `low` and `xhigh`/`max` to `high`) and passes
+  the effective effort to the native CLI flag. Without enabled numeric thinking,
+  an explicit `-low`/`-medium`/`-high` suffix on a Gemini model slug remains
+  authoritative over `output_config.effort`, while unsuffixed Gemini models
+  select the closest discovered effort variant. Adaptive thinking is accepted,
+  but no private reasoning transcript is synthesized. Google-hosted Claude does
+  not support this effort override: select its account model as advertised, with
+  client thinking controls off. Gemini effort variants can always be selected as
+  separate model slugs.
 - `max_tokens` is included as a prompt instruction; the CLI does not expose a
   native hard output-token cap. Health reports this as `advisory`.
 - CLI-reported terminal permission denial is an error even when terminal status
