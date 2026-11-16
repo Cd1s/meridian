@@ -73,3 +73,8 @@ provider service*; public routes and headers are in
   media APIs; documents/speech/video go through local conversion.
 - Some provider-specific plugins, hosted-tool/file contracts and client versions
   still need adapters and acceptance tests.
+
+
+### Combined normalization and history trimming
+
+Tagged `[system]\n` conversation blocks are steering, not a replacement for the latest actual typed user request when locating protected prompt content. Whole-turn cuts retain that user request and its direct media, then any subsequent tagged steering crossed by the cut in conversation order. Tagged steering still in the retained tail is protected from middle text elision at the direct text-block level; adjacent historical tool results and arguments remain eligible for ordinary elision. If protected instructions and steering alone cannot fit, the request still fails the prompt limit. The tag is a text convention, not an authority or security boundary; matching client-supplied text receives the same retention treatment. This applies to both freshly selected and cached cuts, without changing full-history identity or the top-level execution contract.
