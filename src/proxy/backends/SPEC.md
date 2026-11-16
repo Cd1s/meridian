@@ -46,6 +46,17 @@ belong to [`chatgpt-backend`](../chatgpt/SPEC.md).)
   expansion), the same as `meridian setup --client pi`.
 - Persistence (`statePath`) is opt-in and bounded; Antigravity plugins
   (`antigravityPlugins.ts`) are separate from Claude user plugins.
+- Prompt budget trimming (`MERIDIAN_AGY_MAX_PROMPT_BYTES`) preserves the default
+  400 `prompt is too long` rejection when middle omission is insufficient;
+  `MERIDIAN_AGY_TRIM_OLDEST_TURNS=1` opts into dropping oldest whole turns at
+  assistant boundaries before shrinking the newest round (retaining the newest
+  assistant/result pair, a bounded first-user note, and the latest typed user
+  instruction verbatim if crossed) for the execution prompt only, while keeping
+  while keeping the raw full history authoritative for warm reuse and using a
+  lazy, prefix-verified, bounded (512-entry, 30-minute TTL) in-memory LRU cut
+  cache with no durable persistence; when whole-turn trimming runs, it aims
+  below the hard limit (`AG_TRIM_TARGET_RATIO`, default 75%) so the cached cut
+  only advances when subsequent growth crosses the hard limit again.
 
 The full runtime, replay, recovery and persistence contract is in
 [`architecture`](../../../ARCHITECTURE.md) → *Antigravity runtime and combined

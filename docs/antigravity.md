@@ -215,6 +215,7 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending client tool-result deadline |
 | `MERIDIAN_AGY_IDLE_CONVERSATION_MS` | tool timeout | How long a completed conversation keeps its live process for the next turn (explicit values: 1–86400000); afterwards that turn replays the full history. Unset preserves the existing tool timeout, including values above this new option's limit. |
 | `MERIDIAN_AGY_MAX_PROMPT_BYTES` | `190000` | UTF-8 byte limit of one prompt sent to agy, which keeps only about 192,000 bytes of an input step and drops the rest (the newest messages). Past it the oldest large tool results, arguments and text are shortened, the newest last; a current request that alone does not fit returns 400 `prompt is too long`. `0` disables it. |
+| `MERIDIAN_AGY_TRIM_OLDEST_TURNS` | unset | Set to `1` to opt into dropping the oldest whole turns (at assistant boundaries, preserving `tool_use`/`tool_result` pairing, a bounded first-user note, and verbatim latest typed user instruction if crossed, targeting 75% of `MERIDIAN_AGY_MAX_PROMPT_BYTES` so a prefix-validated cached cut only advances when growth crosses the hard limit again) before shrinking the newest round when older-turn middle omission still exceeds `MERIDIAN_AGY_MAX_PROMPT_BYTES`. |
 
 Capacity exhaustion returns 429 with `Retry-After`. No unbounded request queue
 is created. Bodies are capped at 8 MiB; upstream stdout is capped at 16 MiB.
@@ -222,7 +223,8 @@ Prompts use stdin to avoid OS argument-size limits. Shutdown terminates owned
 process groups and closes the MCP listener.
 
 Embedders can set `backend: "antigravity"` and `antigravity: { executable,
-allowToolBridge, maxConcurrent, turnTimeoutMs, turnMaxDurationMs, pendingToolTimeoutMs }` on
+allowToolBridge, maxConcurrent, turnTimeoutMs, turnMaxDurationMs, pendingToolTimeoutMs,
+trimOldestTurns }` on
 `startProxyServer`. Call `ProxyInstance.close()` to release resources. Direct
 `createProxyServer().app.fetch` embedders must call the optional
 `closeBackend()` when finished.
