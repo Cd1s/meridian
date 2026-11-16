@@ -62,7 +62,8 @@ backend selector.
 history identity and prompt rendering. Late system messages remain tagged in-place
 in user content, with adjacent result-message coalescing when required for tool
 pairing; top-level system and contract identity remain stable. Historical thinking
-is removed, empty final user requests are rejected, unknown blocks become text,
+and assistant messages left empty by its removal are dropped, empty final user
+requests are rejected, and unknown blocks become text,
 and supported schema-less hosted tools are dropped with a response header and one
 warning. Numeric sampling parameters are accepted and ignored; betas remain
 unsupported. Opt-in numeric budget adaptation keeps threshold remapping for both
