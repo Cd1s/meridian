@@ -65,6 +65,7 @@ also passed as the CLI print timeout. It is not reset on tool-result acceptance.
 Successful completion clears both clocks; a warm user turn starts fresh clocks.
 Timer replacement clears the prior handle first, and the phase deadline is
 validated before the absolute cap so invalid phase settings name the right option.
+
 ## Completed-history recovery
 
 This deliberately relaxes #1074's rule that a changed delivered history/batch
@@ -86,6 +87,32 @@ the consumed-result conflict. Failure to record the recovery fingerprint logs an
 error but cannot replace the original response status or Retry-After. Successful
 result duplicate guards and response snapshots remain in force; native-capability work is never made replayable this way.
 
+## Request normalization
+
+Before strict schema validation (`antigravityProtocol.ts`), Anthropic requests
+undergo bounded compatibility normalization:
+- Mid-conversation and late `role: "system"` messages are rendered in-place as
+  `[system]`-tagged `role: "user"` messages, preserving message order,
+  top-level `system`, and `contractKey` (so late system steering can warm-reuse
+  without replaying old turns). Inline placement preserves content order even
+  when synthetic `[system]` blocks coalesce into the immediately following `user`
+  message to keep `tool_use`/`tool_result` pairing intact.
+- Historical `thinking` and `redacted_thinking` blocks are dropped; `assistant`
+  messages left empty after thinking removal are dropped, and a final `user`
+  message that is empty after normalization is rejected (400).
+- Unknown content blocks (such as `tool_reference`, `server_tool_use`,
+  `web_search_tool_result`) are rendered as descriptive text while malformed
+  known blocks remain strictly rejected.
+- Hosted server tools without `input_schema` (`web_search_*`, `web_fetch_*`,
+  `code_execution_*`) with valid `name`/`description` are dropped along with
+  `tool_choice` targeting only a dropped tool, exposed via the
+  `x-meridian-dropped-tools` response header (comma-separated) and logged once
+  per request; client-executed Anthropic tools (`bash_*`, `text_editor_*`,
+  `computer_*`, `memory_*`) without `input_schema` and malformed tool
+  definitions remain rejected (400).
+- Numeric `temperature`, `top_p`, and `top_k` are accepted and ignored (not
+  forwarded to `agy`).
+
 ## Known limitations
 
 - **Platform verification.** Authenticated acceptance exists on macOS arm64
@@ -100,7 +127,7 @@ result duplicate guards and response snapshots remain in force; native-capabilit
 - **Background jobs are not restart-resumable.**
 - **CLI-exposed controls only.** No exact output-token caps, numeric thinking
   budgets (opt-in approximate mapping to effort variants only), sampling
-  controls or native media APIs; documents/speech/video go through local
-  conversion.
+  controls (numeric `temperature`/`top_p`/`top_k` are accepted and ignored) or
+  native media APIs; documents/speech/video go through local conversion.
 - Some provider-specific plugins, hosted-tool/file contracts and client versions
   still need adapters and acceptance tests.
