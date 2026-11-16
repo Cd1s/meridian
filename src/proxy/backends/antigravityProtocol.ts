@@ -408,11 +408,14 @@ export function agPromptByteLimit(env: Record<string, string | undefined> = proc
 function promptTooLong(bytes: number, limit: number): AntigravityError {
   return new AntigravityError(`prompt is too long: ${bytes} bytes > ${limit} maximum that Antigravity accepts without silently dropping the end of the conversation`)
 }
+function isSystemSteering(block: AgBlock): boolean {
+  return block.type === "text" && block.text.startsWith("[system]\n")
+}
 /** The newest user message with typed text: the client's current request. */
 function latestTypedRequest(messages: AgMessage[]): number {
   for (let at = messages.length - 1; at >= 0; at--) {
     const { role, content } = messages[at]!
-    if (role === "user" && (typeof content === "string" ? content.trim() : content.some(b => b.type === "text" && b.text.trim()))) return at
+    if (role === "user" && (typeof content === "string" ? content.trim() && !content.startsWith("[system]\n") : content.some(b => b.type === "text" && b.text.trim() && !isSystemSteering(b)))) return at
   }
   return -1
 }
@@ -436,14 +439,14 @@ function omitDeep(value: unknown, cut: (text: string) => string | undefined): un
 type OmitKind = "result" | "use" | "text"
 type Loose = { type?: string; text?: string; content?: unknown; input?: Record<string, unknown> }
 /** One message with one kind of content shrunk (tool results, tool_use arguments or text); the same object when nothing qualified. */
-function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number): AgMessage {
+function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number, protectSteering = false): AgMessage {
   const cut = (text: string) => omitMiddle(text, keep, min)
   const text = (b: Loose): Loose => { const t = typeof b.text === "string" ? cut(b.text) : undefined; return t === undefined ? b : { ...b, text: t } }
-  if (typeof message.content === "string") { const t = kind === "text" ? cut(message.content) : undefined; return t === undefined ? message : { ...message, content: t } }
+  if (typeof message.content === "string") { const t = kind === "text" && !(protectSteering && message.content.startsWith("[system]\n")) ? cut(message.content) : undefined; return t === undefined ? message : { ...message, content: t } }
   let changed = false
   const content = (message.content as Loose[]).map(b => {
     let next = b
-    if (kind === "text" && b.type === "text") next = text(b)
+    if (kind === "text" && b.type === "text" && !(protectSteering && typeof b.text === "string" && b.text.startsWith("[system]\n"))) next = text(b)
     else if (kind === "result" && b.type === "tool_result") {
       if (typeof b.content === "string") { const t = cut(b.content); if (t !== undefined) next = { ...b, content: t } }
       else if (Array.isArray(b.content)) { const parts = (b.content as Loose[]).map(part => part.type === "text" ? text(part) : part); if (parts.some((part, i) => part !== (b.content as Loose[])[i])) next = { ...b, content: parts } }
@@ -570,10 +573,13 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
   const origCurrent = latestTypedRequest(request.messages)
   const origLastAssistant = request.messages.findLastIndex(m => m.role === "assistant")
   const maxCut = origLastAssistant >= 0 ? origLastAssistant + 1 : request.messages.length - 1
-  const latestTypedForCut = (cut: number) =>
-    origCurrent > firstUserIdx && firstUserIdx >= 0 && cut > origCurrent
-      ? directUserBlocks(request.messages[origCurrent])
-      : []
+  const latestTypedForCut = (cut: number): AgBlock[] => {
+    const instruction = origCurrent > firstUserIdx && firstUserIdx >= 0 && cut > origCurrent
+      ? directUserBlocks(request.messages[origCurrent]) : []
+    const steering = request.messages.slice(Math.max(0, origCurrent + 1), cut)
+      .filter(message => message.role === "user").flatMap(message => blocks(message).filter(isSystemSteering))
+    return [...instruction, ...steering]
+  }
   const prevCut = trimOldest ? options.previousCut?.() : undefined
   const appliedCut = trimOldest && prevCut !== undefined && Number.isSafeInteger(prevCut) && prevCut >= 1 && prevCut < maxCut && request.messages[prevCut]?.role === "assistant"
     ? prevCut
@@ -604,7 +610,7 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
   const newestPhase: OmitPhase = { at: [...newest].sort((a, b) => a - b), kinds: ["result", "use"], passes: [[4000, 10000], [1000, 2500]] }
   const runPhases = (phases: OmitPhase[]): string | undefined => {
     for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
-      const next = omitIn(messages[i]!, kind, keep, min)
+      const next = omitIn(messages[i]!, kind, keep, min, i > current)
       if (next === messages[i]) continue
       if (!middleOmitted) {
         if (messages === request.messages) messages = [...messages]

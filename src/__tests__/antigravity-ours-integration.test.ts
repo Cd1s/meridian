@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { fileURLToPath } from "node:url"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
 import { AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
-import { parseAgRequestWithMeta, resolveAgRequestWithMeta } from "../proxy/backends/antigravityProtocol"
+import { parseAgRequest, renderAgPromptWithinLimit, parseAgRequestWithMeta, resolveAgRequestWithMeta } from "../proxy/backends/antigravityProtocol"
 import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
 
 const executable = fileURLToPath(new URL("./fixtures/agy-cli.cjs", import.meta.url))
@@ -20,7 +20,62 @@ const payload = () => ({
   ],
 })
 
-describe("combined Antigravity normalization and effort contracts", () => {
+describe("combined Antigravity request and history contracts", () => {
+  it("elides old tool results independently of their tagged system steering with trimming off", () => {
+    const messages: unknown[] = [{ role: "user", content: "ACTUAL_TASK: Inspect Alpha." }]
+    for (let i = 0; i < 150; i++) {
+      messages.push({ role: "assistant", content: [{ type: "tool_use", id: `steer_${i}`, name: "bash", input: { command: `echo ${i}` } }] })
+      messages.push({ role: "system", content: `Reminder ${i}: ` + "steering".repeat(i === 75 ? 400 : 1) })
+      messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `steer_${i}`, content: "result".repeat(500) }] })
+    }
+    const request = parseAgRequest({ model: "fixture-model", messages, tools: [{ name: "bash", input_schema: { type: "object" } }] })
+    const prompt = renderAgPromptWithinLimit(request, [], "", 190_000, { trimOldestTurns: false })
+    expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(190_000)
+    expect(prompt).toContain("ACTUAL_TASK: Inspect Alpha.")
+    expect(prompt).toContain("Reminder 75: " + "steering".repeat(400))
+    expect(prompt).toContain("Reminder 149:")
+    const conversation = prompt.slice(prompt.indexOf("Client conversation:\n") + "Client conversation:\n".length)
+    const rendered = parseAgRequest({ ...request, messages: JSON.parse(conversation.slice(0, conversation.lastIndexOf("]") + 1)) as unknown })
+    const firstResult = rendered.messages.flatMap(message => typeof message.content === "string" ? [] : message.content)
+      .find(block => block.type === "tool_result" && block.tool_use_id === "steer_0")
+    if (firstResult?.type !== "tool_result" || typeof firstResult.content !== "string") throw new Error("Missing first completed result")
+    expect(firstResult.content.length).toBeLessThan(3000)
+  })
+
+
+  it("preserves the actual user task and subsequent tagged system steering across whole-turn cuts", () => {
+    for (const limit of [15_000, 20_000, 25_000]) {
+      const messages: unknown[] = [
+        { role: "user", content: "Hello" }, { role: "assistant", content: "Hello." },
+        { role: "user", content: "ACTUAL_TASK: Keep every change confined to module Alpha." },
+      ]
+      for (let i = 0; i < 150; i++) {
+        messages.push({ role: "assistant", content: [{ type: "tool_use", id: `cut_${i}`, name: "bash", input: { command: `echo ${i}` } }] })
+        if (i === 75 || i === 100) messages.push({ role: "system", content: `Reminder ${i}: continue carefully.` })
+        messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: `cut_${i}`, content: "x".repeat(180) }] })
+      }
+      const tools = [{ name: "bash", input_schema: { type: "object" } }]
+      const request = parseAgRequest({ model: "fixture-model", messages, tools })
+      let previousCut: number | undefined
+      for (let replay = 0; replay < 2; replay++) {
+        const prompt = renderAgPromptWithinLimit(request, [], "", limit, {
+          trimOldestTurns: true, previousCut: () => previousCut, onCut: cut => { previousCut = cut },
+        })
+        expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(limit)
+        expect(previousCut).toBeGreaterThan(203)
+        expect(prompt).toContain("ACTUAL_TASK: Keep every change confined to module Alpha.")
+        expect(prompt).toContain("Reminder 75: continue carefully.")
+        expect(prompt).toContain("Reminder 100: continue carefully.")
+        expect(prompt.indexOf("ACTUAL_TASK")).toBeLessThan(prompt.indexOf("Reminder 75"))
+        expect(prompt.indexOf("Reminder 75")).toBeLessThan(prompt.indexOf("Reminder 100"))
+        const conversation = prompt.slice(prompt.indexOf("Client conversation:\n") + "Client conversation:\n".length)
+        const tail = JSON.parse(conversation.slice(0, conversation.lastIndexOf("]") + 1)) as unknown
+        expect(() => parseAgRequest({ model: "fixture-model", messages: tail, tools })).not.toThrow()
+      }
+    }
+  })
+
+
   it("keeps dropped-tool metadata through discovery while normalizing late systems and sampling", async () => {
     const body = { ...payload(), model: "gemini-partial-low" }
     const parsed = await resolveAgRequestWithMeta(body, true, async () => ["gemini-partial-low", "gemini-partial-high"])

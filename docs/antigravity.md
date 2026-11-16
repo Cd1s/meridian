@@ -1032,3 +1032,6 @@ apart (up to 12 frames). Each frame carries its measured source timestamp from
 ffmpeg; times are not inferred from image numbering. These references help
 locate content but do not establish native citations, perfect transcription,
 continuous motion understanding or coverage of brief events between samples.
+
+
+When request normalization and opt-in history trimming are used together, late `[system]` steering does not displace the latest actual user request from the retained context. A cut preserves that request and any subsequent tagged steering it crosses, in order. This tag is plain conversation text and grants no additional authority.
