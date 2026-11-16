@@ -65,6 +65,26 @@ also passed as the CLI print timeout. It is not reset on tool-result acceptance.
 Successful completion clears both clocks; a warm user turn starts fresh clocks.
 Timer replacement clears the prior handle first, and the phase deadline is
 validated before the absolute cap so invalid phase settings name the right option.
+## Completed-history recovery
+
+This deliberately relaxes #1074's rule that a changed delivered history/batch
+must keep the pending process and return 409. Production Claude Code stream loss
+left complete client histories stuck behind that rule. A validated complete
+history with known completed results is authoritative for the narrow joined
+replay below; active or uncertain client actions retain their existing guards.
+
+With native capabilities disabled, a complete validated tool history that changes
+one idle pending owner's delivered prefix or batch retires and joins that owner
+before cold replay. Model, session and execution controls must still match.
+Mixed owners and active HTTP responses remain conflicts. Replay sends the supplied
+results as history; it never invokes the old pending client calls.
+
+Exact completed-result continuations interrupted by cancellation or retryable
+failure (401, 408, 429, 499 or 5xx) can retry only after the failed process joins
+and before another client tool was emitted. Other deterministic failures retain
+the consumed-result conflict. Failure to record the recovery fingerprint logs an
+error but cannot replace the original response status or Retry-After. Successful
+result duplicate guards and response snapshots remain in force; native-capability work is never made replayable this way.
 
 ## Known limitations
 
