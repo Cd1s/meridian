@@ -27,6 +27,8 @@ export interface AntigravityOptions {
   pendingToolTimeoutMs?: number
   /** How long a finished conversation's live process waits for the next turn (default pendingToolTimeoutMs). After it expires the next turn replays the whole history. */
   idleConversationMs?: number
+  /** Opt-in: drop oldest whole turns (preserving tool pairing and a bounded first-user note) when prompt still exceeds MERIDIAN_AGY_MAX_PROMPT_BYTES after middle omission. */
+  trimOldestTurns?: boolean
 }
 
 export interface ProxyConfig {
@@ -85,6 +87,7 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
       turnTimeoutMs: process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_TIMEOUT_MS),
       pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
       idleConversationMs: process.env.MERIDIAN_AGY_IDLE_CONVERSATION_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_IDLE_CONVERSATION_MS),
+      trimOldestTurns: process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS === "1",
       ...config.antigravity,
     } } : {}),
   }

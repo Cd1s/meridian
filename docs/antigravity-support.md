@@ -111,6 +111,11 @@ a started or replayed conversation sends its whole history in one step, history 
 shortening the oldest large tool results, arguments and text first and the newest round
 last, with a note to the model to re-read what it needs. A current request that alone does
 not fit fails with 400 `prompt is too long` instead of being answered from part of it.
+Setting `MERIDIAN_AGY_TRIM_OLDEST_TURNS=1` opts into dropping the oldest whole turns
+(at assistant boundaries, preserving tool pairing, a bounded first-user note,
+and the latest typed user instruction verbatim if crossed, targeting 75% of the limit
+so cached cuts only advance when growth crosses the limit again) before shrinking the
+newest round when older-turn middle omission alone still exceeds the limit.
 Request/response/attachment buffers are also bounded; see the backend guide.
 
 These controls do not cap the entire multi-turn task's tokens, number of tool
