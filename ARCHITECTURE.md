@@ -58,14 +58,17 @@ plugins or background maintenance start. Claude remains the default. The
 existing `AgentAdapter` describes incoming clients and is not reused as a
 backend selector.
 
-`backends/antigravityProtocol.ts` owns pure request normalization, validation, history identity and
-prompt rendering. Before strict schema validation, it folds mid-conversation `role: "system"`
-messages into `system`, drops historical `thinking`/`redacted_thinking` blocks, renders unknown
-content blocks as text (preserving strict malformed known-block rejection), drops server tools
-without `input_schema` (and matching `tool_choice`), and ignores numeric `temperature`/`top_p`/`top_k`.
-Its opt-in numeric thinking-budget normalization maps to Gemini
-effort variants before continuation identity is calculated; runtime model discovery
-checks availability, and responses expose the effective model.
+`backends/antigravityProtocol.ts` owns pure request normalization, validation,
+history identity and prompt rendering. Late system messages remain tagged in-place
+in user content, with adjacent result-message coalescing when required for tool
+pairing; top-level system and contract identity remain stable. Historical thinking
+is removed, empty final user requests are rejected, unknown blocks become text,
+and supported schema-less hosted tools are dropped with a response header and one
+warning. Numeric sampling parameters are accepted and ignored; betas remain
+unsupported. Opt-in numeric budget adaptation keeps threshold remapping for both
+suffixed and unsuffixed Gemini slugs. Without enabled numeric thinking, explicit
+model level suffixes win over effort, while unsuffixed effort selects the closest
+discovered variant. Adaptation headers appear only after an actual adaptation.
 `antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport.
 Its bounded interrupted-continuation fingerprints permit only exact completed-result
 replay after cancellation, a retryable failed response (401/408/429/499/5xx) or a deadline joins the old process, before any subsequent client

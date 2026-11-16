@@ -123,8 +123,11 @@ undergo bounded compatibility normalization:
   recovery guidance instead.
 - **Background jobs are not restart-resumable.**
 - **CLI-exposed controls only.** No exact output-token caps, numeric thinking
-  budgets (opt-in approximate mapping to effort variants only), sampling
-  controls (numeric `temperature`/`top_p`/`top_k` are accepted and ignored) or
-  native media APIs; documents/speech/video go through local conversion.
+  budgets (opt-in approximate mapping via `MERIDIAN_AGY_ADAPT_THINKING_BUDGETS=1`
+  to the closest discovered Gemini effort variant, preferring `-high` over `-low`
+  when `-medium` is absent; without numeric thinking, explicit model-level suffixes
+  win over effort, and adaptation headers are emitted only when rewritten),
+  sampling controls (numeric `temperature`/`top_p`/`top_k` are accepted and ignored),
+  or native media APIs; documents/speech/video go through local conversion.
 - Some provider-specific plugins, hosted-tool/file contracts and client versions
   still need adapters and acceptance tests.
