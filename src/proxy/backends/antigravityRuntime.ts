@@ -14,7 +14,7 @@ import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPromptWithinLimit, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, agPromptByteLimit, agTrimOldestTurns, renderAgPromptWithinLimit, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
 import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravitySchema"
 import type { ValidateFunction } from "ajv"
@@ -91,9 +91,15 @@ export class AntigravityRun {
     for (const tool of request.tools) this.toolValidators.set(tool.name, schemas.compile(tool.input_schema, `Tool ${tool.name}`))
     if (request.output_config?.format) this.outputValidator = schemas.compile(request.output_config.format.schema, "output_config.format.schema")
   }
-  private prompt(request: AgRequest): string {
+  private prompt(request: AgRequest, trimHistory = false, rawRequest: AgRequest = request): string {
     const native = agNativeTools(this.runtime.options)
-    return renderAgPromptWithinLimit(request, native, this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : "")
+    const suffix = this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : ""
+    const limit = agPromptByteLimit()
+    return renderAgPromptWithinLimit(request, native, suffix, limit, trimHistory ? {
+      trimOldestTurns: this.runtime.trimOldestTurns,
+      previousCut: () => this.runtime.getPromptCut(rawRequest),
+      onCut: cut => this.runtime.setPromptCut(rawRequest, cut),
+    } : { trimOldestTurns: false })
   }
   private beginTurn(): void {
     clearTimeout(this.timer)
@@ -146,7 +152,7 @@ export class AntigravityRun {
       const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
       if (child.pid) this.runtime.nativeSessions?.register(this.workspace, child.pid)
       child.stdin.on("error", error => this.abort(new AntigravityError(`Antigravity input failed: ${error.message}`, 502, "api_error")))
-      child.stdin.write(JSON.stringify({ event: "user", message: { content: this.prompt({ ...this.request, messages }) } }) + "\n")
+      child.stdin.write(JSON.stringify({ event: "user", message: { content: this.prompt({ ...this.request, messages }, !this.restored, this.request) } }) + "\n")
       if (!this.reusable) child.stdin.end()
       let stderr = ""
       child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-8192) })
@@ -451,6 +457,48 @@ export class AntigravityRuntime {
     this.state?.delete("interrupted-continuations", key, "")
     this.interruptedContinuations.delete(key)
   }
+  private readonly promptCuts = new Map<string, { cut: number; prefixHash: string; expires: number }>()
+  private promptCutKey(request: AgRequest): string {
+    return createHash("sha256").update(stable({ session: request.meridian_session_key, model: request.model, head: historyKey(request.messages.slice(0, 2)) })).digest("hex")
+  }
+  private promptPrefixHash(request: AgRequest, cut: number): string {
+    return createHash("sha256").update(historyKey(request.messages.slice(0, cut))).digest("hex")
+  }
+  getPromptCut(request: AgRequest): number | undefined {
+    if (request.messages.length < 2) return undefined
+    const key = this.promptCutKey(request), now = Date.now()
+    for (const [id, entry] of this.promptCuts) if (entry.expires <= now) this.promptCuts.delete(id)
+    const cached = this.promptCuts.get(key)
+    if (!cached) return undefined
+    if (
+      !Number.isSafeInteger(cached.cut) ||
+      cached.cut < 1 ||
+      cached.cut >= request.messages.length ||
+      request.messages[cached.cut]?.role !== "assistant" ||
+      this.promptPrefixHash(request, cached.cut) !== cached.prefixHash
+    ) {
+      this.promptCuts.delete(key)
+      return undefined
+    }
+    this.promptCuts.delete(key)
+    this.promptCuts.set(key, cached)
+    return cached.cut
+  }
+  setPromptCut(request: AgRequest, cut: number): void {
+    if (
+      request.messages.length < 2 ||
+      !Number.isSafeInteger(cut) ||
+      cut < 1 ||
+      cut >= request.messages.length ||
+      request.messages[cut]?.role !== "assistant"
+    ) return
+    const key = this.promptCutKey(request), now = Date.now()
+    for (const [id, entry] of this.promptCuts) if (entry.expires <= now) this.promptCuts.delete(id)
+    const prefixHash = this.promptPrefixHash(request, cut)
+    this.promptCuts.delete(key)
+    this.promptCuts.set(key, { cut, prefixHash, expires: now + 30 * 60_000 })
+    if (this.promptCuts.size > 512) this.promptCuts.delete(this.promptCuts.keys().next().value!)
+  }
   mcpUrl = ""
   draining = false
   cliVersion = ""
@@ -478,6 +526,7 @@ export class AntigravityRuntime {
   private verifying?: Promise<void>
   private checking?: Promise<string[]>
   private closing?: Promise<void>
+  readonly trimOldestTurns: boolean
   constructor(readonly options: AntigravityOptions = {}) {
     this.plugins = new AgPlugins(options.plugins, options.pluginPaths)
     this.executable = options.executable ?? "agy"
@@ -485,7 +534,8 @@ export class AntigravityRuntime {
     this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000
     if (!Number.isSafeInteger(this.turnTimeoutMs) || this.turnTimeoutMs <= 0 || this.turnTimeoutMs > 2_147_483_647) throw new Error("Antigravity model phase deadline must be an integer from 1 to 2147483647 ms")
     this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
-    for (const value of [this.maxConcurrent, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
+    this.trimOldestTurns = options.trimOldestTurns ?? agTrimOldestTurns()
+    for (const value of [this.maxConcurrent, this.turnTimeoutMs, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
     this.turnMaxDurationMs = options.turnMaxDurationMs ?? 7_200_000
     if (!Number.isSafeInteger(this.turnMaxDurationMs) || this.turnMaxDurationMs <= 0 || this.turnMaxDurationMs > 2_147_483_647) throw new Error("Antigravity absolute turn deadline must be an integer from 1 to 2147483647 ms")
     this.idleConversationMs = options.idleConversationMs ?? this.pendingToolTimeoutMs

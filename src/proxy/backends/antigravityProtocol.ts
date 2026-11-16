@@ -321,45 +321,210 @@ function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number): 
   })
   return changed ? { ...message, content } as AgMessage : message
 }
+export const AG_TRIM_TARGET_RATIO = 0.75
+
+/** MERIDIAN_AGY_TRIM_OLDEST_TURNS=1 opts into dropping oldest whole turns when middle omission still exceeds the prompt limit. */
+export function agTrimOldestTurns(env: Record<string, string | undefined> = process.env): boolean {
+  return env.MERIDIAN_AGY_TRIM_OLDEST_TURNS === "1"
+}
+
+export interface AgPromptLimitOptions {
+  trimOldestTurns?: boolean
+  trimTargetRatio?: number
+  previousCut?: () => number | undefined
+  onCut?: (cut: number) => void
+}
+
+interface PromptCutSearchInput {
+  request: AgRequest
+  messages: AgMessage[]
+  nativeTools: string[]
+  suffix: string
+  limit: number
+  targetBytes: number
+  appliedCut: number
+  maxCut: number
+  firstText: string
+  middleOmitted: boolean
+  latestTypedForCut: (cut: number) => AgBlock[]
+}
+
+interface PromptCutSearchResult {
+  cut: number
+  prompt: string
+}
+
+function findPromptCut(input: PromptCutSearchInput): PromptCutSearchResult | undefined {
+  const { request, messages, nativeTools, suffix, limit, targetBytes, appliedCut, maxCut, firstText, middleOmitted, latestTypedForCut } = input
+  const cuts: number[] = []
+  for (let i = Math.max(2, appliedCut + 1); i < maxCut; i++) {
+    if (request.messages[i]!.role === "assistant") cuts.push(i)
+  }
+  if (!cuts.length && appliedCut < 1 && maxCut > 1 && request.messages[1]?.role === "assistant") cuts.push(1)
+  if (!cuts.length) return undefined
+
+  const searchBudget = (budget: number): PromptCutSearchResult | undefined => {
+    let lo = 0, hi = cuts.length - 1
+    let best: PromptCutSearchResult | undefined
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1
+      const cut = cuts[mid]!
+      const tail = appliedCut > 0 ? messages.slice(1 + (cut - appliedCut)) : messages.slice(cut)
+      const candidate = buildTrimmedMessages(tail, cut, firstText, limit, latestTypedForCut(cut))
+      const candidatePrompt = renderAgPrompt({ ...request, messages: candidate }, nativeTools, middleOmitted) + suffix
+      if (Buffer.byteLength(candidatePrompt) <= budget) {
+        best = { cut, prompt: candidatePrompt }
+        hi = mid - 1
+      } else {
+        lo = mid + 1
+      }
+    }
+    return best
+  }
+
+  if (targetBytes < limit) {
+    const underTarget = searchBudget(targetBytes)
+    if (underTarget) return underTarget
+  }
+  return searchBudget(limit)
+}
+function firstUserText(message: AgMessage | undefined): string {
+  if (!message) return ""
+  if (typeof message.content === "string") return message.content
+  return message.content.filter((b): b is Extract<AgBlock, { type: "text" }> => b.type === "text").map(b => b.text).join("\n")
+}
+function directUserBlocks(message: AgMessage | undefined): AgBlock[] {
+  if (!message) return []
+  return blocks(message).filter(b => b.type !== "tool_result")
+}
+function buildTrimmedMessages(tail: AgMessage[], cut: number, firstText: string, limit: number, latestTypedBlocks: AgBlock[] = []): AgMessage[] {
+  const maxFirst = Math.min(8000, Math.max(200, Math.floor(limit / 4)))
+  let head = firstText
+  if (head.length > maxFirst) {
+    const safeEnd = maxFirst > 0 && (head.charCodeAt(maxFirst - 1) & 0xFC00) === 0xD800 ? maxFirst - 1 : maxFirst
+    head = head.slice(0, safeEnd) + "\n[... original request truncated ...]"
+  }
+  const note = `[Meridian gateway: the earlier part of this conversation (${cut} messages) was omitted to fit the Antigravity input limit. The original request was:]\n${head}\n[End of original request; continue from the remaining conversation below.]`
+  const content: AgBlock[] = [{ type: "text", text: note }]
+  if (latestTypedBlocks.length) {
+    content.push(
+      { type: "text", text: "[The latest user instruction before the remaining tool steps was:]" },
+      ...latestTypedBlocks,
+      { type: "text", text: "[End of latest user instruction; continue from the remaining conversation below.]" },
+    )
+  }
+  return [{ role: "user", content }, ...tail]
+}
 /**
  * renderAgPrompt plus an optional suffix, kept within `limit` bytes instead of letting agy drop the newest messages.
  * Shrinks the oldest large content first, to head-and-tail snippets and then to markers: tool results, tool_use
  * arguments and long text before the client's current request; then older tool work and assistant text since it;
  * last, the newest round's tool results and arguments, including tool results sent with the request. The request's
  * own text is never shrunk: when it alone does not fit, the request fails with a 400 prompt-too-long error. Under the
- * limit the prompt is unchanged.
+ * limit the prompt is unchanged. When `trimOldestTurns` is enabled and middle omission is not enough, drops the
+ * oldest whole turns at assistant boundaries while preserving tool_use/tool_result pairing and a bounded first-user note.
  */
-export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = "", limit = agPromptByteLimit()): string {
+export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = "", limit = agPromptByteLimit(), options: AgPromptLimitOptions = {}): string {
   const full = renderAgPrompt(request, nativeTools) + suffix
   if (!limit || Buffer.byteLength(full) <= limit) return full
-  const current = latestTypedRequest(request.messages)
-  const lastAssistant = request.messages.findLastIndex(m => m.role === "assistant"), lastUser = request.messages.findLastIndex(m => m.role === "user")
+  const trimOldest = options.trimOldestTurns ?? false
+  const ratio = options.trimTargetRatio ?? AG_TRIM_TARGET_RATIO
+  const targetBytes = Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? Math.floor(limit * ratio) : limit
+  const firstUserIdx = request.messages.findIndex(m => m.role === "user")
+  const firstText = trimOldest && firstUserIdx >= 0 ? firstUserText(request.messages[firstUserIdx]) : ""
+  const origCurrent = latestTypedRequest(request.messages)
+  const origLastAssistant = request.messages.findLastIndex(m => m.role === "assistant")
+  const maxCut = origLastAssistant >= 0 ? origLastAssistant + 1 : request.messages.length - 1
+  const latestTypedForCut = (cut: number) =>
+    origCurrent > firstUserIdx && firstUserIdx >= 0 && cut > origCurrent
+      ? directUserBlocks(request.messages[origCurrent])
+      : []
+  const prevCut = trimOldest ? options.previousCut?.() : undefined
+  const appliedCut = trimOldest && prevCut !== undefined && Number.isSafeInteger(prevCut) && prevCut >= 1 && prevCut < maxCut && request.messages[prevCut]?.role === "assistant"
+    ? prevCut
+    : 0
+  let messages = appliedCut > 0 ? buildTrimmedMessages(request.messages.slice(appliedCut), appliedCut, firstText, limit, latestTypedForCut(appliedCut)) : request.messages
+  let middleOmitted = false
+  const render = (msgs = messages) => renderAgPrompt({ ...request, messages: msgs }, nativeTools, middleOmitted) + suffix
+  if (appliedCut > 0) {
+    const prePrompt = render()
+    if (Buffer.byteLength(prePrompt) <= limit) {
+      options.onCut?.(appliedCut)
+      return prePrompt
+    }
+  }
+  const current = latestTypedRequest(messages)
+  const lastAssistant = messages.findLastIndex(m => m.role === "assistant"), lastUser = messages.findLastIndex(m => m.role === "user")
   // Tool results that arrive with the request (some clients add text next to them) count as the newest round.
   const newest = new Set([lastAssistant, lastUser, current].filter(at => at >= 0 && at >= current))
   const size = (message: AgMessage) => Buffer.byteLength(JSON.stringify(message))
-  let messages = request.messages, changed = false
-  let excess = Buffer.byteLength(full) - limit + Buffer.byteLength(AG_OMIT_NOTE) + 2
-  const render = () => renderAgPrompt({ ...request, messages }, nativeTools, true) + suffix
+  const baseBytes = appliedCut > 0 ? Buffer.byteLength(render()) : Buffer.byteLength(full)
+  let excess = baseBytes - limit + (Buffer.byteLength(AG_OMIT_NOTE) + 2)
   const range = (from: number, to: number) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + i)
-  const phases: Array<{ at: number[]; kinds: readonly OmitKind[]; passes: readonly (readonly [number, number])[] }> = [
-    { at: range(0, current), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
+  type OmitPhase = { at: number[]; kinds: readonly OmitKind[]; passes: readonly (readonly [number, number])[] }
+  const olderPhases: OmitPhase[] = [
+    { at: range(appliedCut > 0 ? 1 : 0, current), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
     { at: range(current + 1, messages.length).filter(at => !newest.has(at)), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
-    { at: [...newest].sort((a, b) => a - b), kinds: ["result", "use"], passes: [[4000, 10000], [1000, 2500]] },
   ]
-  for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
-    const next = omitIn(messages[i]!, kind, keep, min)
-    if (next === messages[i]) continue
-    if (!changed) { messages = [...messages]; changed = true }
-    excess -= size(messages[i]!) - size(next)
-    messages[i] = next
-    if (excess > 0) continue
-    const prompt = render(), over = Buffer.byteLength(prompt) - limit
-    if (over <= 0) return prompt
-    excess = over
+  const newestPhase: OmitPhase = { at: [...newest].sort((a, b) => a - b), kinds: ["result", "use"], passes: [[4000, 10000], [1000, 2500]] }
+  const runPhases = (phases: OmitPhase[]): string | undefined => {
+    for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
+      const next = omitIn(messages[i]!, kind, keep, min)
+      if (next === messages[i]) continue
+      if (!middleOmitted) {
+        if (messages === request.messages) messages = [...messages]
+        middleOmitted = true
+      }
+      excess -= size(messages[i]!) - size(next)
+      messages[i] = next
+      if (excess > 0) continue
+      const prompt = render(), over = Buffer.byteLength(prompt) - limit
+      if (over <= 0) {
+        if (appliedCut > 0) options.onCut?.(appliedCut)
+        return prompt
+      }
+      excess = over
+    }
+    const prompt = appliedCut > 0 || middleOmitted ? render() : full
+    if (Buffer.byteLength(prompt) <= limit) {
+      if (appliedCut > 0) options.onCut?.(appliedCut)
+      return prompt
+    }
+    return undefined
   }
-  const prompt = changed ? render() : full, bytes = Buffer.byteLength(prompt)
-  if (bytes > limit) throw promptTooLong(bytes, limit)
-  return prompt
+  const searchCut = () => findPromptCut({
+    request,
+    messages,
+    nativeTools,
+    suffix,
+    limit,
+    targetBytes,
+    appliedCut,
+    maxCut,
+    firstText,
+    middleOmitted,
+    latestTypedForCut,
+  })
+  if (!trimOldest) {
+    const fitted = runPhases([...olderPhases, newestPhase])
+    if (fitted !== undefined) return fitted
+    throw promptTooLong(Buffer.byteLength(middleOmitted ? render() : full), limit)
+  }
+  const afterOlder = runPhases(olderPhases)
+  if (afterOlder !== undefined) return afterOlder
+  const cutBeforeNewest = searchCut()
+  if (cutBeforeNewest) {
+    options.onCut?.(cutBeforeNewest.cut)
+    return cutBeforeNewest.prompt
+  }
+  const afterNewest = runPhases([newestPhase])
+  if (afterNewest !== undefined) return afterNewest
+  const cutAfterNewest = searchCut()
+  if (cutAfterNewest) {
+    options.onCut?.(cutAfterNewest.cut)
+    return cutAfterNewest.prompt
+  }
+  throw promptTooLong(Buffer.byteLength(appliedCut > 0 || middleOmitted ? render() : full), limit)
 }
 
 export type AgEvent =
