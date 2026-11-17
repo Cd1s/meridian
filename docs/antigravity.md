@@ -147,7 +147,7 @@ require a saved answer or an eligible exact failed-continuation retry.
 Unpaired or malformed historical results receive HTTP 400. New user text
 may accompany the exact result or follow it in another user message. This steering
 continues the same pending process and is delivered separately from tool output. Independent upstream calls are coalesced into one response, preserving every
-correlation. A synthetic `meridian_parallel` MCP tool also submits 2–16 independent
+correlation. A synthetic `workspace_parallel` MCP tool also submits 2–16 independent
 actions atomically. `disable_parallel_tool_use: true` delivers them serially. Unchanged live continuations remain bound to their original process.
 
 Matching ordinary turns reuse the same live CLI process and send only new user
@@ -342,7 +342,7 @@ Slow stream readers have a 1 MiB response-buffer budget; deadlines and process
 shutdown still apply. Terminal sandboxing is requested in addition to the deny
 hook, but does not claim full isolation of the CLI or all native tools.
 
-MCP tool content is wrapped in `meridian_client_result` JSON. The model is
+MCP tool content is wrapped in `client_result` JSON. The model is
 instructed to decode that exact client content, keeping CLI timing metadata out
 of file contents. The live Pi copy gate compares exact bytes and catches leaks.
 

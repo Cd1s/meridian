@@ -970,7 +970,7 @@ presentation, and stops the owned service. It saves screenshots and state.
 `/antigravity` prefix); the standalone gate never stops an external service.
 
 Retained hardening failures: `meridian-agy-e2e-mbAvPv` caught CLI timestamps
-being copied into file content. Explicit `meridian_client_result` JSON boundaries
+being copied into file content. Explicit `client_result` JSON boundaries
 fixed that exact-byte failure; subsequent actual Pi runs passed. The desktop
 `Movmeo` artifact caught `Providers: TimeoutError` while live quota reads blocked
 the eight-second desktop API deadline. Provider snapshots now return current
@@ -1263,7 +1263,7 @@ Authenticated Windows CLI behavior is still unverified.
 Retained failures explain the changes rather than disappearing behind reruns:
 
 - `meridian-agy-expansion-j54zOe`: direct native calls arrived serially. Added an
-  explicit atomic `meridian_parallel` MCP tool; the succeeding gate requires a
+  explicit atomic `workspace_parallel` MCP tool; the succeeding gate requires a
   two-call response. `xgKAm5` failed a test assertion that searched raw SSE for
   contiguous text; the gate now assembles deltas before comparing receipts.
 - `meridian-agy-media-5v527G`: fixture setup selected a Python without ReportLab,
