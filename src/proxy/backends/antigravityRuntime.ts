@@ -149,16 +149,6 @@ export class AntigravityRun {
   private get promptSuffix(): string {
     return this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : ""
   }
-  private prompt(request: AgRequest, trimHistory = false, rawRequest: AgRequest = request): string {
-    const native = agNativeTools(this.runtime.options)
-    const suffix = this.promptSuffix
-    const limit = agPromptByteLimit()
-    return renderAgPromptWithinLimit(request, native, suffix, limit, trimHistory ? {
-      trimOldestTurns: this.runtime.trimOldestTurns,
-      previousCut: () => this.runtime.getPromptCut(rawRequest),
-      onCut: cut => this.runtime.setPromptCut(rawRequest, cut),
-    } : { trimOldestTurns: false })
-  }
   private compactPrompt(request: AgRequest, limit: number): string {
     this.compacted = true
     const tokenLimit = Math.min(this.runtime.historyLimits.stepTokens, this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192) - 32)
@@ -355,13 +345,13 @@ export class AntigravityRun {
       this.replaySteps = contextExceeded
         ? [this.compactPrompt(preparedRequest, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192)) * 4)))]
         : this.restored
-          ? [this.runtime.historyLimits.chunked ? assertAgStep(renderAgPrompt(preparedRequest, native) + suffix, agPromptByteLimit(), this.runtime.historyLimits.stepTokens) : this.prompt(preparedRequest)]
+          ? [assertAgStep(renderAgPrompt(preparedRequest, native) + suffix, agPromptByteLimit(), this.runtime.historyLimits.stepTokens)]
           : this.runtime.historyLimits.chunked
             ? planAgHistory(preparedRequest, native, suffix, stepLimit, this.creation.stepBudget ?? this.runtime.historyLimits.maxSteps, this.runtime.historyLimits.stepTokens)
-            : [this.prompt(preparedRequest, true, this.request)]
+            : [this.compactPrompt(preparedRequest, agPromptByteLimit() || stepLimit)]
       if (this.replaySteps.length > 1 && this.request.output_config?.format) args.splice(args.indexOf("--json-schema"), 2)
       const estimatedReplayTokens = this.replaySteps.reduce((sum, step) => sum + estimateAgTextTokens(step) + 32, 0)
-      if (this.runtime.historyLimits.chunked && estimatedReplayTokens + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
+      if (estimatedReplayTokens + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
         this.replaySteps = [this.compactPrompt(preparedRequest, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192) - 32) * 4)))]
         if (this.request.output_config?.format && !args.includes("--json-schema")) args.push("--json-schema", join(this.workspace, "output-schema.json"))
       }
@@ -577,9 +567,7 @@ export class AntigravityRun {
       Object.assign(this.request, request)
       this.history = request.messages
       this.terminal = false; this.idle = false; this.outputBytes = 0
-      const prompt = this.runtime.historyLimits.chunked
-        ? assertAgStep(renderAgPrompt({ ...request, messages: delta }, agNativeTools(this.runtime.options)) + this.promptSuffix, agPromptByteLimit(), this.runtime.historyLimits.stepTokens)
-        : this.prompt({ ...request, messages: delta })
+      const prompt = assertAgStep(renderAgPrompt({ ...request, messages: delta }, agNativeTools(this.runtime.options)) + this.promptSuffix, agPromptByteLimit(), this.runtime.historyLimits.stepTokens)
       this.beginInput(prompt)
       this.contextTokens += estimateAgTextTokens(prompt)
       this.child!.stdin.write(JSON.stringify({ event: "user", message: { content: prompt } }) + "\n")
@@ -617,7 +605,7 @@ export class AntigravityRun {
     for (const result of results) prepared.push(await this.attachments!.toolResult(result))
     const messages = await this.attachments!.messages(clientMessages)
     const resultStep = JSON.stringify({ results: prepared, client_followup: messages })
-    if (this.runtime.historyLimits.chunked) assertAgStep(resultStep, agPromptByteLimit(), this.runtime.historyLimits.stepTokens)
+    assertAgStep(resultStep, agPromptByteLimit(), this.runtime.historyLimits.stepTokens)
     this.contextTokens += estimateAgTextTokens(resultStep)
     if (this.stopped || results.some(result => !this.pending.has(result.tool_use_id))) throw new AntigravityError("Tool result was not requested by this turn", 409)
     clearTimeout(this.pendingTimer)
@@ -722,7 +710,6 @@ export class AntigravityRuntime {
   get shutdownSignal(): AbortSignal { return this.shutdown.signal }
   readonly historyLimits: AgHistoryLimits
   contextExceeded(request: AgRequest, run?: AntigravityRun): boolean {
-    if (!this.historyLimits.chunked) return false
     const deltaTokens = run ? estimateAgTokens({ ...request, messages: request.messages.slice(run.history.length) }).input_tokens : 0
     if (run?.compacted) return run.contextTokens + deltaTokens + (request.max_tokens ?? 8192) > this.historyLimits.contextTokens
     return agContextTooLarge(request, this.historyLimits, run ? run.contextTokens + deltaTokens : 0)

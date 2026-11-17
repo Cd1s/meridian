@@ -211,6 +211,10 @@ async function main(inputPrompt) {
       answer = JSON.stringify(followup)
     } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).client_result)).join('|')
   }
+  if (prompt.includes('TRIM_TAIL_ONLY')) {
+    if (!prompt.includes('NEEDLE_TAIL_963')) throw new Error('Lost latest request after trimming')
+    answer = 'NEEDLE_TAIL_963'
+  }
   if (prompt.includes('LONGCTX_NEEDLES')) {
     const context = nativePrompts.join('\n')
     if (!context.includes('NEEDLE_HEAD_742') || !context.includes('NEEDLE_TAIL_963')) throw new Error('Lost history needle')

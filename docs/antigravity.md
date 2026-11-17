@@ -1067,12 +1067,20 @@ the 32 outstanding calls limit, or the 16-call parallel batch limit. Higher
 allowances retain more conversation and replay data until the run is retired.
 
 
-The fork continuously drains CLI update lines into a bounded asynchronous queue.
-If agy reports `subscriber fell behind updates` during history priming, it may
-retry once in a fresh conversation after joining the failed CLI. Both attempts
-share the configured history-step cap and original turn deadline; partial
-history is not appended again to the failed conversation. Recommended
-`MERIDIAN_AGY_HISTORY_MAX_STEPS=20` accommodates the observed seven-step failure
-plus nine-step retry (16total); default12 may safely refuse that retry. Answering
-steps and client/native actions are never automatically replayed by this rule.
-Cold retry and drain logs contain only timing, queue and budget metadata.
+The fork keeps warm long context enabled: matching live turns send only appended
+content, with byte/token checks and the480000estimated-token context cap.
+`MERIDIAN_AGY_CHUNKED_HISTORY` defaults to0. A fresh cold history uses one prompt
+with existing middle omission/oldest-turn trimming, <=190000bytes and52000estimated
+tokens. Set `MERIDIAN_AGY_TRIM_OLDEST_TURNS=1` as in production. The latest request
+and tool pairs are retained, but old facts may be lost. Native-record final-text
+recovery and current-turn cursor isolation remain enabled.
+
+Sequential cold loading remains available only with explicit
+`MERIDIAN_AGY_CHUNKED_HISTORY=1` for experiments. Real dense AU replay failed
+inside agy in two attempts despite a responsive Meridian consumer; full replay
+retry has been removed. An exact priming subscriber ERROR can fall back once to
+one fresh trimmed input after joining the failed CLI, with safe-audit/action
+exclusions, the same deadline and remaining history-step allowance. No second
+full replay, final-answering/tool action retry or unlimited fallback. The metadata
+log is `antigravity.cold_replay_trim_fallback`, telemetry `cold-trim`; both attempts'
+priming usage remains visible. Continuous bounded draining stays enabled.

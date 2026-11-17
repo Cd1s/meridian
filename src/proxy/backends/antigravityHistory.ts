@@ -20,7 +20,7 @@ export function agHistoryLimits(env: Record<string, string | undefined> = proces
   const enabled = env.MERIDIAN_AGY_CHUNKED_HISTORY
   if (enabled !== undefined && enabled !== '' && enabled !== '0' && enabled !== '1') throw new Error('MERIDIAN_AGY_CHUNKED_HISTORY must be 0 or 1')
   return {
-    chunked: enabled !== '0',
+    chunked: enabled === '1',
     stepBytes: integer('MERIDIAN_AGY_HISTORY_STEP_BYTES', 180_000, 190_000),
     stepTokens: integer('MERIDIAN_AGY_MAX_STEP_TOKENS', 52_000, 63_000),
     maxSteps: integer('MERIDIAN_AGY_HISTORY_MAX_STEPS', 12, 64),

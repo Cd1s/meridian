@@ -190,7 +190,7 @@ MCP envelope. The raw client history remains authoritative for identity checks.
 including combined result batches; oversize new content returns an explicit 400.
 
 Cold history is loaded sequentially when `MERIDIAN_AGY_CHUNKED_HISTORY=1`
-(the fork default; `0` restores legacy single-prompt trimming). The whole plan is
+(experimental opt-in; default `0` uses one trimmed prompt). The whole plan is
 validated before spawning. Each historical step requests only ACK; execution of
 all client/native tools and attachment reads is denied until the final step.
 The MCP catalog stays stable because CLI clients may cache it. ACK text never
@@ -224,9 +224,13 @@ warm turns; retaining the authoritative raw history does not force every turn
 to replay. Over-cap retirement discards native snapshots. Preprocessing
 and total planned step overhead are checked too. An unexpectedly larger actual
 context reported during loading fails closed before sending further steps.
-Native snapshots are bypassed on this compaction path. Setting
-`MERIDIAN_AGY_CHUNKED_HISTORY=0` disables the new context/step guards and restores
-legacy warm prompt omission and unbounded tool-result delivery too. The cold
+Native snapshots are bypassed on this compaction path.
+`MERIDIAN_AGY_CHUNKED_HISTORY` controls only cold sequential loading. Warm delta,
+MCP result and total-context token/byte guards remain active with either value.
+Default cold loading uses existing middle omission and configured oldest-turn
+trimming until the one prompt fits both 190000 bytes and 52000 estimated tokens;
+the latest request and complete tool pairs are retained. Earlier facts may be lost.
+A compacted cold process then continues warm from only new input. The cold
 step-count cap is independent: indivisible-unit waste can cause a count failure
 below the context-token cap; it still returns 400 rather than silently trimming.
 
@@ -350,61 +354,36 @@ and exact native/client hashes remain required to establish actual provider repa
 
 ### Cold replay subscriber failures and continuously drained updates
 
-AU a27a89ea passed42dense warm turns, but dense cold16×8000Han history failed
-with the official CLI terminal error `subscriber fell behind updates, stalled
-for 6s`. Retained events showed six SUCCESS results while num_turns lagged at1/2;
-native state contained seven inputs and six responses. They cannot be assumed
-to be duplicate completions. The byte observer measured sub-millisecond forwards,
-so neither parent-process starvation nor the exact upstream cause is established.
+AU8f113fe7 passed warm1MB and42dense warm turns, but16×8000Han cold history
+failed with official subscriber lag in both original and full-replay attempts.
+Both saved8inputs natively while stdout lagged; queue peak2lines and processing
+max0.34ms showed no measured parent stall. Fresh full replay did not repair it.
+The stable policy is warm long context enabled, cold chunking default0, existing
+single-prompt trimming with `MERIDIAN_AGY_TRIM_OLDEST_TURNS=1` recommended.
 
-`antigravityStream.ts` bounds raw stdout lines to16MiB/8192frames including the
-in-flight line. The readline callback only enqueues; one asynchronous processor
-parses events, advances inputs and yields to I/O at least every32frames. Slow
-processing/backpressured stdin does not pause that reader. EOF waits for queued
-processing before classifying child exit; final answering also flushes its
-already-enqueued tail before committing content. Abort and shutdown join the
-processor. Child lifecycle handlers are installed before persistent PID
-registration, so a registration failure still joins the spawned child.
-A single JS event loop still runs bounded synchronous parsing/current-record
-reads; this is not an OS-thread isolation guarantee. Existing per-step64KiB
-priming and16MiB final output guards remain.
+`antigravityStream.ts` retains its bounded16MiB/8192line async FIFO, IO yields,
+backpressured writes, EOF/cancel joins and queued final-tail flush. Precomputed
+cold frames and async markers avoid heavy work in the stdout callback. A known
+cold CID requires a bounded final native-watermark read before final submission;
+text cursor/current native recovery and genuine-empty502 behavior stay active.
 
-All cold input frames and token weights are computed before spawning. Priming
-steps avoid repeated native record opens; a known cold CID keeps the indexed
-text requirement sticky even if an individual read fails. The final pre-submit
-watermark has three bounded read attempts with asynchronous waits; if it stays
-unreadable, no final frame is sent (502), so delayed old markers cannot identify
-the final phase. History-loading marker changes
-use async filesystem operations. The final step retains its pre-submit native
-watermark, so missing/delayed priming updates cannot admit old ACK text as the
-answer. Input writes await their flush callback; final-only stdin closes only
-after its final frame flushes. Per-process `antigravity.cli_drain` diagnostics
-record queue peaks/frame counts, maximum process event-loop delay and processing
-wall time (which includes async I/O waiting), never message contents. Cold
-requestId survives internal chunk boundaries.
+Only experimental chunking1 can encounter a priming subscriber failure. Its
+exact terminal ERROR, safe joined audit, no emitted answer/tools or native actions,
+and no browser/subagent grants may trigger ONE fresh-CID trimmed fallback.
+The failed owner is joined and its snapshot discarded. Original request attachments
+and policy are rematerialized. `compactContext=true` guarantees a single trimmed
+input, never another chunked full replay. Earlier needles need not survive;
+latest message/tool pairing and answer checks remain required. Both attempts share
+the original absolute deadline and total input-step cap. Only one remaining step
+is required; a second full plan need not fit. No second fallback, final-answering
+failure replay, action replay or cancellation/shutdown bypass is allowed.
 
-Only a terminal subscriber-lag error during priming, before any client tool call
-or answering content, is eligible for one internal fresh-process retry. The
-joined audit must contain no allowed action, and observed tool/subagent activity
-also disables retry; error matching is anchored to the known CLI diagnostic. Native
-browser/subagent grants disable it. The failed process slot is reserved while it joins, then transferred atomically
-to fresh admission. Its snapshot is discarded before creating a new CID; neither warm reuse nor native restore may
-re-attach to that uncertain partial conversation. The original request is rematerialized and replanned in the fresh workspace,
-including attachment paths and hook allowlists; encoded old frames are not reused.
-Each plan chunk appears once in the new CID. This intentionally restarts history rather than guessing whether
-an already saved pending native input is safe to resend.
-
-Both attempts share the original `MERIDIAN_AGY_HISTORY_MAX_STEPS` allowance,
-including the final answering step, and the original absolute turn deadline.
-The second plan must fit the remaining allowance before spawning; the measured
-seven-input failure plus a nine-step replay uses16of the recommended20steps.
-Source default12 can therefore decline this late failure safely. A repeated
-failure, insufficient allowance, cancellation/shutdown, or a failure after the
-answering step begins remains an error. No unlimited retries or action replay.
-Physical failed-attempt counters remain visible, while final HTTP error totals
-use only the final request status. Retry-start failure retains the subscription
-error as its cause. Priming telemetry from both attempts is retained; HTTP output still contains
-only one final response and one message identity. `antigravity.cold_replay_retry`
-logs attempt/budget/identity metadata without prompts or native text. Actual
-provider recovery, queued update behavior and replay latency remain fresh AU
-gates; mock success does not establish repair of the upstream subscription.
+`antigravity.cold_replay_trim_fallback` records identity and remaining budget;
+telemetry continuation is `cold-trim`. Admission stays reserved across join/create.
+Both attempts' priming usage remains visible, while final HTTP usage/text reflects
+only answering. Physical failed-process counters stay distinct from HTTP errors.
+Drain logs remain metadata-only (queue/loop/input-flush/stdout gaps/cursor).
+Mocked safe trimming and exact outputs do not prove actual provider acceptance.
+Fresh AU warm400KB/800KB/1MB,30+dense warm, dense/plain cold trimmed200, normal
+regressions and latency are mandatory before conditional rollout. Old head facts
+are required on warm growth; their loss during cold trimming is expected.

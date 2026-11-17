@@ -150,9 +150,10 @@ Recovery joins cancellation/shutdown and retains JSON validation and the
 empty-final guard; shape-only recovery logs exclude all response/prompt text.
 `antigravityStream.ts` owns the bounded asynchronous CLI-update drain and
 backpressured input writes. Cold frames are prepared before spawn; EOF/abort
-join queued processing. A priming-only subscriber failure may start one fresh
-replay after joining its failed owner, sharing the original step allowance and
-absolute deadline; no partial native conversation or action is resumed.
+join queued processing. Warm delta/context guards remain enabled; cold chunking is experimental and
+defaults off, using one trimmed prompt. A priming-only subscriber failure may
+start one fresh trimmed input after joining its failed owner, sharing the original
+step allowance and deadline; full chunked replay and actions are never retried.
 `antigravitySetup.ts` owns explicit Pi/OpenCode client configuration, separate from
 server orchestration. The build packages self-contained retry integrations under
 `dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.
