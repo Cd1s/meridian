@@ -1,9 +1,10 @@
 import { AntigravityError, blocks, renderAgPrompt, type AgMessage, type AgRequest } from './antigravityProtocol'
-import { estimateAgTokens } from './antigravityTokens'
+import { estimateAgTokens, estimateAgTextTokens, agTextTokenWeight } from './antigravityTokens'
 
 export interface AgHistoryLimits {
   chunked: boolean
   stepBytes: number
+  stepTokens: number
   maxSteps: number
   contextTokens: number
 }
@@ -21,6 +22,7 @@ export function agHistoryLimits(env: Record<string, string | undefined> = proces
   return {
     chunked: enabled !== '0',
     stepBytes: integer('MERIDIAN_AGY_HISTORY_STEP_BYTES', 180_000, 190_000),
+    stepTokens: integer('MERIDIAN_AGY_MAX_STEP_TOKENS', 52_000, 63_000),
     maxSteps: integer('MERIDIAN_AGY_HISTORY_MAX_STEPS', 12, 64),
     contextTokens: integer('MERIDIAN_AGY_MAX_CONTEXT_TOKENS', 480_000, 512_000),
   }
@@ -30,9 +32,11 @@ export function agContextTooLarge(request: AgRequest, limits: AgHistoryLimits, s
   return Math.max(estimateAgTokens(request).input_tokens, suppliedTokens) + (request.max_tokens ?? 8192) > limits.contextTokens
 }
 
-export function assertAgStep(prompt: string, limit: number): string {
+export function assertAgStep(prompt: string, limit: number, tokenLimit = 52_000): string {
   const bytes = Buffer.byteLength(prompt)
   if (limit && bytes > limit) throw new AntigravityError(`prompt is too long: new input step is ${bytes} bytes > ${limit}; split the latest message or tool batch`)
+  const tokens = estimateAgTextTokens(prompt)
+  if (tokens > tokenLimit) throw new AntigravityError(`prompt is too long: new input step is estimated at ${tokens} tokens > ${tokenLimit}; split the latest message or tool batch`)
   return prompt
 }
 
@@ -56,9 +60,9 @@ function historyUnits(messages: AgMessage[]): AgMessage[][] {
 }
 
 /** Plan everything before spawning: no partially loaded histories on cap/size failures. */
-export function planAgHistory(request: AgRequest, native: string[], suffix: string, limit: number, maxSteps: number): string[] {
+export function planAgHistory(request: AgRequest, native: string[], suffix: string, limit: number, maxSteps: number, tokenLimit = 52_000): string[] {
   const full = renderAgPrompt(request, native) + suffix
-  if (Buffer.byteLength(full) <= limit) return [full]
+  if (Buffer.byteLength(full) <= limit && estimateAgTextTokens(full) <= tokenLimit) return [full]
   const units = historyUnits(request.messages)
   const finalRequest = { ...request, messages: units.pop() ?? [] }
   if (request.output_config?.format) {
@@ -66,19 +70,24 @@ export function planAgHistory(request: AgRequest, native: string[], suffix: stri
     finalRequest.system = system + '\nReturn the final answer as JSON only, with no Markdown fences, satisfying this exact schema:\n' + JSON.stringify(request.output_config.format.schema)
     finalRequest.output_config = { ...request.output_config, format: undefined }
   }
-  const final = assertAgStep('The earlier input steps contain the completed conversation history in order. Use all that context together with this final step.\n\n' + renderAgPrompt(finalRequest, native) + suffix, limit)
+  const final = assertAgStep('The earlier input steps contain the completed conversation history in order. Use all that context together with this final step.\n\n' + renderAgPrompt(finalRequest, native) + suffix, limit, tokenLimit)
   const steps: string[] = []
   let chunk: AgMessage[] = []
   let bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2
+  let tokens = agTextTokenWeight(AG_HISTORY_PREFIX) + 0.5
   for (const unit of units) {
-    const unitBytes = Buffer.byteLength(JSON.stringify(unit)) - 2
-    if (bytes + unitBytes + (chunk.length ? 1 : 0) > limit) {
+    const serialized = JSON.stringify(unit)
+    const unitBytes = Buffer.byteLength(serialized) - 2
+    const unitTokens = agTextTokenWeight(serialized) - 0.5
+    if (bytes + unitBytes + (chunk.length ? 1 : 0) > limit || tokens + unitTokens + (chunk.length ? 0.25 : 0) > tokenLimit) {
       if (chunk.length) steps.push(AG_HISTORY_PREFIX + JSON.stringify(chunk))
-      assertAgStep(AG_HISTORY_PREFIX + JSON.stringify(unit), limit)
+      assertAgStep(AG_HISTORY_PREFIX + serialized, limit, tokenLimit)
       chunk = unit
       bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2 + unitBytes
+      tokens = agTextTokenWeight(AG_HISTORY_PREFIX) + 0.5 + unitTokens
     } else {
       bytes += unitBytes + (chunk.length ? 1 : 0)
+      tokens += unitTokens + (chunk.length ? 0.25 : 0)
       chunk.push(...unit)
     }
     if (steps.length + 1 >= maxSteps) throw new AntigravityError(`prompt is too long: cold history replay exceeds ${maxSteps} input steps; compact the conversation or raise MERIDIAN_AGY_HISTORY_MAX_STEPS`)

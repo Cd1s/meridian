@@ -226,6 +226,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           }
           break
         }
+        if (reason === "end_turn" && !content.length) throw new AntigravityError("Antigravity returned no response; the upstream input may have been rejected", 502, "api_error")
         if (forcedAgTool(body) && reason !== "tool_use") throw new AntigravityError("Antigravity completed without the required tool call", 502, "api_error")
         if (reason === "end_turn") { run.history = [...run.history, { role: "assistant", content }]; run.rememberCompleted() }
         if (!emittedTool) await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)

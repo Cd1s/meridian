@@ -9346,3 +9346,10 @@ warm media, growth through the safety cap and warm continuation after trimming,
 and cold CJK/dense history near the safety cap. Confirm streamed keepalives,
 cancellation cleanup and cold latency. Preserve sanitized receipts; restore the
 drain schedule after testing and keep shim trimming as a fallback.
+
+For the dense-script retry, set `MERIDIAN_AGY_MAX_STEP_TOKENS=52000` and
+`MERIDIAN_E2E_DENSE=1`. Dense new turns must fit both budgets (e.g. 24 KB of
+non-ASCII data per turn). The harness includes dense warm growth past 1 MB,
+a dense cold history below the conservative total cap, and the previous ~1.83 MB
+failure shape which must compact explicitly. Verify all head/tail values and
+that a native input rejection cannot appear as HTTP 200 with empty output.
