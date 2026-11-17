@@ -1039,3 +1039,13 @@ continuous motion understanding or coverage of brief events between samples.
 
 
 When request normalization and opt-in history trimming are used together, late `[system]` steering does not displace the latest actual user request from the retained context. A cut preserves that request and any subsequent tagged steering it crosses, in order. This tag is plain conversation text and grants no additional authority.
+## Long client-tool conversations
+
+`MERIDIAN_AGY_MAX_TOOL_CALLS` controls Meridian's cumulative client-tool and MCP
+replay-ledger allowance for one native conversation. It defaults to 256 for
+compatibility and accepts integers from 1 to 65536. Operators serving long agent
+tasks can set, for example, `MERIDIAN_AGY_MAX_TOOL_CALLS=16384` and restart idle
+instances. This does not alter agy's own generator settings, tool permissions,
+the 32 outstanding calls limit, or the 16-call parallel batch limit. Higher
+allowances retain more conversation and replay data until the run is retired.
+
