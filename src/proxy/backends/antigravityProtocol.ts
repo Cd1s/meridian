@@ -212,7 +212,7 @@ export function historyKey(messages: AgMessage[]): string {
   return stable(messages.map(m => ({ role: m.role, content: blocks(m) })))
 }
 export function contractKey(request: AgRequest): string {
-  return stable({ client_tools_protocol: 2, session: request.meridian_session_key, grammars: request.meridian_tool_grammars, model: request.model, system: request.system, tools: request.tools, max_tokens: request.max_tokens, thinking: request.thinking, stop_sequences: request.stop_sequences, output_config: request.output_config })
+  return stable({ session: request.meridian_session_key, grammars: request.meridian_tool_grammars, model: request.model, system: request.system, tools: request.tools, max_tokens: request.max_tokens, thinking: request.thinking, stop_sequences: request.stop_sequences, output_config: request.output_config })
 }
 /** Client plugins may refresh instructions/tool definitions, but cannot retarget a pending execution. */
 export function sameAgExecutionContract(previous: AgRequest, next: AgRequest): boolean {

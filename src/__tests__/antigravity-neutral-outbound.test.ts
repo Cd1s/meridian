@@ -1,9 +1,12 @@
 import { describe, expect, it } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgAttachments } from "../proxy/backends/antigravityAttachments"
-import { parseAgRequest, parallelAgTool, renderAgPrompt, renderAgPromptWithinLimit } from "../proxy/backends/antigravityProtocol"
+import { parseAgRequest, parallelAgTool, renderAgPrompt, renderAgPromptWithinLimit, contractKey, historyKey } from "../proxy/backends/antigravityProtocol"
+import { AgNativeSessions } from "../proxy/backends/antigravitySessions"
+import { AgState } from "../proxy/backends/antigravityState"
 
 const request = () => parseAgRequest({
   model: "fixture-model", max_tokens: 100,
@@ -14,6 +17,24 @@ const neutral = (text: string) => {
   expect(text).not.toMatch(/meridian|\b(?:proxy|bridge|gateway)\b/i)
 }
 describe("neutral agy-facing instructions", () => {
+  it("separates old native snapshots without consuming or rewriting them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-generation-"))
+    const path = join(root, "state.sqlite"), state = new AgState(path)
+    try {
+      const sessions = new AgNativeSessions(state, path, {})
+      const workspace = join(sessions.directory, "conversation-test")
+      await mkdir(workspace)
+      const body = request(), history = [...body.messages, { role: "assistant" as const, content: "Finished." }]
+      const snapshot = { conversationId: "12345678-1234-4234-8234-123456789abc", workspace, count: history.length }
+      const oldKey = createHash("sha256").update(contractKey(body) + historyKey(history)).digest("hex")
+      state.put("native-sessions", oldKey, "", JSON.stringify(snapshot), Date.now() + 60000, 128, 1024 * 1024)
+      const next = { ...body, messages: [...history, { role: "user" as const, content: "Continue." }] }
+      expect(sessions.claim(next)).toBeUndefined()
+      expect(state.get("native-sessions", oldKey, "")).toBe(JSON.stringify(snapshot))
+      sessions.save(body, history, snapshot)
+      expect(sessions.claim(next)?.workspace).toBe(workspace)
+    } finally { state.close(); await rm(root, { recursive: true, force: true }) }
+  })
   it("uses neutral instructions, server and parallel-tool names", () => {
     const body = request()
     body.tool_choice = { type: "any" }
