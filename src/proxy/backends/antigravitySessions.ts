@@ -50,7 +50,7 @@ export class AgNativeSessions {
   eligible(request: AgRequest) {
     return this.options.reuseConversations !== false && !this.options.allowNativeBrowser && !this.options.allowNativeSubagents && !request.output_config?.format && !request.stop_sequences?.length && !hasAgImages(request.messages)
   }
-  private key(request: AgRequest, messages: AgMessage[]) { return createHash('sha256').update(contractKey(request) + historyKey(messages)).digest('hex') }
+  private key(request: AgRequest, messages: AgMessage[]) { return createHash('sha256').update('client-tools-v2\0' + contractKey(request) + historyKey(messages)).digest('hex') }
   claim(request: AgRequest): AgNativeSnapshot | undefined {
     if (!this.eligible(request)) return
     const count = request.messages.findLastIndex(message => message.role === 'assistant') + 1
