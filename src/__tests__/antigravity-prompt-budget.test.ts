@@ -42,7 +42,7 @@ describe("Antigravity prompt byte limit", () => {
     expect(resultAt(history, 11)).toBe(resultAt(request.messages as Hist, 11))
     expect(history.at(-1)!.content).toBe("Now summarize everything.")
     expect(history.map(m => Array.isArray(m.content) ? m.content[0].type : "text")).toEqual(request.messages.map(m => Array.isArray(m.content) ? m.content[0]!.type : "text"))
-    expect(prompt.slice(0, prompt.indexOf("Client conversation:"))).toMatch(/omitted the middle .* Re-read anything you still need/)
+    expect(prompt.slice(0, prompt.indexOf("Client conversation:"))).toMatch(/the middle .* has been omitted .* Re-read anything you still need/)
     const omitted = Array.from({ length: 12 }, (_, i) => i).filter(i => /content omitted/.test(resultAt(history, i)))
     expect(omitted).toEqual(omitted.map((_, i) => i))
     expect(omitted.length).toBeLessThan(12)
