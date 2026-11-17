@@ -41,12 +41,17 @@ describe('Antigravity final response channels', () => {
     expect(text.take()).toBe('')
     expect(text.text).not.toContain('SECRET_THINKING')
   })
-  it('rejects conflicting snapshots after publishing a prefix', () => {
+  it('keeps published deltas when consecutive planner steps have separate snapshots', () => {
     const text = new AgFinalText()
-    text.accept({ step_update: { step_type: 'agent_response', text_delta: 'one' } })
-    text.take()
-    text.accept({ step_update: { step_type: 'agent_response', planner_response: { response: 'other' } } })
-    expect(text.conflict).toBe(true)
+    text.accept({ step_update: { step_type: 'agent_response', text_delta: 'First step. ' } })
+    expect(text.take()).toBe('First step. ')
+    text.accept({ step_update: { step_type: 'agent_response', planner_response: { response: 'First step. ' } } })
+    text.accept({ step_update: { step_type: 'agent_response', text_delta: 'Final answer.' } })
+    expect(text.take()).toBe('Final answer.')
+    text.accept({ step_update: { step_type: 'agent_response', planner_response: { response: 'Final answer.' } } })
+    expect(text.text).toBe('First step. Final answer.')
+    expect(text.take()).toBe('')
+    expect(text.ignoredSnapshots).toBe(1)
   })
   it('records field shapes without text, arguments or reasoning values', () => {
     const shape = agEventShape({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'SECRET_ANSWER', thinking: 'SECRET_THINKING', arguments: { token: 'SECRET_CREDENTIAL' } } })
@@ -163,6 +168,12 @@ describe.skipIf(process.platform === 'win32')('Antigravity final-text recovery i
       expect(answer.content).toEqual([{ type: 'text', text: 'READY' }])
     })
   }
+  it('preserves a two-planner-step delta response without treating per-step snapshots as cumulative', async () => {
+    const { send } = await server(false)
+    const response = await send([{ role: 'user', content: 'SKIP_TOOLS FINAL_MULTISTEP_SNAPSHOT' }])
+    expect(response.status).toBe(200)
+    expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'First planner step. READY' }])
+  })
   it('recovers dense warm turn25 after compaction from the current native record, with no answer text in logs', async () => {
     const { send, runtime } = await server()
     const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS NEEDLE_HEAD_742' }]
@@ -227,6 +238,15 @@ describe.skipIf(process.platform === 'win32')('Antigravity final-text recovery i
         expect(runtime.settling.size).toBe(0)
         expect(runtime.runs.size).toBe(0)
       } finally { read.mockRestore() }
+    })
+  }
+  for (const invalid of ['BAD_NATIVE_JSON', 'WRONG_NATIVE_SCHEMA']) {
+    it(`rejects recovered structured ${invalid}`, async () => {
+      const { send } = await server()
+      const format = { type: 'json_schema', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] } }
+      const response = await send([{ role: 'user', content: `SKIP_TOOLS NATIVE_RECORD_ONLY MISSING_STRUCTURED ${invalid}` }], { output_config: { format } })
+      expect(response.status).toBe(502)
+      expect(await response.text()).not.toContain('PRIVATE_INVALID_JSON')
     })
   }
   it('validates recovered structured JSON rather than returning unvalidated native text', async () => {

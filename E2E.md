@@ -9358,3 +9358,27 @@ For the ACK transport retry, repeat the 16×8000-Han cold replay and inspect
 head/tail recall even if intermediate visible text is missing, reasoning-only,
 whitespace or localized. Successful terminal results confirm chunk delivery;
 final empty answers and failed/denied intermediate steps must still fail.
+
+### Long-context fork: final-text recovery after dense-history trimming
+
+For `ours/agy-prod-20261117-longctx`, real agy 1.2.7 on the AU acc26 Linux arm64
+canary is the acceptance gate; mocked tests do not establish provider delivery.
+Drain account2356 before testing and restore scheduling in finally. Preserve
+HOME/login and use isolated Meridian state. Run
+`scripts/e2e-antigravity-long-context.mjs` with `MERIDIAN_E2E_DENSE=1`,
+`MERIDIAN_E2E_URL`, `MERIDIAN_E2E_MODEL`, optional restricted
+`MERIDIAN_E2E_KEY_FILE` and `MERIDIAN_E2E_RECEIPT`.
+
+Require fresh warm400KB/800KB/1MB and cold700KB+ needle checks, plus at least40
+dense CJK warm turns crossing trims/reentry and dense cold replay. Assert exact
+head/tail values and final format without ACK prefixes on every turn, including
+the post-trim turn25 shape. Exercise a multi-step attachment/native-tool turn,
+client-tool roundtrip, structured JSON, normal/parallel tools, images, effort,
+stream keepalives and explicit cancellation; measure cold latency. Inspect
+`antigravity.final_text_recovered` source/current-turn IDs and shape-only
+`antigravity.final_text_snapshot_ignored` diagnostics; mismatched per-step
+snapshots must preserve the published deltas. Only genuinely empty final text
+may return502; intermediate ACK text is advisory. Preserve sanitized receipts
+and record the package/source SHA. Original6a35fe29 stdout was not captured;
+do not claim its historical missing event/field is established. Full canary
+success is required before conditional rollout, retaining shim fallback.

@@ -187,9 +187,15 @@ async function main(inputPrompt) {
     answer = 'NATIVE_REUSED'
   }
   const schemaTransport = args.includes('--json-schema')
-  if (nativeTurn && !prompt.includes('NATIVE_EMPTY_AFTER_TOOL')) native.answer(nativeTurn, prompt.includes('NATIVE_RECORD_EMPTY') ? '' : schemaTransport ? JSON.stringify({ answer }) : answer, { thinking: 'PRIVATE_REASONING_NEVER_RETURN', ...(prompt.includes('NATIVE_RECORD_WRONG_EXEC') ? { execution: require('node:crypto').randomUUID() } : {}) })
+  if (nativeTurn && !prompt.includes('NATIVE_EMPTY_AFTER_TOOL')) native.answer(nativeTurn, prompt.includes('NATIVE_RECORD_EMPTY') ? '' : prompt.includes('BAD_NATIVE_JSON') ? 'PRIVATE_INVALID_JSON' : prompt.includes('WRONG_NATIVE_SCHEMA') ? '{"answer":123}' : schemaTransport ? JSON.stringify({ answer }) : answer, { thinking: 'PRIVATE_REASONING_NEVER_RETURN', ...(prompt.includes('NATIVE_RECORD_WRONG_EXEC') ? { execution: require('node:crypto').randomUUID() } : {}) })
   const hidden = /NATIVE_RECORD_ONLY|NATIVE_RECORD_EMPTY|NATIVE_RECORD_WRONG_EXEC|NATIVE_EMPTY_AFTER_TOOL|FINAL_RESPONSE_SNAPSHOT|FINAL_RESULT_SNAPSHOT|FINAL_LATE_RESPONSE|FINAL_UNRECOGNIZED/.test(prompt)
-  if (prompt.includes('FINAL_RESPONSE_SNAPSHOT')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer, modified_response: answer } } })
+  if (prompt.includes('FINAL_MULTISTEP_SNAPSHOT')) {
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'First planner step. ' } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: 'First planner step. ' } } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer } } })
+  }
+  else if (prompt.includes('FINAL_RESPONSE_SNAPSHOT')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer, modified_response: answer } } })
   else if (prompt.includes('FINAL_UNRECOGNIZED')) emit({ event: 'step_update', step_update: { step_type: 'assistant_output', final_content: { public_text: answer } } })
   else if (!hidden) emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
   emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10, cache_read_tokens: 20 } } })

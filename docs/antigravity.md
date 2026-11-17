@@ -159,7 +159,18 @@ can restore through the official `--conversation` flag after restart. Active wor
 media, native browser/subagents and structured/stopped turns are not eligible. Schema/stopped responses use fresh processes. Embedders can disable warm
 reuse with `antigravity.reuseConversations: false`. Replay is explicit JSON
 context, not native role-preserving transcript import. Native restore never reads
-or edits private CLI transcripts.
+or edits private CLI transcripts for restoration.
+
+The long-context fork enables current-turn final-text recovery by default
+(no separate environment switch), as explicitly authorized by its operator. If a
+normally completed final answering step has no visible stream text, the bridge
+may read only its matching agy 1.2.7 SQLite/protobuf final response under the
+existing HOME. It checks conversation/execution identity and input/tool-phase
+watermarks, never imports native history or reads reasoning/credentials, and
+performs no database content writes (SQLite may create WAL sidecars). Recovered
+JSON still requires the requested schema; native-empty final answers remain
+HTTP 502. Shape-only recovery logs identify the channel without response text.
+Unmatched supplemental planner snapshots cannot replace published delta text.
 
 Repeated MCP request IDs reuse their original result within their MCP session;
 conflicting reuse is rejected. Native children have independent MCP sessions. Each

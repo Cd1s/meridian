@@ -167,7 +167,9 @@ export class AntigravityRun {
     console.warn(JSON.stringify({ event: 'antigravity.final_text_recovered', entryPoint: 'messages', requestId: this.responseId, runId: this.id, conversationId: this.conversationId, continuation: this.continuation, source, ...details, bytes: Buffer.byteLength(text), events: this.eventShapes }))
   }
   private collectText(raw: unknown, late = false): void {
+    const ignored = this.finalText.ignoredSnapshots
     this.finalText.accept(raw)
+    if (ignored === 0 && this.finalText.ignoredSnapshots > ignored) console.warn(JSON.stringify({ event: 'antigravity.final_text_snapshot_ignored', requestId: this.responseId, runId: this.id, conversationId: this.conversationId, events: this.eventShapes }))
     if (this.request.output_config?.format) {
       this.chunkedStructuredText = this.finalText.text
       return
@@ -206,7 +208,6 @@ export class AntigravityRun {
     // Let already buffered post-terminal snapshots drain before consulting the record.
     await nextTick()
     this.checkRecovery(signal)
-    if (this.finalText.conflict) throw new AntigravityError("Antigravity final response channels disagree", 502, "api_error")
     const combined = AbortSignal.any([this.runtime.shutdownSignal, ...(signal ? [signal] : [])])
     if (this.request.output_config?.format && this.finalText.visible) {
       try { this.checkedFinalText(this.finalText.text) }
@@ -228,7 +229,6 @@ export class AntigravityRun {
       }
     }
     this.checkRecovery(signal)
-    if (this.finalText.conflict) throw new AntigravityError("Antigravity final response channels disagree", 502, "api_error")
     if (!this.finalText.visible) {
       console.warn(JSON.stringify({ event: 'antigravity.final_text_empty', entryPoint: 'messages', requestId: this.responseId, runId: this.id, conversationId: this.conversationId, continuation: this.continuation, anchored: !!this.nativeAnchor, events: this.eventShapes }))
       return
