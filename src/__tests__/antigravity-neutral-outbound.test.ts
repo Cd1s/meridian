@@ -43,8 +43,10 @@ describe("neutral agy-facing instructions", () => {
     try {
       const attachments = new AgAttachments(root)
       const blocks = await attachments.content([{ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF5sAAAAASUVORK5CYII=" } }])
-      neutral(JSON.stringify(blocks))
-      expect(JSON.stringify(blocks)).toContain("Image attachment")
+      const text = JSON.stringify(blocks)
+      expect(text).toContain(root)
+      neutral(text.replaceAll(root, "<workspace>"))
+      expect(text).toContain("Image attachment")
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 })
