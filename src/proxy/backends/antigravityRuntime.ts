@@ -83,7 +83,6 @@ export class AntigravityRun {
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
   private replaySteps: string[] = []
   private replayIndex = 0
-  private historyAcknowledged = false
   private replayUsage = { input: 0, output: 0, cache: 0 }
   takeReplayUsage() {
     const usage = this.replayUsage
@@ -137,7 +136,6 @@ export class AntigravityRun {
   }
   private writeStep(): void {
     const prompt = this.replaySteps[this.replayIndex]!
-    this.historyAcknowledged = false
     if (this.loadingHistory) writeFileSync(join(this.workspace!, 'history-loading'), '', { mode: 0o600 })
     else rmSync(join(this.workspace!, 'history-loading'), { force: true })
     this.contextTokens += estimateAgTextTokens(prompt)
@@ -229,7 +227,6 @@ export class AntigravityRun {
           if (event.event === "init" && event.conversation_id) this.conversationId = event.conversation_id
           const step = event.step_update
           if ((step?.step_type === "tool" || step?.step_type === "subagent") && step.tool_name && agNativeTools(this.runtime.options).includes(step.tool_name)) this.runtime.recordNative({ runId: this.id, name: step.tool_name, state: step.state ?? "unknown", timestamp: Date.now() })
-          if (this.loadingHistory && step?.step_type === "agent_response" && step.text_delta?.trim()) this.historyAcknowledged = true
           if (!this.loadingHistory && this.replaySteps.length > 1 && this.request.output_config?.format && step?.step_type === "agent_response" && step.text_delta) this.chunkedStructuredText += step.text_delta
           if (!this.loadingHistory && step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) this.queue.push({ kind: "text", text: step.text_delta })
           if (step?.state === "DONE" && step.usage) this.contextTokens = Math.max(this.contextTokens, step.usage.input_tokens ?? 0) + (step.usage.output_tokens ?? 0)
@@ -242,12 +239,8 @@ export class AntigravityRun {
           }
           if (event.event === "result" && event.result) {
             if (this.loadingHistory) {
-              if (event.result.status !== "SUCCESS" || event.result.denied_actions?.length) {
+              if (event.result.status !== "SUCCESS" || event.result.error || event.result.denied_actions?.length) {
                 this.abort(classifyAgFailure(event.result.error || "History loading step denied an action"))
-                return
-              }
-              if (!this.historyAcknowledged) {
-                this.abort(new AntigravityError("Antigravity returned no history acknowledgement; the upstream input may have been rejected", 502, "api_error"))
                 return
               }
               this.replayIndex++

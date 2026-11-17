@@ -252,7 +252,14 @@ unmeasured. AU's 1833452-byte dense case previously estimated 458796 tokens and
 passed preflight before native token errors; it now exceeds the 480000-token
 safety cap and enters explicit existing trimming before any loading call.
 
-A successful CLI result without history acknowledgement aborts loading rather
-than advancing. A completed final phase with no content returns 502, preventing
-native errors followed by empty SUCCESS from becoming HTTP 200 with zero usage.
-These guards retain normal stop-sequence and tool completion behavior.
+An intermediate history step is delivered when the official CLI emits its
+terminal `result` with `status: SUCCESS`, no error and no denied actions. Visible
+ACK text is advisory: missing/empty/whitespace text, reasoning-only output or a
+localized acknowledgement does not invalidate normal completion. AU's dense
+16×8000-Han cold replay saved ACK natively but exposed no recognized visible
+ACK, so delivery must not depend on that text channel. The backend never reads
+private native transcripts to confirm a chunk. Failed/denied steps, premature
+exit, cancellation and deadlines still abort the replay. Only the final
+answering phase requires response content; an empty final completion returns
+502 instead of HTTP 200 with zero usage. Normal stop-sequence and tool
+completion behavior is retained.

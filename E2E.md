@@ -9487,3 +9487,8 @@ non-ASCII data per turn). The harness includes dense warm growth past 1 MB,
 a dense cold history below the conservative total cap, and the previous ~1.83 MB
 failure shape which must compact explicitly. Verify all head/tail values and
 that a native input rejection cannot appear as HTTP 200 with empty output.
+
+For the ACK transport retry, repeat the 16×8000-Han cold replay and inspect
+head/tail recall even if intermediate visible text is missing, reasoning-only,
+whitespace or localized. Successful terminal results confirm chunk delivery;
+final empty answers and failed/denied intermediate steps must still fail.
