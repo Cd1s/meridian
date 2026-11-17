@@ -1,0 +1,69 @@
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function response(value: unknown): string | undefined {
+  const object = record(value)
+  if (!object) return
+  for (const name of ['modified_response', 'modifiedResponse', 'response']) {
+    const text = object[name]
+    if (typeof text === 'string' && text.trim()) return text
+  }
+}
+
+/** Completed planner-response snapshots supplement the ordinary incremental channel. */
+export function agFinalTextFrame(value: unknown): { delta?: string; snapshot?: string; channel: string } | undefined {
+  const event = record(value)
+  if (!event) return
+  const update = record(event.step_update)
+  const step = record(update?.step) ?? update
+  if (update && step && (update.step_type === 'agent_response' || step.type === 15 || step.step_type === 'agent_response')) {
+    const snapshot = response(step.planner_response) ?? response(step.plannerResponse) ?? response(step.agent_response) ?? response(step)
+    if (snapshot !== undefined) return { snapshot, channel: 'step_update.planner_response' }
+    if (typeof update.text_delta === 'string') return { delta: update.text_delta, channel: 'step_update.text_delta' }
+  }
+  const result = record(event.result)
+  if (event.event === 'result' && result?.status === 'SUCCESS' && !result.error) {
+    const snapshot = response(result.planner_response) ?? response(result.plannerResponse) ?? response(result.agent_response) ?? response(result)
+    if (snapshot !== undefined) return { snapshot, channel: 'result.planner_response' }
+  }
+}
+
+export class AgFinalText {
+  text = ''
+  published = 0
+  channel = 'none'
+  conflict = false
+  get visible(): boolean { return this.text.trim().length > 0 }
+  accept(value: unknown): void {
+    const frame = agFinalTextFrame(value)
+    if (!frame) return
+    this.channel = frame.channel
+    if (frame.snapshot !== undefined) {
+      if (frame.snapshot.startsWith(this.text)) this.text = frame.snapshot
+      else if (!this.text.startsWith(frame.snapshot)) {
+        if (this.published === 0) this.text = frame.snapshot
+        else this.conflict = true
+      }
+    } else if (frame.delta) this.text += frame.delta
+  }
+  take(): string {
+    const text = this.text.slice(this.published)
+    this.published = this.text.length
+    return text
+  }
+}
+
+/** Shape-only diagnostics: no text, arguments, reasoning, credentials or arbitrary string values. */
+export function agEventShape(value: unknown): Record<string, unknown> {
+  const event = record(value) ?? {}
+  const update = record(event.step_update) ?? {}
+  const result = record(event.result) ?? {}
+  const label = (value: unknown) => typeof value === 'string' ? value.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40) : undefined
+  return {
+    event: label(event.event), type: label(update.step_type), state: label(update.state),
+    keys: Object.keys(event).slice(0, 24).map(key => key.slice(0, 64)),
+    updateKeys: Object.keys(update).slice(0, 24).map(key => key.slice(0, 64)),
+    resultKeys: Object.keys(result).slice(0, 24).map(key => key.slice(0, 64)),
+  }
+}

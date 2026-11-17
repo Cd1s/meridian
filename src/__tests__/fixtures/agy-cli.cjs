@@ -5,12 +5,16 @@ const { readFileSync, appendFileSync } = require('node:fs')
 const args = process.argv.slice(2)
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n')
 const nativePrompts = []
+const nativeConversationId = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : require('node:crypto').randomUUID()
 async function main(inputPrompt) {
   if (args[0] === '--version') return console.log(process.env.AGY_FIXTURE_VERSION || '1.5.5')
   if (args[0] === 'models') return console.log('fixture-model\tFixture Model\nfixture-model-high\tFixture High\ngemini-fixture-low\tGemini Low\ngemini-fixture-medium\tGemini Medium\ngemini-fixture-high\tGemini High')
   let prompt = args[args.indexOf('-p') + 1]
   if (inputPrompt !== undefined) prompt = inputPrompt
   nativePrompts.push(prompt)
+  const native = inputPrompt !== undefined && process.env.AGY_FIXTURE_NATIVE_RECORDS ? require('./agy-native-record.cjs') : undefined
+  const nativeTurn = native?.input(process.env.HOME, nativeConversationId, prompt)
+  if (nativeTurn) emit({ event: 'init', conversation_id: nativeConversationId })
   if (inputPrompt !== undefined && process.env.AGY_FIXTURE_PROMPTS) appendFileSync(process.env.AGY_FIXTURE_PROMPTS, JSON.stringify(prompt) + '\n')
   if (prompt.startsWith('History loading step.')) {
     if (args.includes('--json-schema')) throw new Error('Schema transport must not constrain history ACKs')
@@ -30,6 +34,7 @@ async function main(inputPrompt) {
     if (process.env.AGY_FIXTURE_HISTORY_FAILURE) return emit({ event: 'result', result: { status: 'ERROR', error: 'History loading failed' } })
     if (process.env.AGY_FIXTURE_HISTORY_SUCCESS_ERROR) return emit({ event: 'result', result: { status: 'SUCCESS', error: 'Fixture explicit failure' } })
     if (process.env.AGY_FIXTURE_HISTORY_DENIED) return emit({ event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'fixture' }] } })
+    if (nativeTurn) native.answer(nativeTurn, 'ACK')
     const mode = process.env.AGY_FIXTURE_HISTORY_ACK_MODE || (process.env.AGY_FIXTURE_HISTORY_EMPTY ? 'absent' : 'normal')
     if (mode === 'thinking') emit({ event: 'step_update', step_update: { step_type: 'thinking', text_delta: 'The chunk is stored.' } })
     else if (mode !== 'absent') emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: mode === 'empty' ? '' : mode === 'whitespace' ? ' \n ' : mode === 'variant' ? '已记录。' : 'ACK' } })
@@ -60,7 +65,7 @@ async function main(inputPrompt) {
     }
   }
   if (prompt.includes('EFFORT_PROBE') && args[args.indexOf('--effort') + 1] !== 'high') throw new Error('Native effort flag missing')
-  emit({ event: 'init' })
+  if (!nativeTurn) emit({ event: 'init' })
   if (prompt.includes('RATE_LIMIT')) return emit({event:'result',result:{status:'ERROR',error:'Quota exhausted; retry in 45 seconds'}})
   if (prompt.includes('NATIVE_EMPTY_SUCCESS')) return emit({ event: 'result', result: { status: 'SUCCESS' } })
   if (prompt.includes('HANG')) { setInterval(() => {}, 1000); return }
@@ -150,6 +155,7 @@ async function main(inputPrompt) {
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []
   let answer = replayedResults.length ? replayedResults.map(b => (b.is_error ? 'FAILED:' : '') + b.content).join('|') : 'READY'
   if (!replayedResults.length && tools.length && !prompt.includes("SKIP_TOOLS")) {
+    if (nativeTurn) native.answer(nativeTurn, 'Prior tool narration', { tool: true })
     if (prompt.includes('STRUCTURED_PROSE')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'I will look this up before answering.' } })
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 100, output_tokens: 5 } } })
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
@@ -179,11 +185,17 @@ async function main(inputPrompt) {
     if (nativePrompts.length !== 2 || prompt.includes('NATIVE_FIRST')) throw new Error('Native continuation replayed history or spawned another process')
     answer = 'NATIVE_REUSED'
   }
-  emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
+  const schemaTransport = args.includes('--json-schema')
+  if (nativeTurn && !prompt.includes('NATIVE_EMPTY_AFTER_TOOL')) native.answer(nativeTurn, prompt.includes('NATIVE_RECORD_EMPTY') ? '' : schemaTransport ? JSON.stringify({ answer }) : answer, { thinking: 'PRIVATE_REASONING_NEVER_RETURN', ...(prompt.includes('NATIVE_RECORD_WRONG_EXEC') ? { execution: require('node:crypto').randomUUID() } : {}) })
+  const hidden = /NATIVE_RECORD_ONLY|NATIVE_RECORD_EMPTY|NATIVE_RECORD_WRONG_EXEC|NATIVE_EMPTY_AFTER_TOOL|FINAL_RESPONSE_SNAPSHOT|FINAL_RESULT_SNAPSHOT|FINAL_LATE_RESPONSE|FINAL_UNRECOGNIZED/.test(prompt)
+  if (prompt.includes('FINAL_RESPONSE_SNAPSHOT')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer, modified_response: answer } } })
+  else if (prompt.includes('FINAL_UNRECOGNIZED')) emit({ event: 'step_update', step_update: { step_type: 'assistant_output', final_content: { public_text: answer } } })
+  else if (!hidden) emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
   emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10, cache_read_tokens: 20 } } })
   const schemaPath = args.includes('--json-schema') && args[args.indexOf('--json-schema') + 1]
   if (schemaPath) JSON.parse(readFileSync(schemaPath, 'utf8'))
-  emit({ event: 'result', result: { status: 'SUCCESS', ...(schemaPath && !prompt.includes('MISSING_STRUCTURED') ? { structured_output: prompt.includes('BAD_STRUCTURED') ? { output: { answer } } : { answer } } : {}) } })
+  emit({ event: 'result', result: { status: 'SUCCESS', ...(prompt.includes('FINAL_RESULT_SNAPSHOT') ? { planner_response: { response: answer } } : {}), ...(schemaPath && !prompt.includes('MISSING_STRUCTURED') ? { structured_output: prompt.includes('BAD_STRUCTURED') ? { output: { answer } } : { answer } } : {}) } })
+  if (prompt.includes('FINAL_LATE_RESPONSE')) { await new Promise(resolve => setTimeout(resolve, 5)); emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer } } }) }
   if (prompt.includes('BAD_EXIT')) process.exitCode = 1
   if (prompt.includes('LINGER')) setInterval(() => {}, 1000)
 }

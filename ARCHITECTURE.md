@@ -137,7 +137,14 @@ It is bounded to 128 entries/30 minutes, refuses admission instead of eviction,
 and releases guards after joined cleanup. Backend shutdown waits for identified
 request finalizers, including bounded telemetry observers, before closing SQLite.
 It does not record external tool outcomes.
-In-flight processes never enter that durable session cache; private CLI transcripts are never read.
+In-flight processes never enter that durable session cache. The fork's explicitly
+authorized final-text recovery may read only the current completed agy turn,
+never native history for replay or credentials; see the backend spec.
+`antigravityFinalText.ts` collects deltas and final snapshots, and
+`antigravityNativeRecord.ts` validates bounded read-only 1.2.7 SQLite/protobuf
+records against input/phase watermarks, execution and conversation identity.
+Recovery joins cancellation/shutdown and retains JSON validation and the
+empty-final guard; shape-only recovery logs exclude all response/prompt text.
 `antigravitySetup.ts` owns explicit Pi/OpenCode client configuration, separate from
 server orchestration. The build packages self-contained retry integrations under
 `dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.
