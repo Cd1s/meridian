@@ -3,7 +3,7 @@ import * as childProcess from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readAgProbe } from '../proxy/backends/antigravityProbe'
+import { readAgProbe, assertAgCliVersion } from '../proxy/backends/antigravityProbe'
 import { AntigravityRuntime } from '../proxy/backends/antigravityRuntime'
 import { parseAgRequest } from '../proxy/backends/antigravityProtocol'
 
@@ -37,7 +37,7 @@ function fixture(mode = 'once', settings?: Record<string, unknown>) {
 const root = process.env.AG_PROBE_ROOT, mode = process.env.AG_PROBE_MODE;
 const log = path.join(root, 'calls');
 fs.appendFileSync(log, JSON.stringify({args:process.argv.slice(2),pid:process.pid})+'\\n');
-if(process.argv[2] === '--version') { console.log(mode === 'version' ? 'unsupported' : '1.2.7'); }
+if(process.argv[2] === '--version') { console.log(mode === 'version' ? 'unsupported' : mode === 'upgrade' ? '1.5.10' : '1.2.7'); }
 else {
  const counter=path.join(root,'count'); const count=fs.existsSync(counter)?Number(fs.readFileSync(counter,'utf8')):0;
  fs.writeFileSync(counter,String(count+1));
@@ -75,7 +75,47 @@ async function cancelWhenReady(f: ReturnType<typeof fixture>, pending: Promise<s
   }
 }
 
+describe('Antigravity CLI version admission', () => {
+  it('keeps 1.2.7 as the default and rejects unapproved upgrades', () => {
+    expect(() => assertAgCliVersion('1.2.7', {})).not.toThrow()
+    expect(() => assertAgCliVersion('1.5.10', {})).toThrow('Unsupported agy version')
+    expect(() => assertAgCliVersion('1.5.10', { MERIDIAN_AGY_ALLOW_CLI_VERSIONS: '' })).toThrow()
+  })
+  it('accepts only exact listed versions', () => {
+    const env = { MERIDIAN_AGY_ALLOW_CLI_VERSIONS: '1.2.7, 1.5.10' }
+    expect(() => assertAgCliVersion('1.5.10', env)).not.toThrow()
+    expect(() => assertAgCliVersion('1.5.11', env)).toThrow()
+    expect(() => assertAgCliVersion('1.5.10-beta', env)).toThrow()
+  })
+  for (const raw of ['*', '1.5.x', '1.2.7,', ',1.5.10', ' ', '>=1.2.7', '1.2.7,'.repeat(50)]) {
+    it(`rejects malformed allowlist ${JSON.stringify(raw)}`, () => {
+      expect(() => assertAgCliVersion('1.2.7', { MERIDIAN_AGY_ALLOW_CLI_VERSIONS: raw })).toThrow('comma-separated list')
+    })
+  }
+})
+
 describe.skipIf(process.platform === 'win32')('Antigravity read-only subscription probes', () => {
+  it('rejects a new CLI before configuration unless explicitly allowed', async () => {
+    const f = fixture('upgrade'), runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env, { MERIDIAN_AGY_ALLOW_CLI_VERSIONS: '' })
+    try {
+      await expect(runtime.verifyAccount()).rejects.toThrow('Unsupported agy version 1.5.10')
+      expect(f.calls().map(call => call.args[0])).toEqual(['--version'])
+      runtime.childEnv.MERIDIAN_AGY_ALLOW_CLI_VERSIONS = '1.2.7,1.5.10'
+      await runtime.verifyAccount()
+      expect(f.calls().map(call => call.args[0])).toEqual(['--version', '--version', '-p'])
+    } finally { await runtime.close() }
+  })
+  it('retains paid-credit rejection for an allowed new CLI', async () => {
+    const f = fixture('upgrade', { customModelsConfig: null, modelProvider: '', useG1Credits: true, gcp: null })
+    const runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env, { MERIDIAN_AGY_ALLOW_CLI_VERSIONS: '1.2.7,1.5.10' })
+    try {
+      await expect(runtime.verifyAccount()).rejects.toThrow('paid overage credits disabled')
+      expect(f.calls().map(call => call.args[0])).toEqual(['--version', '-p'])
+      expect(runtime.runs.size).toBe(0)
+    } finally { await runtime.close() }
+  })
   it('launches the synthetic fixture through Node even with an unusable shebang', async () => {
     const f = fixture('success')
     writeFileSync(f.executable, `#!${join(f.root, 'missing-interpreter')}\n${readFileSync(f.executable, 'utf8')}`)

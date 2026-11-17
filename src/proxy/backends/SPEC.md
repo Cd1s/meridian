@@ -38,6 +38,12 @@ belong to [`chatgpt-backend`](../chatgpt/SPEC.md).)
   `buildRuntime`, `headerSettings` and shared `telemetry-ui` presentation.
 - Generation runs only through the official CLI — no Google API key or model-SDK
   fallback, and private CLI transcripts are never read.
+- CLI admission defaults to exact version `1.2.7`. Operators evaluating an upgrade
+  may set `MERIDIAN_AGY_ALLOW_CLI_VERSIONS` to a comma-separated list of exact
+  versions (for example `1.2.7,1.5.10`); malformed lists fail closed, and all
+  subscription-only configuration checks remain mandatory. This opt-in does not
+  establish protocol compatibility or increase the prompt budget; an upgrade
+  requires affected-model live validation before rollout.
 - Client tools execute with the **client's** permissions via
   `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE`; native browser/subagent capabilities need a
   separate explicit operator grant.

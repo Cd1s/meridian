@@ -11,6 +11,20 @@ interface ProbeOptions {
   timeoutMs?: number
   killGraceMs?: number
 }
+
+/** CLI upgrades require an explicit operator allowlist; subscription checks still apply. */
+export function assertAgCliVersion(version: string, env: NodeJS.ProcessEnv): void {
+  const raw = env.MERIDIAN_AGY_ALLOW_CLI_VERSIONS
+  const configured = raw === undefined || raw === '' ? '1.2.7' : raw
+  const versions = configured.split(',').map(value => value.trim())
+  if (configured.length > 256 || versions.some(value => !/^\d+\.\d+\.\d+$/.test(value))) {
+    throw new Error('MERIDIAN_AGY_ALLOW_CLI_VERSIONS must be a comma-separated list of exact CLI versions')
+  }
+  if (!versions.includes(version)) {
+    throw new Error(`Unsupported agy version ${version}; allowed CLI versions: ${versions.join(', ')}. Validate a CLI upgrade before changing MERIDIAN_AGY_ALLOW_CLI_VERSIONS.`)
+  }
+}
+
 export class ProbeFailure extends Error {
   constructor(readonly reason: Failure, message: string) { super(message) }
 }

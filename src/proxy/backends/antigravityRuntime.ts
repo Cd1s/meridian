@@ -1,4 +1,4 @@
-import { readAgProbe, ProbeFailure } from "./antigravityProbe"
+import { readAgProbe, ProbeFailure, assertAgCliVersion } from "./antigravityProbe"
 import { AgGrammars } from "./antigravityGrammar"
 import { AgPlugins } from "./antigravityPlugins"
 import { AgNativeSessions, type AgNativeSnapshot } from "./antigravitySessions"
@@ -617,7 +617,7 @@ export class AntigravityRuntime {
     const options = { env: this.childEnv, signal: this.shutdown.signal }
     this.cliVersion = (await readAgProbe(this.executable, "version", options)).trim()
     // Validate the binary before asking it to inspect subscription configuration.
-    if (this.cliVersion !== "1.2.7") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.2.7. Validate a CLI upgrade before updating the compatibility gate.`)
+    assertAgCliVersion(this.cliVersion, this.childEnv)
     const config = await readAgProbe(this.executable, "configuration", options)
     // The verified 1.2.7 effective settings expose an explicit boolean here.
     // Missing or malformed credits are indeterminate, not verified disabled.
