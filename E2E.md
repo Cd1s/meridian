@@ -9463,3 +9463,20 @@ The [E85 client history harness](docs/maintenance/evidence/e85-client-history-ha
 checks keyed return, a separate actual OpenCode rewind and keyless Pi with
 retained profile mappings and exact native namespaces. Its scripted upstream
 preflight does not replace the actual-model acceptance required by #1401.
+
+## Fork: Antigravity long context
+
+Run `scripts/e2e-antigravity-long-context.mjs` on the drained acc26 canary, with
+`MERIDIAN_E2E_URL` (Messages endpoint), `MERIDIAN_E2E_MODEL`, optional restricted
+`MERIDIAN_E2E_KEY_FILE`, and `MERIDIAN_E2E_RECEIPT`. It checks head/tail facts at
+each of ten warm turns (past 400 KB and 800 KB), a 700 KB+ paired-tool cold
+history, and records latency/usage without payloads or credentials. Verify
+`continuation=live` in request telemetry for warm turns, and separate priming
+telemetry cost from the final-phase HTTP context usage. This harness is only the
+long-history gate; it does not establish the full 512K-token provider window.
+Before rollout also use existing text/tools/parallel tools/image/structured
+output/effort canaries, including chunked structured output with a client tool,
+warm media, growth through the safety cap and warm continuation after trimming,
+and cold CJK/dense history near the safety cap. Confirm streamed keepalives,
+cancellation cleanup and cold latency. Preserve sanitized receipts; restore the
+drain schedule after testing and keep shim trimming as a fallback.

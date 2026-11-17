@@ -19,6 +19,7 @@ import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, pa
 
 import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravitySchema"
 import type { ValidateFunction } from "ajv"
+import { estimateAgTokens } from './antigravityTokens'
 import { agHistoryLimits, agContextTooLarge, assertAgStep, planAgHistory, type AgHistoryLimits } from './antigravityHistory'
 import { AgAttachments } from "./antigravityAttachments"
 import type { AntigravityOptions } from "../types"
@@ -82,7 +83,14 @@ export class AntigravityRun {
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
   private replaySteps: string[] = []
   private replayIndex = 0
+  private replayUsage = { input: 0, output: 0, cache: 0 }
+  takeReplayUsage() {
+    const usage = this.replayUsage
+    this.replayUsage = { input: 0, output: 0, cache: 0 }
+    return usage
+  }
   contextTokens = 0
+  compacted = false
   get loadingHistory(): boolean { return this.replayIndex < this.replaySteps.length - 1 }
   private toolCalls = 0
   private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
@@ -110,6 +118,14 @@ export class AntigravityRun {
       previousCut: () => this.runtime.getPromptCut(rawRequest),
       onCut: cut => this.runtime.setPromptCut(rawRequest, cut),
     } : { trimOldestTurns: false })
+  }
+  private compactPrompt(request: AgRequest, limit: number): string {
+    this.compacted = true
+    return renderAgPromptWithinLimit(request, agNativeTools(this.runtime.options), this.promptSuffix, limit, {
+      trimOldestTurns: this.runtime.trimOldestTurns,
+      previousCut: () => this.runtime.getPromptCut(this.request),
+      onCut: cut => this.runtime.setPromptCut(this.request, cut),
+    })
   }
   private writeStep(): void {
     const prompt = this.replaySteps[this.replayIndex]!
@@ -173,16 +189,16 @@ export class AntigravityRun {
       const contextExceeded = this.compactContext || this.runtime.contextExceeded(this.request)
       const stepLimit = Math.min(this.runtime.historyLimits.stepBytes, agPromptByteLimit() || this.runtime.historyLimits.stepBytes)
       this.replaySteps = contextExceeded
-        ? [renderAgPromptWithinLimit(preparedRequest, native, suffix, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192)) * 4)), { trimOldestTurns: true })]
+        ? [this.compactPrompt(preparedRequest, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192)) * 4)))]
         : this.restored
-          ? [assertAgStep(renderAgPrompt(preparedRequest, native) + suffix, agPromptByteLimit())]
+          ? [this.runtime.historyLimits.chunked ? assertAgStep(renderAgPrompt(preparedRequest, native) + suffix, agPromptByteLimit()) : this.prompt(preparedRequest)]
           : this.runtime.historyLimits.chunked
             ? planAgHistory(preparedRequest, native, suffix, stepLimit, this.runtime.historyLimits.maxSteps)
             : [this.prompt(preparedRequest, true, this.request)]
       if (this.replaySteps.length > 1 && this.request.output_config?.format) args.splice(args.indexOf("--json-schema"), 2)
       const estimatedReplayTokens = this.replaySteps.reduce((sum, step) => sum + Math.ceil(Buffer.byteLength(step) / 4) + 32, 0)
-      if (estimatedReplayTokens + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
-        this.replaySteps = [renderAgPromptWithinLimit(preparedRequest, native, suffix, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192) - 32) * 4)), { trimOldestTurns: true })]
+      if (this.runtime.historyLimits.chunked && estimatedReplayTokens + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
+        this.replaySteps = [this.compactPrompt(preparedRequest, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192) - 32) * 4)))]
         if (this.request.output_config?.format && !args.includes("--json-schema")) args.push("--json-schema", join(this.workspace, "output-schema.json"))
       }
       const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
@@ -207,7 +223,13 @@ export class AntigravityRun {
           if (!this.loadingHistory && this.replaySteps.length > 1 && this.request.output_config?.format && step?.step_type === "agent_response" && step.text_delta) this.chunkedStructuredText += step.text_delta
           if (!this.loadingHistory && step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) this.queue.push({ kind: "text", text: step.text_delta })
           if (step?.state === "DONE" && step.usage) this.contextTokens = Math.max(this.contextTokens, step.usage.input_tokens ?? 0) + (step.usage.output_tokens ?? 0)
-          if (step?.state === "DONE" && step.usage) this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
+          if (step?.state === "DONE" && step.usage) {
+            if (this.loadingHistory) {
+              this.replayUsage.input += step.usage.input_tokens ?? 0
+              this.replayUsage.output += step.usage.output_tokens ?? 0
+              this.replayUsage.cache += step.usage.cache_read_tokens ?? 0
+            } else this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
+          }
           if (event.event === "result" && event.result) {
             if (this.loadingHistory) {
               if (event.result.status !== "SUCCESS" || event.result.denied_actions?.length) {
@@ -216,7 +238,7 @@ export class AntigravityRun {
               }
               this.replayIndex++
               if (this.contextTokens + Math.ceil(Buffer.byteLength(this.replaySteps[this.replayIndex]!) / 4) + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
-                this.abort(new AntigravityError("History loading exceeded the context token safety cap; compact the conversation"))
+                this.abort(new AntigravityError("prompt is too long: history loading exceeded the context token safety cap; compact the conversation"))
                 return
               }
               this.outputBytes = 0
@@ -230,7 +252,7 @@ export class AntigravityRun {
             } else if (this.pending.size) this.abort(new AntigravityError("Antigravity ended with unresolved client tools", 502, "api_error"))
             // Success is committed only after a clean process exit, not merely a result line.
             else if (this.request.output_config?.format) {
-              const output = this.replaySteps.length > 1 ? JSON.parse(this.chunkedStructuredText) as unknown : event.result.structured_output
+              const output = this.replaySteps.length > 1 ? JSON.parse(this.chunkedStructuredText.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1')) as unknown : event.result.structured_output
               if (output === undefined) throw new Error("CLI omitted required structured_output")
               const invalid = this.outputValidator && agSchemaError(this.outputValidator, output)
               if (invalid) throw new Error("CLI structured_output did not satisfy the requested schema: " + invalid)
@@ -335,6 +357,7 @@ export class AntigravityRun {
       request.messages.slice(this.history.length).every(message => message.role === "user")
   }
   rememberCompleted(): void { this.completedSnapshot = true }
+  discardSnapshot(): void { this.completedSnapshot = false }
   async resume(request: AgRequest, signal?: AbortSignal): Promise<void> {
     this.completedSnapshot = false
     this.continuation = "live"
@@ -352,7 +375,9 @@ export class AntigravityRun {
       Object.assign(this.request, request)
       this.history = request.messages
       this.terminal = false; this.idle = false; this.outputBytes = 0
-      const prompt = assertAgStep(renderAgPrompt({ ...request, messages: delta }, agNativeTools(this.runtime.options)) + (this.promptSuffix), agPromptByteLimit())
+      const prompt = this.runtime.historyLimits.chunked
+        ? assertAgStep(renderAgPrompt({ ...request, messages: delta }, agNativeTools(this.runtime.options)) + this.promptSuffix, agPromptByteLimit())
+        : this.prompt({ ...request, messages: delta })
       this.contextTokens += Math.ceil(Buffer.byteLength(prompt) / 4)
       this.child!.stdin.write(JSON.stringify({ event: "user", message: { content: prompt } }) + "\n")
       this.runtime.reused++
@@ -364,6 +389,7 @@ export class AntigravityRun {
   markDelivered(calls: AgCall[]): void {
     this.pauseModelTimer()
     this.delivered = calls
+    this.chunkedStructuredText = ""
     this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; completed history can be replayed", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
     this.pendingTimer.unref()
   }
@@ -385,11 +411,12 @@ export class AntigravityRun {
     for (const result of results) prepared.push(await this.attachments!.toolResult(result))
     const messages = await this.attachments!.messages(clientMessages)
     const resultStep = JSON.stringify({ results: prepared, client_followup: messages })
-    assertAgStep(resultStep, agPromptByteLimit())
+    if (this.runtime.historyLimits.chunked) assertAgStep(resultStep, agPromptByteLimit())
     this.contextTokens += Math.ceil(Buffer.byteLength(resultStep) / 4)
     if (this.stopped || results.some(result => !this.pending.has(result.tool_use_id))) throw new AntigravityError("Tool result was not requested by this turn", 409)
     clearTimeout(this.pendingTimer)
     this.delivered = []
+    this.chunkedStructuredText = ""
     for (let index = 0; index < results.length; index++) {
       const result = results[index]!
       const pending = this.pending.get(result.tool_use_id)!
@@ -468,7 +495,9 @@ export class AntigravityRuntime {
   readonly childEnv: NodeJS.ProcessEnv
   readonly historyLimits: AgHistoryLimits
   contextExceeded(request: AgRequest, run?: AntigravityRun): boolean {
-    const deltaTokens = run ? Math.ceil(Buffer.byteLength(renderAgPrompt({ ...request, messages: request.messages.slice(run.history.length) })) / 4) : 0
+    if (!this.historyLimits.chunked) return false
+    const deltaTokens = run ? estimateAgTokens({ ...request, messages: request.messages.slice(run.history.length) }).input_tokens : 0
+    if (run?.compacted) return run.contextTokens + deltaTokens + (request.max_tokens ?? 8192) > this.historyLimits.contextTokens
     return agContextTooLarge(request, this.historyLimits, run ? run.contextTokens + deltaTokens : 0)
   }
   // Warm live conversations; expired or restarted processes replay client history.
@@ -731,13 +760,14 @@ export class AntigravityRuntime {
     })().catch(error => { this.initialization = undefined; throw error })
     return this.initialization
   }
-  async create(request: AgRequest, signal?: AbortSignal): Promise<AntigravityRun> {
+  async create(request: AgRequest, signal?: AbortSignal, compactContext = false): Promise<AntigravityRun> {
     if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (((request.tools.length && request.tool_choice?.type !== "none") || hasAgImages(request.messages)) && !this.options.allowToolBridge) throw new AntigravityError("Client tools and images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
     const reusable = [...this.runs.values()].find(run => run.matches(request))
     if (reusable) {
       if (!this.contextExceeded(request, reusable)) { await reusable.resume(request, signal); return reusable }
       reusable.busy = true
+      reusable.discardSnapshot()
       reusable.abort(new AntigravityError("Context token safety cap reached; replaying trimmed history", 409), "retired")
       await reusable.settled
     }
@@ -759,8 +789,8 @@ export class AntigravityRuntime {
       if (!(await this.availableModels()).includes(request.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
       if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
       if (signal?.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
-      const restored = this.contextExceeded(request) || reusable ? undefined : this.nativeSessions?.claim(request)
-      const run = new AntigravityRun(this, request, restored, !!reusable)
+      const restored = compactContext || this.contextExceeded(request) || reusable ? undefined : this.nativeSessions?.claim(request)
+      const run = new AntigravityRun(this, request, restored, compactContext || !!reusable)
       if (restored) this.restored++
       this.runs.set(run.id, run)
       const cancel = () => run.abort(new AntigravityError("Request cancelled", 499, "api_error"))

@@ -69,17 +69,22 @@ export function planAgHistory(request: AgRequest, native: string[], suffix: stri
   const final = assertAgStep('The earlier input steps contain the completed conversation history in order. Use all that context together with this final step.\n\n' + renderAgPrompt(finalRequest, native) + suffix, limit)
   const steps: string[] = []
   let chunk: AgMessage[] = []
+  let bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2
   for (const unit of units) {
-    const candidate = [...chunk, ...unit]
-    if (Buffer.byteLength(AG_HISTORY_PREFIX + JSON.stringify(candidate)) > limit) {
+    const unitBytes = Buffer.byteLength(JSON.stringify(unit)) - 2
+    if (bytes + unitBytes + (chunk.length ? 1 : 0) > limit) {
       if (chunk.length) steps.push(AG_HISTORY_PREFIX + JSON.stringify(chunk))
       assertAgStep(AG_HISTORY_PREFIX + JSON.stringify(unit), limit)
       chunk = unit
-    } else chunk = candidate
-    if (steps.length + 1 >= maxSteps) throw new AntigravityError(`Cold history replay exceeds ${maxSteps} input steps; compact the conversation or raise MERIDIAN_AGY_HISTORY_MAX_STEPS`)
+      bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2 + unitBytes
+    } else {
+      bytes += unitBytes + (chunk.length ? 1 : 0)
+      chunk.push(...unit)
+    }
+    if (steps.length + 1 >= maxSteps) throw new AntigravityError(`prompt is too long: cold history replay exceeds ${maxSteps} input steps; compact the conversation or raise MERIDIAN_AGY_HISTORY_MAX_STEPS`)
   }
   if (chunk.length) steps.push(AG_HISTORY_PREFIX + JSON.stringify(chunk))
   steps.push(final)
-  if (steps.length > maxSteps) throw new AntigravityError(`Cold history replay exceeds ${maxSteps} input steps`)
+  if (steps.length > maxSteps) throw new AntigravityError(`prompt is too long: cold history replay exceeds ${maxSteps} input steps`)
   return steps
 }

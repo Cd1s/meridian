@@ -49,14 +49,16 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     // start competing replays while shutdown or account preflight is pending.
     for (const result of results) runtime.recoveringTools.add(result.tool_use_id)
     try {
+      const compactContext = previous ? runtime.contextExceeded(body, previous) : false
       if (previous) {
+        if (compactContext) previous.discardSnapshot()
         previous.busy = true
         previous.abort(new AntigravityError("Client plugin context changed; replaying completed tool history", 409), "retired")
         await previous.settled
       }
       if (signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
-      const run = await runtime.create(body, signal)
-      if (previous) run.continuation = "client-context-replay"
+      const run = await runtime.create(body, signal, compactContext)
+      if (previous) run.continuation = reason
       runtime.forgetInterruptedContinuation(body)
       for (const result of results) runtime.rememberConsumedTool(result.tool_use_id)
       run.busy = true
@@ -243,7 +245,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           if (status === 499 && !emittedTool && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents && suffix.flatMap(blocks).some(block => block.type === "tool_result")) {
             await runtime.recordInterruptedAfterJoin(body, run.settled)
           }
-          const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
+          const replayUsage = run.takeReplayUsage()
+          const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens + replayUsage.input, outputTokens: usage.output_tokens + replayUsage.output, cacheReadTokens: usage.cache_read_input_tokens + replayUsage.cache }
           runtime.record(metric)
           await runtime.plugins.observe("onTelemetry", metric, request.signal)
         } finally {

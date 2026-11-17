@@ -193,7 +193,9 @@ Cold history is loaded sequentially when `MERIDIAN_AGY_CHUNKED_HISTORY=1`
 validated before spawning. Each historical step requests only ACK; execution of
 all client/native tools and attachment reads is denied until the final step.
 The MCP catalog stays stable because CLI clients may cache it. ACK text never
-reaches the HTTP client, while priming usage is counted. Only the final step
+reaches the HTTP client. Priming usage is counted in exchange telemetry, while
+the HTTP response reports only the final model phase so internal repeated
+context inputs cannot falsely exhaust the coding client's context meter. Only the final step
 contains the real system/tool instructions and latest user message or complete
 assistant/result batch. Historical steps preserve order and complete tool pairs;
 an indivisible message/pair exceeding the step budget is rejected with 400
@@ -208,14 +210,23 @@ UTF-8/4 estimate plus image allowance reserves requested output (8192 if unset),
 with a live supplied-input/output ledger and provider-reported input usage as
 additional lower bounds. This is an estimate, not an exact tokenizer or a
 measurement of hidden CLI context. Crossing it retires the warm process and
-uses the existing whole-turn/middle trimming in a fresh process. Preprocessing
+uses existing middle trimming (whole-turn dropping still requires
+`MERIDIAN_AGY_TRIM_OLDEST_TURNS=1`) in a fresh process. A compacted run checks
+only its actual supplied ledger plus the new attachment-aware delta for future
+warm turns; retaining the authoritative raw history does not force every turn
+to replay. Over-cap retirement discards native snapshots. Preprocessing
 and total planned step overhead are checked too. An unexpectedly larger actual
 context reported during loading fails closed before sending further steps.
-Native snapshots are bypassed on this compaction path.
+Native snapshots are bypassed on this compaction path. Setting
+`MERIDIAN_AGY_CHUNKED_HISTORY=0` disables the new context/step guards and restores
+legacy warm prompt omission and unbounded tool-result delivery too. The cold
+step-count cap is independent: indivisible-unit waste can cause a count failure
+below the context-token cap; it still returns 400 rather than silently trimming.
 
 For chunked structured output, the CLI-wide schema flag is omitted so ACKs are
 not forced through the final schema/finish tool. The final prompt requests JSON
-matching the exact schema; the bridge buffers, parses and validates it with the
+matching the exact schema; the bridge buffers the final response segment (discarding pre-tool narration),
+accepts one surrounding JSON code fence, parses and validates it with the
 same Ajv validator before emitting the response on clean exit. Single-step
 structured output retains the native schema path. agy remains pinned to 1.2.7;
 neutral protocol names, client tool limits, normalization and shim fallback

@@ -145,6 +145,7 @@ async function main(inputPrompt) {
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []
   let answer = replayedResults.length ? replayedResults.map(b => (b.is_error ? 'FAILED:' : '') + b.content).join('|') : 'READY'
   if (!replayedResults.length && tools.length && !prompt.includes("SKIP_TOOLS")) {
+    if (prompt.includes('STRUCTURED_PROSE')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'I will look this up before answering.' } })
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 100, output_tokens: 5 } } })
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
     if (prompt.includes('RPC_RETRY')) calls.push(rpc('tools/call', {name:tools[0].name,arguments:{key:'probe0'}},2))
@@ -168,6 +169,7 @@ async function main(inputPrompt) {
     answer = 'NEEDLE_HEAD_742 NEEDLE_TAIL_963'
   }
   if (prompt.includes('Return the final answer as JSON only')) answer = JSON.stringify({ answer })
+  if (prompt.includes('FENCED_JSON')) answer = '```json\n' + answer + '\n```'
   if (prompt.includes('NATIVE_SECOND')) {
     if (nativePrompts.length !== 2 || prompt.includes('NATIVE_FIRST')) throw new Error('Native continuation replayed history or spawned another process')
     answer = 'NATIVE_REUSED'
