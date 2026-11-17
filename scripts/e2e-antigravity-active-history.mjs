@@ -84,7 +84,7 @@ export function inspectBudgetedHistory(rendered, request, limit = 190000) {
   const identities = messages => values(messages).filter(block => ['tool_use', 'tool_result'].includes(block.type))
     .map(block => block.type === 'tool_use' ? [block.type, block.id, block.name] : [block.type, block.tool_use_id, !!block.is_error])
   assert.deepEqual(identities(history), identities(request.messages), 'Tool identities/results changed')
-  assert(rendered.includes('omitted by Meridian'), 'Old-text omission is not disclosed')
+  assert(rendered.includes('content omitted'), 'Old-text omission is not disclosed')
   return { effectiveBytes: Buffer.byteLength(rendered), limit, latestRequestExact: true, latestCallResultExact: true, toolIdentitiesExact: true, omissionDisclosed: true }
 }
 
