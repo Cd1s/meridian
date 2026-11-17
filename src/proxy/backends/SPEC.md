@@ -345,3 +345,64 @@ recovered→tool-use→tool-result, SSE, unindexed delayed text, stale result sn
 and genuinely empty next turns. These fixtures cover plausible deferred-output
 orders; full fresh AU dense multi-turn canary (at least30 turns;42 recommended)
 and exact native/client hashes remain required to establish actual provider repair.
+
+### Cold replay subscriber failures and continuously drained updates
+
+AU a27a89ea passed42dense warm turns, but dense cold16×8000Han history failed
+with the official CLI terminal error `subscriber fell behind updates, stalled
+for 6s`. Retained events showed six SUCCESS results while num_turns lagged at1/2;
+native state contained seven inputs and six responses. They cannot be assumed
+to be duplicate completions. The byte observer measured sub-millisecond forwards,
+so neither parent-process starvation nor the exact upstream cause is established.
+
+`antigravityStream.ts` bounds raw stdout lines to16MiB/8192frames including the
+in-flight line. The readline callback only enqueues; one asynchronous processor
+parses events, advances inputs and yields to I/O at least every32frames. Slow
+processing/backpressured stdin does not pause that reader. EOF waits for queued
+processing before classifying child exit; final answering also flushes its
+already-enqueued tail before committing content. Abort and shutdown join the
+processor. Child lifecycle handlers are installed before persistent PID
+registration, so a registration failure still joins the spawned child.
+A single JS event loop still runs bounded synchronous parsing/current-record
+reads; this is not an OS-thread isolation guarantee. Existing per-step64KiB
+priming and16MiB final output guards remain.
+
+All cold input frames and token weights are computed before spawning. Priming
+steps avoid repeated native record opens; a known cold CID keeps the indexed
+text requirement sticky even if an individual read fails. The final pre-submit
+watermark has three bounded read attempts with asynchronous waits; if it stays
+unreadable, no final frame is sent (502), so delayed old markers cannot identify
+the final phase. History-loading marker changes
+use async filesystem operations. The final step retains its pre-submit native
+watermark, so missing/delayed priming updates cannot admit old ACK text as the
+answer. Input writes await their flush callback; final-only stdin closes only
+after its final frame flushes. Per-process `antigravity.cli_drain` diagnostics
+record queue peaks/frame counts, maximum process event-loop delay and processing
+wall time (which includes async I/O waiting), never message contents. Cold
+requestId survives internal chunk boundaries.
+
+Only a terminal subscriber-lag error during priming, before any client tool call
+or answering content, is eligible for one internal fresh-process retry. The
+joined audit must contain no allowed action, and observed tool/subagent activity
+also disables retry; error matching is anchored to the known CLI diagnostic. Native
+browser/subagent grants disable it. The failed process slot is reserved while it joins, then transferred atomically
+to fresh admission. Its snapshot is discarded before creating a new CID; neither warm reuse nor native restore may
+re-attach to that uncertain partial conversation. The original request is rematerialized and replanned in the fresh workspace,
+including attachment paths and hook allowlists; encoded old frames are not reused.
+Each plan chunk appears once in the new CID. This intentionally restarts history rather than guessing whether
+an already saved pending native input is safe to resend.
+
+Both attempts share the original `MERIDIAN_AGY_HISTORY_MAX_STEPS` allowance,
+including the final answering step, and the original absolute turn deadline.
+The second plan must fit the remaining allowance before spawning; the measured
+seven-input failure plus a nine-step replay uses16of the recommended20steps.
+Source default12 can therefore decline this late failure safely. A repeated
+failure, insufficient allowance, cancellation/shutdown, or a failure after the
+answering step begins remains an error. No unlimited retries or action replay.
+Physical failed-attempt counters remain visible, while final HTTP error totals
+use only the final request status. Retry-start failure retains the subscription
+error as its cause. Priming telemetry from both attempts is retained; HTTP output still contains
+only one final response and one message identity. `antigravity.cold_replay_retry`
+logs attempt/budget/identity metadata without prompts or native text. Actual
+provider recovery, queued update behavior and replay latency remain fresh AU
+gates; mock success does not establish repair of the upstream subscription.

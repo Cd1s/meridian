@@ -1061,3 +1061,14 @@ tasks can set, for example, `MERIDIAN_AGY_MAX_TOOL_CALLS=16384` and restart idle
 instances. This does not alter agy's own generator settings, tool permissions,
 the 32 outstanding calls limit, or the 16-call parallel batch limit. Higher
 allowances retain more conversation and replay data until the run is retired.
+
+
+The fork continuously drains CLI update lines into a bounded asynchronous queue.
+If agy reports `subscriber fell behind updates` during history priming, it may
+retry once in a fresh conversation after joining the failed CLI. Both attempts
+share the configured history-step cap and original turn deadline; partial
+history is not appended again to the failed conversation. Recommended
+`MERIDIAN_AGY_HISTORY_MAX_STEPS=20` accommodates the observed seven-step failure
+plus nine-step retry (16total); default12 may safely refuse that retry. Answering
+steps and client/native actions are never automatically replayed by this rule.
+Cold retry and drain logs contain only timing, queue and budget metadata.

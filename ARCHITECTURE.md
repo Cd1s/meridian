@@ -138,6 +138,11 @@ indexed text or unowned text. MCP result phases advance the same boundary, and
 records against input/phase watermarks, execution and conversation identity.
 Recovery joins cancellation/shutdown and retains JSON validation and the
 empty-final guard; shape-only recovery logs exclude all response/prompt text.
+`antigravityStream.ts` owns the bounded asynchronous CLI-update drain and
+backpressured input writes. Cold frames are prepared before spawn; EOF/abort
+join queued processing. A priming-only subscriber failure may start one fresh
+replay after joining its failed owner, sharing the original step allowance and
+absolute deadline; no partial native conversation or action is resumed.
 `antigravitySetup.ts` owns explicit Pi/OpenCode client configuration, separate from
 server orchestration. The build packages self-contained retry integrations under
 `dist/antigravity-clients`; npm, Nix and Docker installations carry those assets.

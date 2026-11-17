@@ -171,6 +171,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       let failure: string | undefined
       let textOpen = false
       let emittedTool = false
+      let coldRetried = false
+      const replayCarry = { input: 0, output: 0, cache: 0 }
       let reason: "end_turn" | "tool_use" | "stop_sequence" = "end_turn"
       const stops = new AgTextStops(body.stop_sequences ?? [])
       const base = { id, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage } }
@@ -187,7 +189,42 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       try {
         while (true) {
           const event = await run.queue.next()
-          if (event.kind === "error") throw event.error
+          if (event.kind === "error") {
+            if (!coldRetried && !emittedTool && !content.length && run.retryableColdSubscriber) {
+              coldRetried = true
+              const previous = run, remaining = runtime.historyLimits.maxSteps - previous.submittedSteps
+              const releaseSlot = runtime.reserveColdReplay(previous)
+              try {
+                previous.discardSnapshot()
+                await previous.settled
+                if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+                if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
+                if (!previous.coldRetryAuditSafe) throw event.error
+                if (remaining < previous.plannedSteps) {
+                  const exhausted = new AntigravityError("Cold replay retry exceeds the remaining input-step budget after: " + event.error.message, 502, "api_error")
+                  exhausted.cause = event.error
+                  throw exhausted
+                }
+                const spent = previous.takeReplayUsage()
+                replayCarry.input += spent.input; replayCarry.output += spent.output; replayCarry.cache += spent.cache
+                console.warn(JSON.stringify({ event: 'antigravity.cold_replay_retry', requestId: id, runId: previous.id, conversationId: previous.conversationId, submittedSteps: previous.submittedSteps, remainingSteps: remaining, attempt: 2 }))
+                if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+                // Transfer the reserved slot into create synchronously, without an admission gap.
+                releaseSlot()
+                try { run = await runtime.create(body, request.signal, false, { fresh: true, stepBudget: remaining, deadline: previous.turnDeadline }) }
+                catch (error) {
+                  const failure = error instanceof AntigravityError ? error : new AntigravityError("Retry process could not start", 503, "api_error")
+                  const wrapped = new AntigravityError("Cold replay retry failed after " + event.error.message + ": " + failure.message, failure.status, failure.type, failure.retryAfter)
+                  wrapped.cause = event.error
+                  throw wrapped
+                }
+                run.responseId = id
+                run.continuation = 'cold-retry'
+              } finally { releaseSlot() }
+              continue
+            }
+            throw event.error
+          }
           if (event.kind === "usage") { usage.input_tokens += event.input; usage.output_tokens += event.output; usage.cache_read_input_tokens += event.cache; continue }
           if (event.kind === "text") {
             if (forcedAgTool(body)) continue
@@ -263,6 +300,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
             catch (error) { console.error("[antigravity] Interrupted-continuation recovery could not be recorded:", String(error)) }
           }
           const replayUsage = run.takeReplayUsage()
+          replayUsage.input += replayCarry.input; replayUsage.output += replayCarry.output; replayUsage.cache += replayCarry.cache
           const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens + replayUsage.input, outputTokens: usage.output_tokens + replayUsage.output, cacheReadTokens: usage.cache_read_input_tokens + replayUsage.cache }
           runtime.record(metric)
           await runtime.plugins.observe("onTelemetry", metric, request.signal)
