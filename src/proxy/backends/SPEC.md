@@ -64,7 +64,10 @@ together in the producer and consumer; public HTTP headers and internal
 configuration keys keep their existing names. Caller messages and tool content
 remain lossless, including caller-supplied product names. Login state and
 workspace filesystem layout are independent operational decisions and are not
-relocated by this change.
+relocated by this change. Execution-contract hashes include the tool protocol
+generation, so a completed native conversation saved with the old MCP names is
+not resumed under the renamed catalog. Historical user content is replayed into
+a fresh process rather than rewriting stored conversation data.
 
 ## Client tool allowance
 
