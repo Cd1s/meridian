@@ -26,7 +26,7 @@ it("the live proof rejects lost instructions, changed results/identities and ove
     ["Write the report and verify it.", "Discard the request."],
     ["written", "different result"],
     ['"id":"seed"', '"id":"other"'],
-    ["omitted by Meridian", "missing disclosure"],
+    ["content omitted", "missing disclosure"],
   ] as const) {
     expect(rendered).toContain(before)
     expect(() => inspectBudgetedHistory(rendered.replaceAll(before, after), parsed)).toThrow()
