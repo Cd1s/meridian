@@ -29,6 +29,57 @@ export function agFinalTextFrame(value: unknown): { delta?: string; snapshot?: s
   }
 }
 
+/** Step indices fence deferred output from completed inputs, including native recovery. */
+export class AgTextCursor {
+  after = -1
+  committedThrough = -1
+  inputStep?: number
+  private observedThrough = -1
+  private requireIndex = false
+  private awaitingInput = false
+  begin(marker?: number): void {
+    this.after = Math.max(marker ?? -1, this.committedThrough)
+    this.observedThrough = this.after
+    this.inputStep = undefined
+    this.requireIndex ||= marker !== undefined
+    this.awaitingInput = this.requireIndex
+  }
+  nextPhase(marker?: number): void {
+    this.after = Math.max(this.after, marker ?? -1, this.observedThrough, this.committedThrough)
+    this.observedThrough = this.after
+    this.requireIndex ||= marker !== undefined
+  }
+  commit(recoveredStep?: number): void {
+    this.committedThrough = Math.max(this.committedThrough, this.observedThrough, recoveredStep ?? -1)
+    this.after = Math.max(this.after, this.committedThrough)
+    this.requireIndex ||= recoveredStep !== undefined
+  }
+  observe(value: unknown, conversationId?: string): { textAllowed: boolean; stale: boolean; stepIndex?: number } {
+    const event = record(value) ?? {}, update = record(event.step_update)
+    for (const cid of [event.conversation_id, update?.conversation_id, record(event.result)?.conversation_id]) {
+      if (typeof cid === 'string' && conversationId && cid !== conversationId) return { textAllowed: false, stale: true }
+    }
+    const index = update?.step_index
+    if (index !== undefined) {
+      if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0) return { textAllowed: false, stale: true }
+      if (index <= this.after) return { textAllowed: false, stale: true, stepIndex: index }
+      this.requireIndex = true
+      if (update?.step_type === 'user_input') {
+        this.inputStep = index
+        this.after = index
+        this.awaitingInput = false
+        this.observedThrough = Math.max(this.observedThrough, index)
+        return { textAllowed: false, stale: false, stepIndex: index }
+      }
+      if (this.awaitingInput) return { textAllowed: false, stale: true, stepIndex: index }
+      this.observedThrough = Math.max(this.observedThrough, index)
+      return { textAllowed: true, stale: false, stepIndex: index }
+    }
+    // Legacy streams without indices remain supported until a native/indexed boundary exists.
+    return { textAllowed: !this.requireIndex, stale: false }
+  }
+}
+
 export class AgFinalText {
   text = ''
   published = 0

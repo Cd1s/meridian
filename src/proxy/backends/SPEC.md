@@ -305,3 +305,43 @@ Its raw CLI event stream was not captured, so the historical missing field/order
 is not established. Tests project the independently verified 1.2.7 format,
 exercise alternative/late channels and a 40-turn compacted dense conversation;
 actual provider delivery remains the next full AU canary gate.
+
+### Completed-step text cursor (cross-turn isolation)
+
+AU d187265 recovered dense warm turn10 from native input18/response19 correctly,
+but turn11 returned the hash of previous response19 + newline + current21 +
+newline. Its native input20/final21 were correct. The original stdout was not
+captured, so the producer's exact event order/content is unproven. Retained shape
+logs do establish `step_update.conversation_id`, `step_index`, and a user_input
+marker. The old collector ignored these fields and admitted any agent-response
+text into whichever HTTP consumer was active. Synthetic deferred old deltas and
+snapshots reproduce the cross-turn leak on unchanged d187265.
+
+`AgTextCursor` captures the native record watermark at input submission and keeps
+a monotonic in-memory completed-step cursor. Recovery immediately commits its
+selected response step and advances the native anchor's consumed response bound;
+normal completion and history ACK completion commit observed steps too. A stale
+DB observation cannot rewind that cursor. Each warm/cold input starts a new scope;
+indexed/native conversations require their new user_input marker before text is
+accepted. Only later indexed steps in the same conversation can supply visible
+text. Delayed earlier steps are discarded before queueing, including before and
+after the next marker and after final completion. Tool delivery advances past the pre-tool record/observed boundary and drops
+text already queued behind the delivered tool batch. Further text while waiting
+for client results cannot belong to the next phase and is discarded. MCP result
+acceptance advances that boundary again without requiring a new user input. Warm reuse and the client tool contract remain intact.
+
+After a native/indexed boundary exists, text without step ownership (including
+unindexed terminal response snapshots) cannot satisfy the final answer. A normal
+terminal still completes the phase, then the existing strictly current native
+record recovery supplies text if necessary; native-empty remains502. Legacy
+streams lacking indices and any native boundary retain ordinary text support.
+No prior answer is removed by text-prefix guessing. The new
+`antigravity.text_step_ignored` log is bounded to the first rejected text frame
+per phase, with step/cursor/identity and shape metadata only, never text.
+The cursor is Meridian memory, never a native database content mutation.
+
+Tests assert exact unique answers for recovered→normal, two consecutive recoveries,
+recovered→tool-use→tool-result, SSE, unindexed delayed text, stale result snapshots
+and genuinely empty next turns. These fixtures cover plausible deferred-output
+orders; full fresh AU dense multi-turn canary (at least30 turns;42 recommended)
+and exact native/client hashes remain required to establish actual provider repair.

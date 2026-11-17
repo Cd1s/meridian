@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test'
 import Database from 'libsql'
 import { createRequire } from 'node:module'
-import { mkdtemp, mkdir, rm, readFile, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, readFile, symlink, writeFile, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID, createHash } from 'node:crypto'
-import { AgFinalText, agEventShape } from '../proxy/backends/antigravityFinalText'
+import { AgFinalText, AgTextCursor, agEventShape } from '../proxy/backends/antigravityFinalText'
 import { AgNativeRecords, agNativeRecordUri, type AgNativeAnchor } from '../proxy/backends/antigravityNativeRecord'
 import { AntigravityRuntime } from '../proxy/backends/antigravityRuntime'
 import { createAntigravityServer } from '../proxy/backends/antigravity'
@@ -28,6 +28,50 @@ async function directory() {
 }
 function dbPath(home: string, cid: string) { return join(home, '.gemini', 'antigravity-cli', 'conversations', cid + '.db') }
 function anchor(prompt: string, after = -1): AgNativeAnchor { return { prompt, inputAfter: after, responseAfter: after, startedAt: Date.now(), firstInput: after < 0 } }
+
+describe('Antigravity text step cursor', () => {
+  const frame = (index: number, type = 'agent_response') => ({ event: 'step_update', step_update: { step_index: index, step_type: type } })
+  it('commits recovered steps once and ignores older frames on either side of the next input marker', () => {
+    const cursor = new AgTextCursor()
+    cursor.begin(17)
+    cursor.observe(frame(18, 'user_input'))
+    cursor.commit(19)
+    cursor.begin(17) // Native DB observation can lag the committed cursor.
+    expect(cursor.after).toBe(19)
+    expect(cursor.observe(frame(19)).textAllowed).toBe(false)
+    expect(cursor.observe(frame(21)).textAllowed).toBe(false) // Cannot assign text before this input's marker.
+    expect(cursor.observe(frame(20, 'user_input')).stale).toBe(false)
+    expect(cursor.observe(frame(19)).textAllowed).toBe(false)
+    expect(cursor.observe(frame(21)).textAllowed).toBe(true)
+    expect(cursor.observe(frame(21)).textAllowed).toBe(true)
+    cursor.commit()
+    expect(cursor.committedThrough).toBe(21)
+    cursor.begin(21)
+    expect(cursor.observe(frame(21)).textAllowed).toBe(false)
+  })
+  it('never assigns unindexed or foreign-conversation text to an indexed/recovered phase', () => {
+    const cursor = new AgTextCursor()
+    const unindexed = { step_update: { step_type: 'agent_response', text_delta: 'text' } }
+    cursor.begin()
+    expect(cursor.observe(unindexed).textAllowed).toBe(true)
+    cursor.commit(19)
+    cursor.begin(19)
+    expect(cursor.observe(unindexed).textAllowed).toBe(false)
+    expect(cursor.observe({ ...frame(21), conversation_id: 'other' }, 'current').textAllowed).toBe(false)
+    expect(cursor.observe({ event: 'result', result: { status: 'SUCCESS', conversation_id: 'other', response: 'foreign' } }, 'current').stale).toBe(true)
+    expect(cursor.observe({ event: 'result', result: { status: 'SUCCESS', conversation_id: 'current' } }, 'current').stale).toBe(false)
+    expect(cursor.observe({ step_update: { step_index: '21' } }).stale).toBe(true)
+  })
+  it('advances the tool-result phase past already observed pre-tool narration', () => {
+    const cursor = new AgTextCursor()
+    cursor.begin(9)
+    cursor.observe(frame(10, 'user_input'))
+    cursor.observe(frame(11))
+    cursor.nextPhase(10)
+    expect(cursor.observe(frame(11)).textAllowed).toBe(false)
+    expect(cursor.observe(frame(12)).textAllowed).toBe(true)
+  })
+})
 
 describe('Antigravity final response channels', () => {
   it('deduplicates complete snapshots, extends streamed prefixes, and excludes thinking', () => {
@@ -173,6 +217,95 @@ describe.skipIf(process.platform === 'win32')('Antigravity final-text recovery i
     const response = await send([{ role: 'user', content: 'SKIP_TOOLS FINAL_MULTISTEP_SNAPSHOT' }])
     expect(response.status).toBe(200)
     expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'First planner step. READY' }])
+  })
+  describe('recovered-turn cursor isolation', () => {
+    it('excludes the prior 44-byte response from the exact AU 90-byte concatenation shape', async () => {
+      const { send, runtime } = await server()
+      const oldText = 'FIRST_ONLY_' + 'X'.repeat(33), currentText = 'SECOND_ONLY_' + 'Y'.repeat(32)
+      expect(Buffer.byteLength(oldText)).toBe(44)
+      expect(Buffer.byteLength(currentText)).toBe(44)
+      expect(Buffer.byteLength(oldText + '\n' + currentText + '\n')).toBe(90)
+      const messages: AgMessage[] = [{ role: 'user', content: `SKIP_TOOLS TURN_ANSWER_${oldText} NATIVE_RECORD_ONLY NATIVE_DEFERRED_CURSOR NATIVE_DEFERRED_TAGGED_ONLY` }]
+      const first = await send(messages)
+      const prior = await first.json() as { content: AgMessage['content'] }
+      expect(prior.content).toEqual([{ type: 'text', text: oldText }])
+      messages.push({ role: 'assistant', content: prior.content }, { role: 'user', content: `SKIP_TOOLS TURN_ANSWER_${currentText} CURRENT_NEWLINE` })
+      const second = await send(messages)
+      expect(second.status).toBe(200)
+      expect((await second.json() as { content: unknown }).content).toEqual([{ type: 'text', text: currentText + '\n' }])
+      expect(runtime.reused).toBe(1)
+    })
+    for (const twice of [false, true]) {
+      it(`returns exact current text after ${twice ? 'two consecutive recoveries' : 'one recovery'}`, async () => {
+        const { send, runtime } = await server()
+        const messages: AgMessage[] = []
+        for (const [at, expected] of ['FIRST_ONLY', 'SECOND_ONLY', 'THIRD_ONLY'].entries()) {
+          const hidden = at === 0 || (twice && at === 1)
+          messages.push({ role: 'user', content: `SKIP_TOOLS TURN_ANSWER_${expected} ${hidden ? 'NATIVE_RECORD_ONLY NATIVE_DEFERRED_CURSOR' : ''}` })
+          const response = await send(messages)
+          expect(response.status).toBe(200)
+          const answer = await response.json() as { content: AgMessage['content'] }
+          expect(answer.content).toEqual([{ type: 'text', text: expected }])
+          messages.push({ role: 'assistant', content: answer.content })
+        }
+        expect(runtime.reused).toBe(2)
+      })
+    }
+    for (const mode of ['stream', 'UNSCOPED_CURRENT_TEXT', 'STALE_RESULT_SNAPSHOT']) {
+      it(`keeps exact next-turn text with ${mode}`, async () => {
+        const { send } = await server()
+        const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS TURN_ANSWER_FIRST_ONLY NATIVE_RECORD_ONLY NATIVE_DEFERRED_CURSOR' }]
+        const first = await send(messages)
+        const prior = await first.json() as { content: AgMessage['content'] }
+        expect(prior.content).toEqual([{ type: 'text', text: 'FIRST_ONLY' }])
+        messages.push({ role: 'assistant', content: prior.content }, { role: 'user', content: `SKIP_TOOLS TURN_ANSWER_SECOND_ONLY ${mode === 'stream' ? '' : mode}` })
+        const response = await send(messages, { stream: mode === 'stream' })
+        expect(response.status).toBe(200)
+        if (mode === 'stream') {
+          const text = (await response.text()).split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)) as { type: string; delta?: { type: string; text?: string } }).filter(event => event.type === 'content_block_delta' && event.delta?.type === 'text_delta').map(event => event.delta!.text).join('')
+          expect(text).toBe('SECOND_ONLY')
+        } else expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'SECOND_ONLY' }])
+      })
+    }
+    it('does not prepend a recovered answer to a later tool-use response or tool-result answer', async () => {
+      const { send, runtime, home } = await server()
+      const gate = join(home, 'deferred-tool-gate')
+      runtime.childEnv.AGY_FIXTURE_TOOL_GATE = gate
+      const tools = [{ name: 'lookup', input_schema: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } }]
+      const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS TURN_ANSWER_FIRST_ONLY NATIVE_RECORD_ONLY NATIVE_DEFERRED_CURSOR' }]
+      const first = await send(messages, { tools })
+      expect(first.status).toBe(200)
+      const answer = await first.json() as { content: AgMessage['content'] }
+      expect(answer.content).toEqual([{ type: 'text', text: 'FIRST_ONLY' }])
+      messages.push({ role: 'assistant', content: answer.content }, { role: 'user', content: 'DEFER_TOOL_TEXT lookup current value' })
+      const pendingSecond = send(messages, { tools })
+      const deadline = Date.now() + 3000
+      while (!runtime.toolOwners.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 1))
+      expect(runtime.toolOwners.size).toBe(1)
+      await writeFile(gate, '')
+      const second = await pendingSecond
+      const emitted = () => access(gate + '.emitted').then(() => true, () => false)
+      while (!(await emitted()) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 1))
+      await access(gate + '.emitted')
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(second.status).toBe(200)
+      const call = await second.json() as { stop_reason: string; content: Array<{ type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }> }
+      expect(call.stop_reason).toBe('tool_use')
+      expect(call.content).toEqual([{ type: 'tool_use', id: call.content[0]!.id, name: 'lookup', input: { key: 'probe0' } }])
+      messages.push({ role: 'assistant', content: call.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.content[0]!.id, content: 'TOOL_FINAL_ONLY' }] })
+      const third = await send(messages, { tools })
+      expect(third.status).toBe(200)
+      expect((await third.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'TOOL_FINAL_ONLY' }])
+    })
+    it('keeps a genuinely empty next turn an error despite delayed prior text', async () => {
+      const { send } = await server()
+      const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS TURN_ANSWER_FIRST_ONLY NATIVE_RECORD_ONLY NATIVE_DEFERRED_CURSOR' }]
+      const first = await send(messages)
+      const answer = await first.json() as { content: AgMessage['content'] }
+      expect(answer.content).toEqual([{ type: 'text', text: 'FIRST_ONLY' }])
+      messages.push({ role: 'assistant', content: answer.content }, { role: 'user', content: 'SKIP_TOOLS NATIVE_RECORD_EMPTY' })
+      expect((await send(messages)).status).toBe(502)
+    })
   })
   it('recovers dense warm turn25 after compaction from the current native record, with no answer text in logs', async () => {
     const { send, runtime } = await server()
