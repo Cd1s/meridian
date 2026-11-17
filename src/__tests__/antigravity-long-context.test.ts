@@ -75,7 +75,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
   })
 
   it('replays sequentially, hides acknowledgements and tools, and retains both needles', async () => {
-    const { send, prompts } = await fixture()
+    const { send, prompts, runtime } = await fixture()
     const body = request(conversation())
     const response = await send(body)
     expect(response.status).toBe(200)
@@ -83,7 +83,9 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     expect(result.content).toEqual([{ type: 'text', text: 'NEEDLE_HEAD_742 NEEDLE_TAIL_963' }])
     const steps = await prompts()
     expect(steps.flatMap(decode).map(message => ({ ...message, content: blocks(message) }))).toEqual(body.messages.map(message => ({ ...message, content: blocks(message) })))
-    expect(result.usage.output_tokens).toBeGreaterThan(10)
+    expect(result.usage.output_tokens).toBe(10)
+    expect(runtime.requests[0]!.inputTokens).toBe(120 + (steps.length - 1) * 100)
+    expect(runtime.requests[0]!.outputTokens).toBe(10 + steps.length - 1)
   })
 
   it('replays structured output without imposing the schema on ACKs', async () => {
@@ -151,6 +153,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
 
   it('retires warm context at the token cap and uses existing trimming', async () => {
     process.env.MERIDIAN_AGY_MAX_CONTEXT_TOKENS = '8000'
+    process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = '1'
     process.env.MERIDIAN_AGY_HISTORY_STEP_BYTES = '18000'
     const { runtime, send, prompts } = await fixture()
     const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS first task' }]
@@ -163,6 +166,104 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     }
     expect(runtime.reused).toBeLessThan(6)
     expect((await prompts()).some(prompt => prompt.includes('omitted'))).toBe(true)
+  })
+
+  it('keeps compacted conversations warm on subsequent small turns', async () => {
+    process.env.MERIDIAN_AGY_MAX_CONTEXT_TOKENS = '8000'
+    process.env.MERIDIAN_AGY_HISTORY_STEP_BYTES = '18000'
+    process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = '1'
+    const { send, runtime } = await fixture()
+    const messages = conversation()
+    messages[messages.length - 1] = { role: 'user', content: 'SKIP_TOOLS next' }
+    const first = await send(request(messages))
+    expect(first.status).toBe(200)
+    const result = await first.json() as { content: AgMessage['content'] }
+    expect([...runtime.runs.values()][0]!.compacted).toBe(true)
+    messages.push({ role: 'assistant', content: result.content }, { role: 'user', content: 'SKIP_TOOLS follow up' })
+    expect((await send(request(messages))).status).toBe(200)
+    expect(runtime.reused).toBe(1)
+  })
+
+  it('honors whole-turn trimming opt-in when the context cap is reached', async () => {
+    delete process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS
+    process.env.MERIDIAN_AGY_MAX_CONTEXT_TOKENS = '8000'
+    process.env.MERIDIAN_AGY_HISTORY_STEP_BYTES = '18000'
+    const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS task' }]
+    for (let at = 0; at < 200; at++) messages.push(
+      { role: 'assistant', content: [{ type: 'tool_use', id: `short_${at}`, name: 'lookup', input: { key: 'k' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: `short_${at}`, content: 'short result' }] },
+    )
+    messages.push({ role: 'user', content: 'SKIP_TOOLS next' })
+    const { send } = await fixture()
+    const response = await send(request(messages))
+    expect(response.status).toBe(400)
+    expect(JSON.stringify(await response.json())).toContain('prompt is too long')
+  })
+
+  it('counts images as attachments for both warm turns and pending tool results', async () => {
+    const png = Buffer.concat([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'), Buffer.alloc(2_500_000)]).toString('base64')
+    const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: png } }
+    const { send, runtime, prompts } = await fixture()
+    const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS initial' }]
+    const first = await send(request(messages))
+    const initial = await first.json() as { content: AgMessage['content'] }
+    messages.push({ role: 'assistant', content: initial.content }, { role: 'user', content: [{ type: 'text', text: 'SKIP_TOOLS screenshot' }, image] })
+    expect((await send(request(messages))).status).toBe(200)
+    expect(runtime.reused).toBe(1)
+    const pendingMessages: AgMessage[] = [{ role: 'user', content: 'look up' }]
+    const pending = await send(request(pendingMessages))
+    const calls = await pending.json() as { content: Array<{ type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }> }
+    const steps = (await prompts()).length
+    pendingMessages.push({ role: 'assistant', content: calls.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: calls.content[0]!.id, content: [{ type: 'text', text: 'screenshot result' }, image] }] })
+    expect((await send(request(pendingMessages))).status).toBe(200)
+    expect((await prompts()).length).toBe(steps)
+  })
+
+  it('preserves legacy large tool results and warm histories when disabled', async () => {
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = '0'
+    const { send, runtime } = await fixture()
+    const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS first' }, { role: 'assistant', content: 'x'.repeat(2_000_000) }, { role: 'user', content: 'SKIP_TOOLS next' }]
+    const first = await send(request(messages))
+    expect(first.status).toBe(200)
+    const result = await first.json() as { content: AgMessage['content'] }
+    messages.push({ role: 'assistant', content: result.content }, { role: 'user', content: 'SKIP_TOOLS warm' })
+    expect((await send(request(messages))).status).toBe(200)
+    expect(runtime.reused).toBe(1)
+    const tools: AgMessage[] = [{ role: 'user', content: 'lookup legacy' }]
+    const pending = await send(request(tools))
+    const calls = await pending.json() as { content: Array<{ type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }> }
+    tools.push({ role: 'assistant', content: calls.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: calls.content[0]!.id, content: 'z'.repeat(250_000) }] })
+    expect((await send(request(tools))).status).toBe(200)
+  })
+
+  it('does not save a retired over-cap native snapshot', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'agy-longctx-state-'))
+    cleanup.push(() => rm(directory, { recursive: true, force: true }))
+    const { runtime, send } = await fixture({ statePath: join(directory, 'state.db') })
+    const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS first' }]
+    const first = await send(request(messages))
+    const result = await first.json() as { content: AgMessage['content'] }
+    const old = [...runtime.runs.values()][0]!
+    old.conversationId = 'b95ea3ee-25c8-40ef-ac60-ac77d23275ed'
+    old.contextTokens = 480_000
+    messages.push({ role: 'assistant', content: result.content }, { role: 'user', content: 'SKIP_TOOLS next' })
+    expect((await send(request(messages))).status).toBe(200)
+    expect(runtime.state!.list('native-sessions')).toHaveLength(0)
+  })
+
+  it('validates fenced JSON after narration and a client tool during chunked replay', async () => {
+    const { send } = await fixture()
+    const messages = conversation()
+    messages[messages.length - 1] = { role: 'user', content: 'STRUCTURED_PROSE FENCED_JSON lookup' }
+    const body = { ...request(messages), output_config: { format: { type: 'json_schema', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] } } } }
+    const first = await send(body)
+    expect(first.status).toBe(200)
+    const calls = await first.json() as { content: Array<{ type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }> }
+    messages.push({ role: 'assistant', content: calls.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: calls.content[0]!.id, content: 'structured result' }] })
+    const second = await send({ ...body, messages })
+    expect(second.status).toBe(200)
+    const result = await second.json() as { content: Array<{ text: string }> }
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ answer: 'structured result' })
   })
 
   it('rejects oversized warm delta and tool result instead of silently truncating', async () => {

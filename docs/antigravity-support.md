@@ -118,18 +118,23 @@ All tool execution is denied during loading. These fork settings control replay:
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `MERIDIAN_AGY_CHUNKED_HISTORY` | `1` | Set `0` to restore legacy single-prompt trimming. |
+| `MERIDIAN_AGY_CHUNKED_HISTORY` | `1` | Set `0` to restore legacy cold/warm trimming and tool-result delivery, disabling new context/step guards. |
 | `MERIDIAN_AGY_HISTORY_STEP_BYTES` | `180000` | Rendered UTF-8 bytes per cold step, 1–190000, also bounded by `MERIDIAN_AGY_MAX_PROMPT_BYTES`. |
 | `MERIDIAN_AGY_HISTORY_MAX_STEPS` | `12` | Maximum cold steps including the final request, 1–64. |
 | `MERIDIAN_AGY_MAX_CONTEXT_TOKENS` | `480000` | Estimated live-context safety cap including output reserve, 1–512000. |
 
 Planning preserves order and tool pairing. A single indivisible message/pair that
 cannot fit, or a replay exceeding the step count, fails before model execution;
-split the content or compact the conversation. Cold loading adds model calls and
+split the content or compact the conversation. Indivisible-unit packing can
+reach the step-count cap before the token cap; this still fails explicitly.
+Cold loading adds model calls and
 latency. Context accounting estimates UTF-8 bytes/4 plus image allowance, tracks
 supplied input/output, and considers reported usage; hidden CLI context and the
 exact provider tokenizer remain unavailable. On reaching the safety cap the
-bridge starts fresh using the existing trimming fallback. Keep the production
+bridge starts fresh using the existing trimming fallback, honoring whole-turn
+trimming opt-in. The compacted process can then continue warm using its retained
+context ledger. ACK usage is counted in telemetry; client responses report only
+the final phase to avoid adding repeated context inputs to client context meters. Keep the production
 shim's trimming fallback enabled too.
 
 Legacy trimming shortens the oldest large tool results, arguments and text first

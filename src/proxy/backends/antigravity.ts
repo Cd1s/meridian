@@ -50,13 +50,15 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const claimed = new Set([...results.map(result => result.tool_use_id), ...(previous?.delivered.map(call => call.id) ?? [])])
     for (const id of claimed) runtime.recoveringTools.add(id)
     try {
+      const compactContext = previous ? runtime.contextExceeded(body, previous) : false
       if (previous) {
+        if (compactContext) previous.discardSnapshot()
         previous.busy = true
         previous.abort(new AntigravityError("Pending continuation changed; replaying completed tool history", 409), "retired")
         await previous.settled
       }
       if (signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
-      const run = await runtime.create(body, signal)
+      const run = await runtime.create(body, signal, compactContext)
       if (previous) run.continuation = reason
       runtime.forgetInterruptedContinuation(body)
       for (const result of results) runtime.rememberConsumedTool(result.tool_use_id)
@@ -249,7 +251,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
             try { await runtime.recordInterruptedAfterJoin(body, run.settled) }
             catch (error) { console.error("[antigravity] Interrupted-continuation recovery could not be recorded:", String(error)) }
           }
-          const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, cacheReadTokens: usage.cache_read_input_tokens }
+          const replayUsage = run.takeReplayUsage()
+          const metric = { conversationId: run.conversationId ?? run.id, continuation: run.continuation, requestId: id, timestamp: started, durationMs: Date.now() - started, model: body.model, status, error: failure, inputTokens: usage.input_tokens + replayUsage.input, outputTokens: usage.output_tokens + replayUsage.output, cacheReadTokens: usage.cache_read_input_tokens + replayUsage.cache }
           runtime.record(metric)
           await runtime.plugins.observe("onTelemetry", metric, request.signal)
         } finally {
