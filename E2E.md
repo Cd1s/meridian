@@ -9522,3 +9522,18 @@ may return502; intermediate ACK text is advisory. Preserve sanitized receipts
 and record the package/source SHA. Original6a35fe29 stdout was not captured;
 do not claim its historical missing event/field is established. Full canary
 success is required before conditional rollout, retaining shim fallback.
+
+
+For the cold subscriber recovery fork, also run dense16×8000Han tool-pair replay
+with a complete sanitized event/response-hash trace. Record CLI input submissions,
+SUCCESS/ERROR and native progress; num_turns can lag and is not a dedupe key.
+Check `antigravity.cli_drain` queue/event-loop metrics to distinguish parent
+starvation from an upstream subscription failure. A priming subscriber error may
+produce exactly one fresh-CID retry, after the old process joins, using remaining
+HISTORY_MAX_STEPS and the same absolute deadline. Verify no chunk repeats within
+its CID, final head/tail exact, one HTTP/message identity, and total submissions
+within20recommended steps. Record both attempts' cost and complete cold latency;
+ensure the client/shim timeout covers it. Repeated errors, exhausted cap,
+answering/tool-phase errors and cancellation/shutdown must not create another
+attempt. Full warm/dense/cold/media/schema/tools/stream/cancel gates still apply,
+with rollback/restore on any failed gate and no promotion from fixture evidence.

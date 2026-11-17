@@ -37,11 +37,11 @@ export class AgTextCursor {
   private observedThrough = -1
   private requireIndex = false
   private awaitingInput = false
-  begin(marker?: number): void {
+  begin(marker?: number, requireIndex = false): void {
     this.after = Math.max(marker ?? -1, this.committedThrough)
     this.observedThrough = this.after
     this.inputStep = undefined
-    this.requireIndex ||= marker !== undefined
+    this.requireIndex ||= marker !== undefined || requireIndex
     this.awaitingInput = this.requireIndex
   }
   nextPhase(marker?: number): void {
