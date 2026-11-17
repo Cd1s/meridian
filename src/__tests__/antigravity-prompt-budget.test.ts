@@ -29,7 +29,7 @@ describe("Antigravity prompt byte limit", () => {
   it("leaves a prompt that fits byte-for-byte unchanged", () => {
     const request = session(3, 1000)
     expect(renderAgPromptWithinLimit(request, [], "\nsuffix")).toBe(renderAgPrompt(request, []) + "\nsuffix")
-    expect(renderAgPromptWithinLimit(request, [])).not.toContain("omitted by Meridian")
+    expect(renderAgPromptWithinLimit(request, [])).not.toContain("content omitted")
   })
 
   it("shrinks the oldest big tool results first, keeps the newest intact and says so before the history", () => {
@@ -38,12 +38,12 @@ describe("Antigravity prompt byte limit", () => {
     const prompt = renderAgPromptWithinLimit(request, [])
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
     const history = historyOf(prompt)
-    expect(resultAt(history, 0)).toMatch(/^RESULT0-[^]*\[\.\.\. \d+ chars omitted by Meridian: Antigravity input limit; re-read if needed \.\.\.\][^]*-END0$/)
+    expect(resultAt(history, 0)).toMatch(/^RESULT0-[^]*\[\.\.\. \d+ chars content omitted: Antigravity input limit; re-read if needed \.\.\.\][^]*-END0$/)
     expect(resultAt(history, 11)).toBe(resultAt(request.messages as Hist, 11))
     expect(history.at(-1)!.content).toBe("Now summarize everything.")
     expect(history.map(m => Array.isArray(m.content) ? m.content[0].type : "text")).toEqual(request.messages.map(m => Array.isArray(m.content) ? m.content[0]!.type : "text"))
     expect(prompt.slice(0, prompt.indexOf("Client conversation:"))).toMatch(/omitted the middle .* Re-read anything you still need/)
-    const omitted = Array.from({ length: 12 }, (_, i) => i).filter(i => /omitted by Meridian/.test(resultAt(history, i)))
+    const omitted = Array.from({ length: 12 }, (_, i) => i).filter(i => /content omitted/.test(resultAt(history, i)))
     expect(omitted).toEqual(omitted.map((_, i) => i))
     expect(omitted.length).toBeLessThan(12)
   })
@@ -53,7 +53,7 @@ describe("Antigravity prompt byte limit", () => {
     expect(renderAgPrompt(request, []).length).toBeLessThan(AG_MAX_PROMPT_BYTES)
     const prompt = renderAgPromptWithinLimit(request, [])
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
-    expect(prompt).toContain("omitted by Meridian")
+    expect(prompt).toContain("content omitted")
   })
 
   it("takes the limit as an argument, counts the suffix and treats 0 as off", () => {
@@ -77,7 +77,7 @@ describe("Antigravity prompt byte limit", () => {
     const history = historyOf(prompt)
     expect(history.at(-1)!.content).toBe("next question")
     expect(history[1]!.content[0]).toMatchObject({ type: "tool_use", id: "c1", name: "bash" })
-    expect(history[1]!.content[0].input.command).toMatch(/omitted by Meridian/)
+    expect(history[1]!.content[0].input.command).toMatch(/content omitted/)
   })
 
   it("in a running tool loop shrinks the oldest rounds and keeps the newest round and the request verbatim", () => {
@@ -86,7 +86,7 @@ describe("Antigravity prompt byte limit", () => {
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
     const history = historyOf(prompt)
     expect(history[0]!.content).toBe("Read all parts and report.")
-    expect(resultAt(history, 0)).toMatch(/omitted by Meridian/)
+    expect(resultAt(history, 0)).toMatch(/content omitted/)
     expect(resultAt(history, 11)).toBe(resultAt(request.messages as Hist, 11))
     expect(history.at(-2)).toEqual(request.messages.at(-2) as never)
   })
@@ -96,7 +96,7 @@ describe("Antigravity prompt byte limit", () => {
     const prompt = renderAgPromptWithinLimit(request, [])
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
     const newest = resultAt(historyOf(prompt), 2)
-    expect(newest).toMatch(/^RESULT2-r{3990}[^]*omitted by Meridian[^]*r{3990}-END2$/)
+    expect(newest).toMatch(/^RESULT2-r{3990}[^]*content omitted[^]*r{3990}-END2$/)
     expect(historyOf(prompt)[0]!.content).toBe("Read all parts and report.")
   })
 
@@ -105,7 +105,7 @@ describe("Antigravity prompt byte limit", () => {
     const full = agentic(1, 300_000)
     const prompt = renderAgPromptWithinLimit({ ...full, messages: full.messages.slice(-1) }, [])
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
-    expect(historyOf(prompt)[0]!.content[0].content).toMatch(/omitted by Meridian/)
+    expect(historyOf(prompt)[0]!.content[0].content).toMatch(/content omitted/)
   })
 
   it("shrinks a huge tool result sent together with the request's text, never the text", () => {
@@ -114,7 +114,7 @@ describe("Antigravity prompt byte limit", () => {
     const prompt = renderAgPromptWithinLimit(parseAgRequest({ model: "fixture-model", messages, tools }), [])
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(AG_MAX_PROMPT_BYTES)
     const last = historyOf(prompt).at(-1)!.content
-    expect(last[0].content).toMatch(/^L{3990}[^]*omitted by Meridian[^]*L{3990}$/)
+    expect(last[0].content).toMatch(/^L{3990}[^]*content omitted[^]*L{3990}$/)
     expect(last[1]).toEqual({ type: "text", text: "Which line failed first?" })
   })
 
@@ -132,10 +132,10 @@ describe("Antigravity prompt byte limit", () => {
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(20_000)
     const shrunk = historyOf(prompt)[1]!.content[0].input
     expect(shrunk.path).toBe("a.txt")
-    expect(shrunk.edits[0].old).toMatch(/omitted by Meridian/)
+    expect(shrunk.edits[0].old).toMatch(/content omitted/)
     expect(shrunk.edits[0]).toMatchObject({ count: 2, flags: { all: true, none: null } })
     expect(shrunk.edits[1]).toBe("short")
-    expect(shrunk.meta.deep.blob).toMatch(/omitted by Meridian/)
+    expect(shrunk.meta.deep.blob).toMatch(/content omitted/)
     expect(Object.keys(shrunk)).toEqual(["path", "edits", "meta"])
   })
 
@@ -145,7 +145,7 @@ describe("Antigravity prompt byte limit", () => {
     const request = parseAgRequest({ model: "fixture-model", messages })
     const prompt = renderAgPromptWithinLimit(request, [], "", Buffer.byteLength(renderAgPrompt(request, [])) - 1500)
     const kept = String(historyOf(prompt)[2]!.content[0].content)
-    expect(kept).toMatch(/omitted by Meridian/)
+    expect(kept).toMatch(/content omitted/)
     expect(prompt.isWellFormed()).toBe(true)
     const [head, tail] = kept.split(/\n\[\.\.\. \d+ chars omitted[^\n]*\n/)
     expect(head).toMatch(/^x(😀)+$/u)
@@ -162,7 +162,7 @@ describe("Antigravity prompt byte limit", () => {
     expect(history[0]!.content[1]).toEqual(image)
     expect(history[2]!.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "x", is_error: true })
     expect(history[2]!.content[0].content[0]).toEqual(image)
-    expect(history[2]!.content[0].content[1].text).toMatch(/omitted by Meridian/)
+    expect(history[2]!.content[0].content[1].text).toMatch(/content omitted/)
   })
 
   it("does not mutate the request", () => {
@@ -192,7 +192,7 @@ for (const kind of ["string", "block"] as const) {
     expect(history[0]).toEqual(request.messages[0])
     expect(history.at(-2)).toEqual(request.messages.at(-2))
     expect(history.at(-1)).toEqual(request.messages.at(-1))
-    expect(JSON.stringify(history[1])).toContain("omitted by Meridian")
+    expect(JSON.stringify(history[1])).toContain("content omitted")
     expect(JSON.stringify(request.messages)).toBe(before)
   })
 }

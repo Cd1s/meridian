@@ -64,7 +64,20 @@ provider service*; public routes and headers are in
 [`api-contract`](../../../.agents/references/api-contract.md); feature status in
 `docs/antigravity-support.md`.
 
-## Turn deadlines
+## Outbound wording and tool names
+
+Generated instructions, omission notices and attachment notes use neutral
+wording. The agy-facing MCP server is `client`, its batch tool is
+`workspace_parallel` (prefixed to avoid a caller tool-name collision), and result
+envelopes use `client_result` and `client_followup`. The MCP initialization name
+and hook policy reasons follow the same convention. These names are updated
+together in the producer and consumer; public HTTP headers and internal
+configuration keys keep their existing names. Caller messages and tool content
+remain lossless, including caller-supplied product names. Login state and
+workspace filesystem layout are independent operational decisions and are not
+relocated by this change.
+
+## Client tool allowance
 
 The native conversation's client-tool count and MCP request replay ledger are
 bounded by `MERIDIAN_AGY_MAX_TOOL_CALLS` (default 256, integer 1–65536, captured at
@@ -74,6 +87,8 @@ from agy's model-generator invocation limit. Single and parallel calls use the
 same allowance; a batch exceeding it is rejected before any call is dispatched.
 Duplicate MCP requests replay their original result without spending another
 call. The independent 32-outstanding-tool bound and 16-call batch bound remain.
+
+## Turn deadlines
 
 `turnTimeoutMs` bounds each model and preprocessing phase independently. Delivering
 client tools pauses the phase clock; accepting a complete result batch starts a

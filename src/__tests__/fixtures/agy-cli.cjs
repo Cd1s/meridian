@@ -22,9 +22,9 @@ async function main(inputPrompt) {
     check({toolCall:{name:'view_file',args:{AbsolutePath:'/etc/passwd'}}}, 'deny')
     check({toolCall:{name:'run_command',args:{CommandLine:'id'}}}, 'deny')
     check({toolCall:{name:'call_mcp_tool',args:{ServerName:'other',ToolName:'lookup'}}}, 'deny')
-    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'unknown'}}}, 'deny')
+    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'client',ToolName:'unknown'}}}, 'deny')
     check('invalid JSON', 'deny')
-    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'lookup'}}}, 'allow')
+    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'client',ToolName:'lookup'}}}, 'allow')
   }
   if (prompt.includes('IMAGE_PROBE')) {
     const paths = JSON.parse(readFileSync('attachment-paths.json', 'utf8'))
@@ -41,7 +41,7 @@ async function main(inputPrompt) {
   if (prompt.includes('MALFORMED')) { console.log('not JSON'); return }
   if (prompt.includes('DENIED')) return emit({ event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'mcp' }] } })
   const config = JSON.parse(readFileSync('.agents/mcp_config.json', 'utf8'))
-  const url = config.mcpServers.meridian_client.serverUrl
+  const url = config.mcpServers.client.serverUrl
   let nextId = 0
   const rpc = async (method, params, retryId) => {
     const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: retryId ?? ++nextId, method, params }) })
@@ -63,7 +63,7 @@ async function main(inputPrompt) {
   }
   const longBatchLoop = prompt.match(/CLIENT_BATCH_LOOP_(\d+)/)
   if (longBatchLoop) {
-    const batch = tools.find(tool => tool.name === 'meridian_parallel')
+    const batch = tools.find(tool => tool.name === 'workspace_parallel')
     for (let at = 0; at < Number(longBatchLoop[1]); at += 16) {
       await rpc('tools/call', { name: batch.name, arguments: { calls: Array.from({ length: 16 }, (_, index) => ({ name: 'lookup', arguments: { key: String(at + index) } })) } })
     }
@@ -97,7 +97,7 @@ async function main(inputPrompt) {
   if (prompt.includes('MCP_BATCH') || prompt.includes('MCP_SESSIONS')) {
     let results
     if (prompt.includes('MCP_BATCH')) {
-      const batch = tools.find(tool => tool.name === 'meridian_parallel')
+      const batch = tools.find(tool => tool.name === 'workspace_parallel')
       let invalid = false
       try { await rpc('tools/call', { name: batch.name, arguments: { calls: [{ name: 'lookup', arguments: { key: 'a' } }, { name: 'lookup', arguments: { key: 7 } }] } }) }
       catch (error) { if (!String(error).includes('Invalid arguments')) throw error; invalid = true }
@@ -138,9 +138,9 @@ async function main(inputPrompt) {
     if (prompt.includes('LARGE_NEXT_TOOL')) await Promise.all([0, 1].map(() => rpc('tools/call', { name: tools[0].name, arguments: { key: 'x'.repeat(700000) } })))
     if (prompt.includes('NEXT_TOOL')) await rpc('tools/call', { name: tools[0].name, arguments: { key: 'next' } })
     if (prompt.includes('STEERING')) {
-      const followup = JSON.parse(results[0].content[0].text).meridian_client_followup
+      const followup = JSON.parse(results[0].content[0].text).client_followup
       answer = JSON.stringify(followup)
-    } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).meridian_client_result)).join('|')
+    } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).client_result)).join('|')
   }
   if (prompt.includes('NATIVE_SECOND')) {
     if (nativePrompts.length !== 2 || prompt.includes('NATIVE_FIRST')) throw new Error('Native continuation replayed history or spawned another process')

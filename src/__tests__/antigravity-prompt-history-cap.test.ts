@@ -65,7 +65,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
     })
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(20_000)
     expect(recordedCut).toBeGreaterThan(1)
-    expect(prompt).toContain("[Meridian gateway: the earlier part of this conversation")
+    expect(prompt).toContain("[The earlier part of this conversation")
     expect(prompt).toContain("[... original request truncated ...]")
     expect(prompt).toContain("Now summarize.")
     // Validate full tool_use/tool_result pairing via JSON.parse + parseAgRequest
@@ -117,7 +117,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
     })
     expect(cut1).toBeGreaterThan(1)
     expect(prompt1).toContain("REAL_FIRST_USER_TASK")
-    expect(prompt1).not.toContain("omitted by Meridian")
+    expect(prompt1).not.toContain("content omitted")
 
     // Re-applying previousCut without middle omission must also not inject AG_OMIT_NOTE
     const prompt2 = renderAgPromptWithinLimit(req, [], "", 20_000, {
@@ -125,7 +125,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
       previousCut: () => cut1,
     })
     expect(prompt2).toContain("REAL_FIRST_USER_TASK")
-    expect(prompt2).not.toContain("omitted by Meridian")
+    expect(prompt2).not.toContain("content omitted")
   })
 
   it("stabilizes the cut across subsequent requests and advances only when needed", () => {
@@ -266,7 +266,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
     const prompt = renderAgPromptWithinLimit(req, [], "", 30_000, { trimOldestTurns: true })
     expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(30_000)
     expect(prompt).toContain(bigNewest)
-    expect(prompt).not.toContain("omitted by Meridian")
+    expect(prompt).not.toContain("content omitted")
     parseRenderedConversation(prompt)
 
     // When newest alone + note cannot fit intact, Phase 3 shrinks newest so the request still succeeds
@@ -275,7 +275,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
     const req2 = parseAgRequest({ model: "fixture-model", max_tokens: 100, messages: messages2, tools })
     const prompt2 = renderAgPromptWithinLimit(req2, [], "", 30_000, { trimOldestTurns: true })
     expect(Buffer.byteLength(prompt2)).toBeLessThanOrEqual(30_000)
-    expect(prompt2).toContain("omitted by Meridian")
+    expect(prompt2).toContain("content omitted")
     parseRenderedConversation(prompt2)
   })
 

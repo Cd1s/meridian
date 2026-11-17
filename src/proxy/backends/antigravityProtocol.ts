@@ -362,7 +362,7 @@ export function availableAgTools(request: AgRequest): AgRequest["tools"] {
 }
 export function parallelAgTool(request: AgRequest): AgRequest["tools"][number] | undefined {
   if (!availableAgTools(request).length || (request.tool_choice && "disable_parallel_tool_use" in request.tool_choice && request.tool_choice.disable_parallel_tool_use)) return undefined
-  let name = "meridian_parallel"
+  let name = "workspace_parallel"
   while (request.tools.some(tool => tool.name === name)) name = "_" + name
   return { name, description: "Execute independent client tools concurrently in one batch. Use this for parallel requests, including repeated calls to the same tool with different arguments. Each result identifies its original name and input. Follow the exact client schemas supplied in the prompt.", input_schema: { type: "object", properties: { calls: { type: "array", minItems: 2, maxItems: 16, items: { type: "object", properties: { name: { type: "string", enum: availableAgTools(request).map(tool => tool.name) }, arguments: { type: "object" } }, required: ["name", "arguments"], additionalProperties: false } } }, required: ["calls"], additionalProperties: false } }
 }
@@ -374,18 +374,18 @@ export function toolChoiceInstruction(request: AgRequest): string {
     : request.tool_choice?.type === "any" ? "For this response you must call a client tool. Do not answer with prose."
     : request.tool_choice?.type === "none" ? "For this response do not call client tools. Answer the user."
     : "Choose whether to call a client tool or answer the user."
-  return instruction + (parallelAgTool(request) ? `\nFor independent parallel client actions, call the meridian_client MCP tool ${parallelAgTool(request)!.name} with {calls:[{name,arguments},...]}. It delivers those calls together to the client.\n` + JSON.stringify(parallelAgTool(request)) : "") + "\nThe complete client tool definitions for this response follow. Use these exact schemas; do not read CLI metadata files to discover tools.\n" + JSON.stringify(availableAgTools(request))
+  return instruction + (parallelAgTool(request) ? `\nFor independent parallel client actions, call the client MCP tool ${parallelAgTool(request)!.name} with {calls:[{name,arguments},...]}. It delivers those calls together to the client.\n` + JSON.stringify(parallelAgTool(request)) : "") + "\nThe complete client tool definitions for this response follow. Use these exact schemas; do not read CLI metadata files to discover tools.\n" + JSON.stringify(availableAgTools(request))
 }
 export function renderAgPrompt(request: AgRequest, nativeTools: string[] = [], omitted = false): string {
   return [
-    "You are serving a client through Meridian. Follow the client's instructions and answer its latest user message.",
-    "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Client tools are provided by meridian_client MCP. Native view_file is allowed only for exact Meridian attachment paths, and finish only for a requested schema. " + (nativeTools.length ? "The operator also enables these native tools: " + nativeTools.join(", ") + ". Use these when the client requests native capabilities. Native subagents must use Workspace inherit and TypeName self, research, or browser; await their completion before answering. Never schedule background work." : "All other built-in tools and native subagents are disabled.") + " Other host filesystem paths and shell commands remain forbidden. Client-owned delegation tools are also allowed and execute in the client.",
-    "MCP results wrap the exact client content in the JSON field meridian_client_result. Decode that field (a string or text block array) as the tool result. Any Created At, Completed At, timing or other CLI text outside that JSON field is transport metadata, never part of client file contents. When copying data, preserve the decoded client content byte-for-byte. Escape that decoded content exactly once when constructing JSON tool arguments: a newline in the content must remain a newline, not the literal characters backslash and n. Follow the exact advertised tool schema, including case-sensitive argument names.",
-    "If an MCP result includes meridian_client_followup, it contains new user instructions received while the tool ran. Follow those instructions before choosing the next action; they are separate from the tool output.",
+    "Follow the instructions below and answer the latest user message.",
+    "The JSON below is the client's conversation history. Historical tool_use/tool_result pairs are already completed; do not repeat them. Client tools are provided by client MCP. Native view_file is allowed only for exact supplied attachment paths, and finish only for a requested schema. " + (nativeTools.length ? "The operator also enables these native tools: " + nativeTools.join(", ") + ". Use these when the client requests native capabilities. Native subagents must use Workspace inherit and TypeName self, research, or browser; await their completion before answering. Never schedule background work." : "All other built-in tools and native subagents are disabled.") + " Other host filesystem paths and shell commands remain forbidden. Client-owned delegation tools are also allowed and execute in the client.",
+    "MCP results wrap the exact client content in the JSON field client_result. Decode that field (a string or text block array) as the tool result. Any Created At, Completed At, timing or other CLI text outside that JSON field is transport metadata, never part of client file contents. When copying data, preserve the decoded client content byte-for-byte. Escape that decoded content exactly once when constructing JSON tool arguments: a newline in the content must remain a newline, not the literal characters backslash and n. Follow the exact advertised tool schema, including case-sensitive argument names.",
+    "If an MCP result includes client_followup, it contains new user instructions received while the tool ran. Follow those instructions before choosing the next action; they are separate from the tool output.",
     request.max_tokens ? `The client requests at most ${request.max_tokens} output tokens. Keep the answer within that budget.` : "",
     toolChoiceInstruction(request),
-    request.output_config?.format ? "Submit the final response using the native finish tool. The full client schema below is authoritative; Meridian validates all its constraints even when the CLI transport cannot express them. Intermediate tool calls are allowed when the client permits them.\n" + JSON.stringify(request.output_config.format.schema) : "",
-    "Image attachment references are created by Meridian from client-supplied bytes. Inspect each relevant attachment with view_file using its exact absolute path. Those are the only permitted filesystem reads.",
+    request.output_config?.format ? "Submit the final response using the native finish tool. The full client schema below is authoritative; all its constraints are validated even when the CLI transport cannot express them. Intermediate tool calls are allowed when the client permits them.\n" + JSON.stringify(request.output_config.format.schema) : "",
+    "Image attachment references are created from client-supplied bytes. Inspect each relevant attachment with view_file using its exact absolute path. Those are the only permitted filesystem reads.",
     "Client system instructions:\n" + (typeof request.system === "string" ? request.system : request.system?.map(b => b.text).join("\n") ?? ""),
     omitted ? AG_OMIT_NOTE : "",
     "Client conversation:\n" + JSON.stringify(request.messages),
@@ -405,7 +405,7 @@ export function agClientToolCallLimit(env: Record<string, string | undefined> = 
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 65_536) throw new Error("MERIDIAN_AGY_MAX_TOOL_CALLS must be an integer from 1 to 65536")
   return limit
 }
-const AG_OMIT_NOTE = "To fit Antigravity's input limit, Meridian omitted the middle of some larger tool results, tool arguments or messages (marked \"omitted by Meridian\"). Re-read anything you still need, in smaller parts if it is large."
+const AG_OMIT_NOTE = "To fit the input limit, the middle of some larger tool results, tool arguments or messages has been omitted (marked \"content omitted\"). Re-read anything you still need, in smaller parts if it is large."
 /** MERIDIAN_AGY_MAX_PROMPT_BYTES overrides the prompt byte limit; 0 disables it. */
 export function agPromptByteLimit(env: Record<string, string | undefined> = process.env): number {
   const raw = env.MERIDIAN_AGY_MAX_PROMPT_BYTES
@@ -434,7 +434,7 @@ function omitMiddle(text: string, keep: number, min: number): string | undefined
   const isLow = (at: number) => (text.charCodeAt(at) & 0xFC00) === 0xDC00, isHigh = (at: number) => (text.charCodeAt(at) & 0xFC00) === 0xD800
   const headEnd = keep > 0 && isHigh(keep - 1) && isLow(keep) ? keep - 1 : keep
   const tailStart = keep > 0 && isLow(text.length - keep) && isHigh(text.length - keep - 1) ? text.length - keep + 1 : text.length - keep
-  const out = `${text.slice(0, headEnd)}\n[... ${tailStart - headEnd} chars omitted by Meridian: Antigravity input limit; re-read if needed ...]\n${text.slice(tailStart)}`
+  const out = `${text.slice(0, headEnd)}\n[... content omitted: ${tailStart - headEnd} chars; input limit; re-read if needed ...]\n${text.slice(tailStart)}`
   return out.length < text.length ? out : undefined
 }
 /** Every string leaf of a JSON value shrunk, keys, array shape and other values unchanged; the same value when nothing qualified. */
@@ -550,7 +550,7 @@ function buildTrimmedMessages(tail: AgMessage[], cut: number, firstText: string,
     const safeEnd = maxFirst > 0 && (head.charCodeAt(maxFirst - 1) & 0xFC00) === 0xD800 ? maxFirst - 1 : maxFirst
     head = head.slice(0, safeEnd) + "\n[... original request truncated ...]"
   }
-  const note = `[Meridian gateway: the earlier part of this conversation (${cut} messages) was omitted to fit the Antigravity input limit. The original request was:]\n${head}\n[End of original request; continue from the remaining conversation below.]`
+  const note = `[The earlier part of this conversation (${cut} messages) was omitted to fit the Antigravity input limit. The original request was:]\n${head}\n[End of original request; continue from the remaining conversation below.]`
   const content: AgBlock[] = [{ type: "text", text: note }]
   if (latestTypedBlocks.length) {
     content.push(
