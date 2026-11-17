@@ -12,8 +12,10 @@ const headers = { 'content-type': 'application/json', ...(key ? { 'x-api-key': k
 const head = randomBytes(8).toString('hex')
 const padding = size => ' archive padding;'.repeat(Math.ceil(size / 17)).slice(0, size)
 const question = tail => `The latest tail fact is ${tail}. Recall the original head fact from the whole conversation. Reply with exactly: head=<original head fact>; tail=${tail}. Do not call tools or explain.`
+const coldChunked = process.env.MERIDIAN_E2E_COLD_CHUNKED === '1'
+const coldQuestion = tail => coldChunked ? question(tail) : `The latest tail fact is ${tail}. Reply with exactly: tail=${tail}. Do not recall older facts, call tools or explain.`
 const receipts = []
-async function send(scenario, messages, tail, tools = []) {
+async function send(scenario, messages, tail, tools = [], cold = false) {
   const started = performance.now()
   const response = await fetch(endpoint, {
     method: 'POST', headers, signal: AbortSignal.timeout(30 * 60_000),
@@ -26,8 +28,8 @@ async function send(scenario, messages, tail, tools = []) {
   }
   const result = await response.json()
   const answer = result.content?.filter(block => block.type === 'text').map(block => block.text).join('') ?? ''
-  const passed = answer.replaceAll(/\s/g, '') === `head=${head};tail=${tail}`
-  const receipt = { scenario, history_bytes: Buffer.byteLength(JSON.stringify(messages)), duration_ms: Math.round(performance.now() - started), passed, usage: result.usage }
+  const passed = answer.replaceAll(/\s/g, '') === (cold && !coldChunked ? `tail=${tail}` : `head=${head};tail=${tail}`)
+  const receipt = { scenario, head_required: !cold || coldChunked, cold_policy: cold ? (coldChunked ? 'chunked' : 'trim') : undefined, history_bytes: Buffer.byteLength(JSON.stringify(messages)), duration_ms: Math.round(performance.now() - started), passed, usage: result.usage }
   receipts.push(receipt)
   console.log(JSON.stringify(receipt))
   if (!passed) throw new Error(`${scenario}: head/tail recall failed`)
@@ -46,8 +48,8 @@ try {
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: `archive_${at}`, content: padding(35_000) }] },
   )
   const tail = randomBytes(8).toString('hex')
-  cold.push({ role: 'assistant', content: 'Historical reads completed.' }, { role: 'user', content: question(tail) })
-  await send('cold-700KB', cold, tail, [{ name: 'archive_read', input_schema: { type: 'object', properties: { part: { type: 'integer' } }, required: ['part'] } }])
+  cold.push({ role: 'assistant', content: 'Historical reads completed.' }, { role: 'user', content: coldQuestion(tail) })
+  await send('cold-700KB', cold, tail, [{ name: 'archive_read', input_schema: { type: 'object', properties: { part: { type: 'integer' } }, required: ['part'] } }], true)
   if (process.env.MERIDIAN_E2E_DENSE === '1') {
     const dense = []
     for (let at = 0; at < 42; at++) {
@@ -62,8 +64,8 @@ try {
         { role: 'user', content: [{ type: 'tool_result', tool_use_id: `dense_${at}`, content: '漢'.repeat(size) }] },
       )
       const tail = randomBytes(8).toString('hex')
-      history.push({ role: 'assistant', content: 'Historical reads completed.' }, { role: 'user', content: question(tail) })
-      await send(label, history, tail, [{ name: 'archive_read', input_schema: { type: 'object', properties: { part: { type: 'integer' } }, required: ['part'] } }])
+      history.push({ role: 'assistant', content: 'Historical reads completed.' }, { role: 'user', content: coldQuestion(tail) })
+      await send(label, history, tail, [{ name: 'archive_read', input_schema: { type: 'object', properties: { part: { type: 'integer' } }, required: ['part'] } }], true)
     }
   }
 } finally {

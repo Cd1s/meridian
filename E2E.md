@@ -9330,76 +9330,40 @@ checks keyed return, a separate actual OpenCode rewind and keyless Pi with
 retained profile mappings and exact native namespaces. Its scripted upstream
 preflight does not replace the actual-model acceptance required by #1401.
 
-## Fork: Antigravity long context
+## Fork: Antigravity warm long context and stable cold trimming
 
-Run `scripts/e2e-antigravity-long-context.mjs` on the drained acc26 canary, with
-`MERIDIAN_E2E_URL` (Messages endpoint), `MERIDIAN_E2E_MODEL`, optional restricted
-`MERIDIAN_E2E_KEY_FILE`, and `MERIDIAN_E2E_RECEIPT`. It checks head/tail facts at
-each of ten warm turns (past 400 KB and 800 KB), a 700 KB+ paired-tool cold
-history, and records latency/usage without payloads or credentials. Verify
-`continuation=live` in request telemetry for warm turns, and separate priming
-telemetry cost from the final-phase HTTP context usage. This harness is only the
-long-history gate; it does not establish the full 512K-token provider window.
-Before rollout also use existing text/tools/parallel tools/image/structured
-output/effort canaries, including chunked structured output with a client tool,
-warm media, growth through the safety cap and warm continuation after trimming,
-and cold CJK/dense history near the safety cap. Confirm streamed keepalives,
-cancellation cleanup and cold latency. Preserve sanitized receipts; restore the
-drain schedule after testing and keep shim trimming as a fallback.
+Use real agy1.2.7 on drained AU acc26/2356, with isolated Meridian state and
+unchanged HOME/login/shim. Set `MERIDIAN_AGY_CHUNKED_HISTORY=0` and
+`MERIDIAN_AGY_TRIM_OLDEST_TURNS=1`. Keep step52000tokens, context480000,
+prompt190000bytes and tools16384. Warm delta/context guards and current-turn
+native recovery remain enabled independently of the cold flag.
 
-For the dense-script retry, set `MERIDIAN_AGY_MAX_STEP_TOKENS=52000` and
-`MERIDIAN_E2E_DENSE=1`. Dense new turns must fit both budgets (e.g. 24 KB of
-non-ASCII data per turn). The harness includes dense warm growth past 1 MB,
-a dense cold history below the conservative total cap, and the previous ~1.83 MB
-failure shape which must compact explicitly. Verify all head/tail values and
-that a native input rejection cannot appear as HTTP 200 with empty output.
-
-For the ACK transport retry, repeat the 16×8000-Han cold replay and inspect
-head/tail recall even if intermediate visible text is missing, reasoning-only,
-whitespace or localized. Successful terminal results confirm chunk delivery;
-final empty answers and failed/denied intermediate steps must still fail.
-
-### Long-context fork: final-text recovery after dense-history trimming
-
-For `ours/agy-prod-20261117-longctx`, real agy 1.2.7 on the AU acc26 Linux arm64
-canary is the acceptance gate; mocked tests do not establish provider delivery.
-Drain account2356 before testing and restore scheduling in finally. Preserve
-HOME/login and use isolated Meridian state. Run
-`scripts/e2e-antigravity-long-context.mjs` with `MERIDIAN_E2E_DENSE=1`,
+Run `scripts/e2e-antigravity-long-context.mjs` with `MERIDIAN_E2E_DENSE=1`,
 `MERIDIAN_E2E_URL`, `MERIDIAN_E2E_MODEL`, optional restricted
-`MERIDIAN_E2E_KEY_FILE` and `MERIDIAN_E2E_RECEIPT`.
+`MERIDIAN_E2E_KEY_FILE` and `MERIDIAN_E2E_RECEIPT`. Default harness cold checks
+require only the latest tail; set `MERIDIAN_E2E_COLD_CHUNKED=1` only when explicitly
+experimenting with chunked1 and lossless cold head/tail expectations.
 
-Require fresh warm400KB/800KB/1MB and cold700KB+ needle checks, plus at least40
-dense CJK warm turns crossing trims/reentry and dense cold replay. Assert exact
-head/tail values and final format without ACK prefixes on every turn, including
-the post-trim turn25 shape and the d187265 recovered turn10→turn11 shape.
-After every native recovery, assert the next normal/streamed answer equals only
-its current native final text, never previous+current; include consecutive
-recoveries and a following client-tool turn. Run at least30 dense turns
-(42 recommended), keeping exact per-turn head/tail/format checks. Review
-`antigravity.text_step_ignored` step/cursor diagnostics without response text.
-Exercise a multi-step attachment/native-tool turn,
-client-tool roundtrip, structured JSON, normal/parallel tools, images, effort,
-stream keepalives and explicit cancellation; measure cold latency. Inspect
-`antigravity.final_text_recovered` source/current-turn IDs and shape-only
-`antigravity.final_text_snapshot_ignored` diagnostics; mismatched per-step
-snapshots must preserve the published deltas. Only genuinely empty final text
-may return502; intermediate ACK text is advisory. Preserve sanitized receipts
-and record the package/source SHA. Original6a35fe29 stdout was not captured;
-do not claim its historical missing event/field is established. Full canary
-success is required before conditional rollout, retaining shim fallback.
+Mandatory fresh gates: warm400KB/800KB/1MB with exact head/tail each turn; at
+least30dense warm turns (42recommended), crossing context trims/reentry;
+dense cold16×8000Han tool-pair history returns200 via one trimmed input, latest
+tail correct; plain cold700KB+ returns200 via trimming, latest tail correct.
+Old head loss is expected and acceptable for cold trimming; never require it as
+a promotion gate there. Keep exact warm head/tail and native/current-client hashes
+with only documented single-LF handling, including native recovery followed by
+normal/SSE or client tools. No previous+current concatenation or ACK leakage.
 
+Run normal text, single/parallel tools, image/warm media, schema JSON, effort,
+keepalives/cancel cleanup and Sub2API JSON/SSE regressions; measure cold latency.
+Native-empty finals still error, and oversized indivisible latest content still
+returns400 rather than silent omission. Trim does not turn arbitrary upstream
+failures into guaranteed200. Restore scheduling in finally; all pass permits
+conditional rollout retaining shim fallback, any failure requires rollback/restore.
 
-For the cold subscriber recovery fork, also run dense16×8000Han tool-pair replay
-with a complete sanitized event/response-hash trace. Record CLI input submissions,
-SUCCESS/ERROR and native progress; num_turns can lag and is not a dedupe key.
-Check `antigravity.cli_drain` queue/event-loop metrics to distinguish parent
-starvation from an upstream subscription failure. A priming subscriber error may
-produce exactly one fresh-CID retry, after the old process joins, using remaining
-HISTORY_MAX_STEPS and the same absolute deadline. Verify no chunk repeats within
-its CID, final head/tail exact, one HTTP/message identity, and total submissions
-within20recommended steps. Record both attempts' cost and complete cold latency;
-ensure the client/shim timeout covers it. Repeated errors, exhausted cap,
-answering/tool-phase errors and cancellation/shutdown must not create another
-attempt. Full warm/dense/cold/media/schema/tools/stream/cancel gates still apply,
-with rollback/restore on any failed gate and no promotion from fixture evidence.
+Experimental chunking1 remains a separate nonproduction opt-in. If tested with
+an injected/actual exact subscriber ERROR during priming, assert failed owner
+joined, one fresh CID with ONE trimmed input, same HTTP identity/deadline/shared
+step cap and no full replay. Record both attempts' usage, queue/loop/stdout gaps
+and complete latency. Audit/native/tool/final errors and cancel/shutdown decline
+fallback. Current native recovery/cursor isolation and genuine-empty guard remain
+required in both modes. Fixture success does not establish provider repair.

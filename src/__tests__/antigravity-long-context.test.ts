@@ -34,6 +34,7 @@ const request = (messages: AgMessage[]) => parseAgRequest({ model: 'fixture-mode
 const decode = (prompt: string): AgMessage[] => JSON.parse(prompt.split('Client conversation:\n').at(-1)!)
 
 async function fixture(options = {}) {
+  process.env.MERIDIAN_AGY_CHUNKED_HISTORY ??= '1'
   const directory = await mkdtemp(join(tmpdir(), 'agy-longctx-test-'))
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
   const log = join(directory, 'steps.jsonl')
@@ -116,20 +117,21 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     expect(agHistoryLimits({ MERIDIAN_AGY_HISTORY_STEP_BYTES: '150000' }).stepBytes).toBe(150000)
   })
 
-  it('grows a warm history past 400KB and 800KB sending only each new turn', async () => {
+  it('grows a warm history past 1MB with cold chunking off, sending only each new turn', async () => {
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = '0'
     const { runtime, send, prompts } = await fixture()
     const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS NEEDLE_HEAD_742' }]
-    for (let at = 0; at < 10; at++) {
+    for (let at = 0; at < 12; at++) {
       if (at) messages.push({ role: 'user', content: 'SKIP_TOOLS LONGCTX_NEEDLES NEEDLE_TAIL_963 ' + 'x'.repeat(100_000) })
       const response = await send(request(messages))
       expect(response.status).toBe(200)
       const result = await response.json() as { content: AgMessage['content'] }
       messages.push({ role: 'assistant', content: result.content })
     }
-    expect(Buffer.byteLength(JSON.stringify(messages))).toBeGreaterThan(800_000)
-    expect(runtime.reused).toBe(9)
+    expect(Buffer.byteLength(JSON.stringify(messages))).toBeGreaterThan(1_000_000)
+    expect(runtime.reused).toBe(11)
     const steps = await prompts()
-    expect(steps.length).toBe(10)
+    expect(steps.length).toBe(12)
     expect(steps.every(step => Buffer.byteLength(step) <= 190_000 && decode(step).length === 1)).toBe(true)
     expect(steps.at(-1)).not.toContain('NEEDLE_HEAD_742')
   })
@@ -151,7 +153,8 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     expect(runtime.runs.size).toBe(1)
   })
 
-  it('retires warm context at the token cap and uses existing trimming', async () => {
+  it('retires warm context at the token cap and uses existing trimming with cold chunking off', async () => {
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = '0'
     process.env.MERIDIAN_AGY_MAX_CONTEXT_TOKENS = '8000'
     process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = '1'
     process.env.MERIDIAN_AGY_HISTORY_STEP_BYTES = '18000'
@@ -219,7 +222,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     expect((await prompts()).length).toBe(steps)
   })
 
-  it('preserves legacy large tool results and warm histories when disabled', async () => {
+  it('keeps warm reuse and rejects oversized tool results when cold chunking is disabled', async () => {
     process.env.MERIDIAN_AGY_CHUNKED_HISTORY = '0'
     const { send, runtime } = await fixture()
     const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS first' }, { role: 'assistant', content: 'x'.repeat(2_000_000) }, { role: 'user', content: 'SKIP_TOOLS next' }]
@@ -233,7 +236,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     const pending = await send(request(tools))
     const calls = await pending.json() as { content: Array<{ type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }> }
     tools.push({ role: 'assistant', content: calls.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: calls.content[0]!.id, content: 'z'.repeat(250_000) }] })
-    expect((await send(request(tools))).status).toBe(200)
+    expect((await send(request(tools))).status).toBe(400)
   })
 
   it('does not save a retired over-cap native snapshot', async () => {
@@ -438,7 +441,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
 
 describe('Antigravity history configuration and token safety', () => {
   it('uses bounded defaults and validates explicit flags', () => {
-    expect(agHistoryLimits({})).toEqual({ chunked: true, stepBytes: 180_000, stepTokens: 52_000, maxSteps: 12, contextTokens: 480_000 })
+    expect(agHistoryLimits({})).toEqual({ chunked: false, stepBytes: 180_000, stepTokens: 52_000, maxSteps: 12, contextTokens: 480_000 })
     expect(agHistoryLimits({ MERIDIAN_AGY_CHUNKED_HISTORY: '0' }).chunked).toBe(false)
     for (const [name, value] of [['MERIDIAN_AGY_HISTORY_STEP_BYTES', '190001'], ['MERIDIAN_AGY_HISTORY_MAX_STEPS', '0'], ['MERIDIAN_AGY_MAX_STEP_TOKENS', '64000'], ['MERIDIAN_AGY_MAX_CONTEXT_TOKENS', '512001'], ['MERIDIAN_AGY_CHUNKED_HISTORY', 'yes']]) expect(() => agHistoryLimits({ [name!]: value })).toThrow(name!)
   })

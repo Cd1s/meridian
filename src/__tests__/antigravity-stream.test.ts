@@ -95,10 +95,11 @@ function denseHistory(): AgMessage[] {
     { role: 'assistant', content: [{ type: 'tool_use', id: `old_${at}`, name: 'lookup', input: { key: String(at) } }] },
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: `old_${at}`, content: '漢'.repeat(8000) }] },
   )
-  messages.push({ role: 'assistant', content: 'done' }, { role: 'user', content: 'SKIP_TOOLS LONGCTX_NEEDLES NEEDLE_TAIL_963' })
+  messages.push({ role: 'assistant', content: 'done' }, { role: 'user', content: 'SKIP_TOOLS TRIM_TAIL_ONLY NEEDLE_TAIL_963' })
   return messages
 }
 async function fixture(maxSteps = 20, options: { reuseConversations?: boolean; persist?: boolean; maxConcurrent?: number } = {}) {
+  process.env.MERIDIAN_AGY_CHUNKED_HISTORY = '1'
   process.env.MERIDIAN_AGY_HISTORY_MAX_STEPS = String(maxSteps)
   const directory = await mkdtemp(join(tmpdir(), 'agy-subscriber-'))
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
@@ -121,7 +122,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
     runtime.childEnv.AGY_FIXTURE_HISTORY_BURST = '1'; runtime.childEnv.AGY_FIXTURE_SLOW_STDIN = '1'
     const response = await send()
     expect(response.status).toBe(200)
-    expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'NEEDLE_HEAD_742 NEEDLE_TAIL_963' }])
+    expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'NEEDLE_TAIL_963' }])
     expect(new Set((await processes()).map(row => row.cid)).size).toBe(1)
     expect(runtime.completed).toBe(1)
     expect(runtime.runs.size).toBe(0)
@@ -134,7 +135,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
     expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'READY' }])
   })
   for (const stream of [false, true]) {
-    it(`retries the AU seven-input failure once in a fresh CID within the original20-step budget, stream=${stream}`, async () => {
+    it(`trims the AU seven-input failure once in a fresh CID without replaying chunks, stream=${stream}`, async () => {
       const { runtime, directory, body, send, processes } = await fixture(20, { persist: !stream })
       runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_ONCE = join(directory, 'failed-once')
       runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_AT = '7'
@@ -148,20 +149,21 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
         if (stream) {
           const text = (await response.text()).split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)) as { type: string; delta?: { text?: string } })
           expect(text.filter(event => event.type === 'message_start')).toHaveLength(1)
-          expect(text.filter(event => event.type === 'content_block_delta').map(event => event.delta?.text ?? '').join('')).toBe('NEEDLE_HEAD_742 NEEDLE_TAIL_963')
-        } else expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'NEEDLE_HEAD_742 NEEDLE_TAIL_963' }])
+          expect(text.filter(event => event.type === 'content_block_delta').map(event => event.delta?.text ?? '').join('')).toBe('NEEDLE_TAIL_963')
+        } else expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'NEEDLE_TAIL_963' }])
         const rows = await processes(), ids = [...new Set(rows.map(row => row.cid))]
         expect(ids).toHaveLength(2)
         const plan = planAgHistory({ ...body, messages: body.messages.map(message => ({ ...message, content: blocks(message) })) }, [], '', 180000, 20, 52000)
         const hashes = plan.map(text => createHash('sha256').update(text).digest('hex'))
         expect(rows.filter(row => row.cid === ids[0]).map(row => row.hash)).toEqual(hashes.slice(0, 7))
-        expect(rows.filter(row => row.cid === ids[1]).map(row => row.hash)).toEqual(hashes)
+        expect(rows.filter(row => row.cid === ids[1])).toHaveLength(1)
+        expect(rows.filter(row => row.cid === ids[1])[0]!.history).toBe(false)
         expect(rows.length).toBeLessThanOrEqual(20)
         expect(deadlines).toHaveLength(2); expect(deadlines[1]).toBe(deadlines[0])
         if (claim) expect(claim).toHaveBeenCalledTimes(1)
         expect(runtime.totals.errors).toBe(0)
         expect(runtime.failed).toBe(1) // Physical failed attempts remain visible, not HTTP errors.
-        expect(runtime.requests[0]!.inputTokens).toBe(120 + (6 + plan.length - 1) * 100)
+        expect(runtime.requests[0]!.inputTokens).toBe(120 + 6 * 100)
       } finally { create.mockRestore(); claim?.mockRestore() }
     }, 30000)
   }
@@ -171,12 +173,12 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
     runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_AT = '7'
     const messages = body.messages.slice(0, -1)
     messages.push({ role: 'user', content: [
-      { type: 'text', text: 'SKIP_TOOLS IMAGE_PROBE LONGCTX_NEEDLES NEEDLE_TAIL_963' },
+      { type: 'text', text: 'SKIP_TOOLS IMAGE_PROBE TRIM_TAIL_ONLY NEEDLE_TAIL_963' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aG1sAAAAASUVORK5CYII=' } },
     ] })
     const response = await send({ messages })
     expect(response.status).toBe(200)
-    expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'NEEDLE_HEAD_742 NEEDLE_TAIL_963' }])
+    expect((await response.json() as { content: unknown }).content).toEqual([{ type: 'text', text: 'NEEDLE_TAIL_963' }])
     const rows = await processes(), ids = [...new Set(rows.map(row => row.cid))]
     expect(ids).toHaveLength(2)
     const oldPath = rows.find(row => row.cid === ids[0])!.workspace, newPath = rows.find(row => row.cid === ids[1])!.workspace
@@ -184,16 +186,16 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
     await expect(access(oldPath)).rejects.toThrow()
     await access(newPath)
   }, 30000)
-  for (const cap of [16, 15]) {
-    it(`enforces the shared step budget at the exact sixteen-step retry boundary, cap=${cap}`, async () => {
+  for (const cap of [9, 12]) {
+    it(`fits the one-step trimming fallback within the shared budget, cap=${cap}`, async () => {
       const { runtime, directory, send, processes } = await fixture(cap)
       runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_ONCE = join(directory, 'failed-once')
       runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_AT = '7'
       const create = spyOn(runtime, 'create')
       try {
-        expect((await send()).status).toBe(cap === 16 ? 200 : 502)
-        expect(create).toHaveBeenCalledTimes(cap === 16 ? 2 : 1)
-        expect((await processes())).toHaveLength(cap === 16 ? 16 : 7)
+        expect((await send()).status).toBe(200)
+        expect(create).toHaveBeenCalledTimes(2)
+        expect((await processes())).toHaveLength(8)
         expect(runtime.preparing).toBe(0)
       } finally { create.mockRestore() }
     }, 30000)
@@ -213,7 +215,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
     runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_ONCE = join(directory, 'failed-once')
     let competitor: Promise<number> | undefined
     const warn = spyOn(console, 'warn').mockImplementation(value => {
-      if (String(value).includes('antigravity.cold_replay_retry')) competitor = runtime.create({ ...body, tools: [], messages: [{ role: 'user', content: 'SKIP_TOOLS competitor' }] }).then(() => 0, error => error instanceof AntigravityError ? error.status : 500)
+      if (String(value).includes('antigravity.cold_replay_trim_fallback')) competitor = runtime.create({ ...body, tools: [], messages: [{ role: 'user', content: 'SKIP_TOOLS competitor' }] }).then(() => 0, error => error instanceof AntigravityError ? error.status : 500)
     })
     try {
       expect((await send()).status).toBe(200)
@@ -243,16 +245,17 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
   it('never retries twice even when the second priming subscription fails', async () => {
     const { runtime, send, processes } = await fixture()
     runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_ALWAYS = '1'
+    runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_FINAL = '1'
     expect((await send()).status).toBe(502)
     expect(new Set((await processes()).map(row => row.cid)).size).toBe(2)
   })
-  it('declines a retry before another process when its whole plan cannot fit the remaining step cap', async () => {
+  it('uses one trimmed input when a second full plan would exceed the step cap', async () => {
     const { runtime, directory, send, processes } = await fixture(12)
     runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_ONCE = join(directory, 'failed-once')
     runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_AT = '7'
-    expect((await send()).status).toBe(502)
-    expect(new Set((await processes()).map(row => row.cid)).size).toBe(1)
-    expect((await processes())).toHaveLength(7)
+    expect((await send()).status).toBe(200)
+    expect(new Set((await processes()).map(row => row.cid)).size).toBe(2)
+    expect((await processes())).toHaveLength(8)
   }, 30000)
   it('never replays an answering-step subscriber failure', async () => {
     const { runtime, send, processes } = await fixture()
@@ -264,7 +267,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
     const { runtime, send, processes } = await fixture()
     runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_ALWAYS = '1'
     const controller = new AbortController()
-    const warn = spyOn(console, 'warn').mockImplementation(value => { if (String(value).includes('antigravity.cold_replay_retry')) controller.abort() })
+    const warn = spyOn(console, 'warn').mockImplementation(value => { if (String(value).includes('antigravity.cold_replay_trim_fallback')) controller.abort() })
     try { expect((await send({}, controller.signal)).status).toBe(499) } finally { warn.mockRestore() }
     expect(new Set((await processes()).map(row => row.cid)).size).toBe(1)
   })
@@ -272,7 +275,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity cold subscriber recov
     const { runtime, app, send, processes } = await fixture()
     runtime.childEnv.AGY_FIXTURE_SUBSCRIBER_ALWAYS = '1'
     let closing: Promise<void> | undefined
-    const warn = spyOn(console, 'warn').mockImplementation(value => { if (String(value).includes('antigravity.cold_replay_retry')) closing = app.closeBackend() })
+    const warn = spyOn(console, 'warn').mockImplementation(value => { if (String(value).includes('antigravity.cold_replay_trim_fallback')) closing = app.closeBackend() })
     try { expect((await send()).status).toBe(503); await closing } finally { warn.mockRestore() }
     expect(new Set((await processes()).map(row => row.cid)).size).toBe(1)
   })
