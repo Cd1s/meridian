@@ -10,7 +10,8 @@ import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child
 import { promisify } from "node:util"
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
 import { mkdtemp, mkdir, realpath, writeFile, readFile, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { setTimeout as delay, setImmediate as nextTick } from "node:timers/promises"
+import { tmpdir, homedir } from "node:os"
 import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
@@ -21,6 +22,8 @@ import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravity
 import type { ValidateFunction } from "ajv"
 import { estimateAgTokens, estimateAgTextTokens } from './antigravityTokens'
 import { agHistoryLimits, agContextTooLarge, assertAgStep, planAgHistory, type AgHistoryLimits } from './antigravityHistory'
+import { AgFinalText, agEventShape, agFinalTextFrame } from './antigravityFinalText'
+import { AgNativeRecords, type AgNativeAnchor } from './antigravityNativeRecord'
 import { AgAttachments } from "./antigravityAttachments"
 import type { AntigravityOptions } from "../types"
 type AgToolReply = AgResult & { clientMessages?: AgMessage[] }
@@ -72,6 +75,16 @@ export class AntigravityRun {
   readonly reusable: boolean
   private structuredText?: string
   private chunkedStructuredText = ""
+  private finalText = new AgFinalText()
+  private finalResponsePending = false
+  private terminalSuccess = false
+  private nativeAnchor?: AgNativeAnchor
+  private readonly nativeRecords: AgNativeRecords
+  private eventShapes: Record<string, unknown>[] = []
+  responseId?: string
+  private loggedTextRecovery = false
+  private stopError?: Error
+  private stopOutcome?: string
   private readonly toolValidators = new Map<string, ValidateFunction>()
   private readonly outputValidator?: ValidateFunction
   private exited = false
@@ -97,8 +110,10 @@ export class AntigravityRun {
   private settledResolve!: () => void
   readonly settled = new Promise<void>(resolve => { this.settledResolve = resolve })
   constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest, private readonly restored?: AgNativeSnapshot, private readonly compactContext = false) {
+    this.nativeRecords = new AgNativeRecords(runtime.childEnv.HOME || homedir())
     this.grammars = new AgGrammars(request, this.attachmentAbort.signal)
     this.continuation = restored ? "restored" : "new"
+    this.conversationId = restored?.conversationId
     this.reusable = runtime.options.reuseConversations !== false && !request.output_config?.format && !request.stop_sequences?.length
     this.history = request.messages
     this.contract = contractKey(request)
@@ -134,10 +149,100 @@ export class AntigravityRun {
       limit = Math.max(1, Math.min(limit - 1, Math.floor(Buffer.byteLength(prompt) * tokenLimit / tokens * 0.95)))
     }
   }
+  private beginInput(prompt: string): void {
+    this.finalText = new AgFinalText()
+    this.responseId = undefined
+    this.eventShapes = []
+    this.loggedTextRecovery = false
+    this.finalResponsePending = false
+    this.terminalSuccess = false
+    const mark = this.conversationId ? this.nativeRecords.watermark(this.conversationId) : undefined
+    this.nativeAnchor = mark !== undefined ? { conversationId: this.conversationId, inputAfter: mark, responseAfter: mark, prompt, firstInput: false, startedAt: Date.now() }
+      : !this.conversationId && !this.restored && this.continuation === "new" && this.replayIndex === 0
+        ? { inputAfter: -1, responseAfter: -1, prompt, firstInput: true, startedAt: Date.now() } : undefined
+  }
+  private logTextRecovery(source: string, text: string, details: { inputStep?: number; responseStep?: number } = {}): void {
+    if (this.loggedTextRecovery) return
+    this.loggedTextRecovery = true
+    console.warn(JSON.stringify({ event: 'antigravity.final_text_recovered', entryPoint: 'messages', requestId: this.responseId, runId: this.id, conversationId: this.conversationId, continuation: this.continuation, source, ...details, bytes: Buffer.byteLength(text), events: this.eventShapes }))
+  }
+  private collectText(raw: unknown, late = false): void {
+    this.finalText.accept(raw)
+    if (this.request.output_config?.format) {
+      this.chunkedStructuredText = this.finalText.text
+      return
+    }
+    if (!late) {
+      const text = this.finalText.take()
+      if (text) {
+        if (this.finalText.channel !== 'step_update.text_delta') this.logTextRecovery(this.finalText.channel, text)
+        this.queue.push({ kind: "text", text })
+      }
+    }
+  }
+  private checkRecovery(signal?: AbortSignal): void {
+    if (this.runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
+    if (signal?.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+    if (this.stopOutcome === "failed") throw this.stopError ?? new AntigravityError("Antigravity failed", 502, "api_error")
+  }
+  finishFinalText(signal?: AbortSignal): Promise<string | undefined> {
+    const recovering = this.finishFinalTextOnce(signal)
+    const joined = recovering.then(() => {}, () => {})
+    this.runtime.settling.add(joined)
+    return recovering.finally(() => this.runtime.settling.delete(joined))
+  }
+  private checkedFinalText(text: string): string {
+    if (!this.request.output_config?.format) return text
+    let value: unknown
+    try { value = JSON.parse(text.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1')) as unknown }
+    catch { throw new AntigravityError("Antigravity recovered final JSON could not be parsed", 502, "api_error") }
+    const invalid = this.outputValidator && agSchemaError(this.outputValidator, value)
+    if (invalid) throw new AntigravityError("Recovered final JSON did not satisfy the requested schema: " + invalid, 502, "api_error")
+    return JSON.stringify(value)
+  }
+  private async finishFinalTextOnce(signal?: AbortSignal): Promise<string | undefined> {
+    if (!this.terminalSuccess) return
+    this.checkRecovery(signal)
+    // Let already buffered post-terminal snapshots drain before consulting the record.
+    await nextTick()
+    this.checkRecovery(signal)
+    if (this.finalText.conflict) throw new AntigravityError("Antigravity final response channels disagree", 502, "api_error")
+    const combined = AbortSignal.any([this.runtime.shutdownSignal, ...(signal ? [signal] : [])])
+    if (this.request.output_config?.format && this.finalText.visible) {
+      try { this.checkedFinalText(this.finalText.text) }
+      catch { this.finalText = new AgFinalText() }
+    }
+    if (!this.finalText.visible) {
+      for (const pause of [25, 25, 75, 150, 250]) {
+        try { await delay(pause, undefined, { signal: combined }) }
+        catch { this.checkRecovery(signal); throw new AntigravityError("Antigravity final response recovery cancelled", 499, "api_error") }
+        this.checkRecovery(signal)
+        if (this.finalText.visible) break
+        if (!this.nativeAnchor || !this.conversationId) break
+        const recovered = this.nativeRecords.recover(this.conversationId, this.nativeAnchor)
+        if (!recovered) continue
+        this.finalText.text += recovered.text
+        this.finalText.channel = 'native-record'
+        this.logTextRecovery('native-record', recovered.text, { inputStep: recovered.inputStep, responseStep: recovered.responseStep })
+        break
+      }
+    }
+    this.checkRecovery(signal)
+    if (this.finalText.conflict) throw new AntigravityError("Antigravity final response channels disagree", 502, "api_error")
+    if (!this.finalText.visible) {
+      console.warn(JSON.stringify({ event: 'antigravity.final_text_empty', entryPoint: 'messages', requestId: this.responseId, runId: this.id, conversationId: this.conversationId, continuation: this.continuation, anchored: !!this.nativeAnchor, events: this.eventShapes }))
+      return
+    }
+    let text = this.finalText.take()
+    if (text && this.finalText.channel !== 'native-record') this.logTextRecovery(this.finalText.channel, text)
+    if (text) text = this.checkedFinalText(text)
+    return text || undefined
+  }
   private writeStep(): void {
     const prompt = this.replaySteps[this.replayIndex]!
     if (this.loadingHistory) writeFileSync(join(this.workspace!, 'history-loading'), '', { mode: 0o600 })
     else rmSync(join(this.workspace!, 'history-loading'), { force: true })
+    this.beginInput(prompt)
     this.contextTokens += estimateAgTextTokens(prompt)
     this.child!.stdin.write(JSON.stringify({ event: "user", message: { content: prompt } }) + "\n")
     if (!this.loadingHistory && !this.reusable) this.child!.stdin.end()
@@ -222,13 +327,18 @@ export class AntigravityRun {
       lines.on("line", line => {
         if (this.stopped) return
         try {
-          if (this.terminal) throw new Error("CLI emitted data after its terminal result")
-          const event = envelope.parse(JSON.parse(line))
+          const raw: unknown = JSON.parse(line)
+          const event = envelope.parse(raw)
+          if (this.eventShapes.length >= 16) this.eventShapes.shift()
+          this.eventShapes.push(agEventShape(raw))
+          if (this.terminal) {
+            if (this.finalResponsePending && this.terminalSuccess && event.event === 'step_update' && agFinalTextFrame(raw)) { this.collectText(raw, true); return }
+            throw new Error("CLI emitted data after its terminal result")
+          }
           if (event.event === "init" && event.conversation_id) this.conversationId = event.conversation_id
           const step = event.step_update
           if ((step?.step_type === "tool" || step?.step_type === "subagent") && step.tool_name && agNativeTools(this.runtime.options).includes(step.tool_name)) this.runtime.recordNative({ runId: this.id, name: step.tool_name, state: step.state ?? "unknown", timestamp: Date.now() })
-          if (!this.loadingHistory && this.replaySteps.length > 1 && this.request.output_config?.format && step?.step_type === "agent_response" && step.text_delta) this.chunkedStructuredText += step.text_delta
-          if (!this.loadingHistory && step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) this.queue.push({ kind: "text", text: step.text_delta })
+          if (!this.loadingHistory) this.collectText(raw)
           if (step?.state === "DONE" && step.usage) this.contextTokens = Math.max(this.contextTokens, step.usage.input_tokens ?? 0) + (step.usage.output_tokens ?? 0)
           if (step?.state === "DONE" && step.usage) {
             if (this.loadingHistory) {
@@ -254,17 +364,19 @@ export class AntigravityRun {
               return
             }
             this.terminal = true
-            if (event.result.status !== "SUCCESS" || event.result.denied_actions?.length) {
+            if (event.result.status !== "SUCCESS" || event.result.error || event.result.denied_actions?.length) {
               this.abort(classifyAgFailure(event.result.error || "Antigravity denied an action; client-owned tool policy or account permission prevented completion"))
             } else if (this.pending.size) this.abort(new AntigravityError("Antigravity ended with unresolved client tools", 502, "api_error"))
             // Success is committed only after a clean process exit, not merely a result line.
             else if (this.request.output_config?.format) {
-              const output = this.replaySteps.length > 1 ? JSON.parse(this.chunkedStructuredText.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1')) as unknown : event.result.structured_output
-              if (output === undefined) throw new Error("CLI omitted required structured_output")
-              const invalid = this.outputValidator && agSchemaError(this.outputValidator, output)
-              if (invalid) throw new Error("CLI structured_output did not satisfy the requested schema: " + invalid)
-              this.structuredText = JSON.stringify(output)
+              const output = this.replaySteps.length > 1 && this.chunkedStructuredText.trim() ? JSON.parse(this.chunkedStructuredText.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/, '$1')) as unknown : event.result.structured_output
+              if (output !== undefined) {
+                const invalid = this.outputValidator && agSchemaError(this.outputValidator, output)
+                if (invalid) throw new Error("CLI structured_output did not satisfy the requested schema: " + invalid)
+                this.structuredText = JSON.stringify(output)
+              }
             }
+            if (!this.stopped) { this.terminalSuccess = true; this.finalResponsePending = true }
             if (!this.stopped && this.reusable) {
               this.runtime.completed++
               this.pauseModelTimer()
@@ -363,7 +475,7 @@ export class AntigravityRun {
       this.contract === contractKey(request) && historyKey(this.history) === historyKey(request.messages.slice(0, this.history.length)) &&
       request.messages.slice(this.history.length).every(message => message.role === "user")
   }
-  rememberCompleted(): void { this.completedSnapshot = true }
+  rememberCompleted(): void { this.completedSnapshot = true; this.finalResponsePending = false }
   discardSnapshot(): void { this.completedSnapshot = false }
   async resume(request: AgRequest, signal?: AbortSignal): Promise<void> {
     this.completedSnapshot = false
@@ -385,6 +497,7 @@ export class AntigravityRun {
       const prompt = this.runtime.historyLimits.chunked
         ? assertAgStep(renderAgPrompt({ ...request, messages: delta }, agNativeTools(this.runtime.options)) + this.promptSuffix, agPromptByteLimit(), this.runtime.historyLimits.stepTokens)
         : this.prompt({ ...request, messages: delta })
+      this.beginInput(prompt)
       this.contextTokens += estimateAgTextTokens(prompt)
       this.child!.stdin.write(JSON.stringify({ event: "user", message: { content: prompt } }) + "\n")
       this.runtime.reused++
@@ -397,6 +510,7 @@ export class AntigravityRun {
     this.pauseModelTimer()
     this.delivered = calls
     this.chunkedStructuredText = ""
+    this.finalText = new AgFinalText()
     this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; completed history can be replayed", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
     this.pendingTimer.unref()
   }
@@ -424,6 +538,15 @@ export class AntigravityRun {
     clearTimeout(this.pendingTimer)
     this.delivered = []
     this.chunkedStructuredText = ""
+    this.finalText = new AgFinalText()
+    this.loggedTextRecovery = false
+    this.responseId = undefined
+    this.eventShapes = []
+    if (this.nativeAnchor && this.conversationId) {
+      const mark = this.nativeRecords.watermark(this.conversationId)
+      if (mark === undefined) this.nativeAnchor = undefined
+      else this.nativeAnchor = { ...this.nativeAnchor, responseAfter: Math.max(this.nativeAnchor.responseAfter, mark) }
+    }
     for (let index = 0; index < results.length; index++) {
       const result = results[index]!
       const pending = this.pending.get(result.tool_use_id)!
@@ -440,6 +563,8 @@ export class AntigravityRun {
   abort(error: Error, outcome: "failed" | "completed" | "reclaimed" | "retired" = "failed"): void {
     if (this.stopped) return
     this.stopped = true
+    this.stopError = error
+    this.stopOutcome = outcome
     this.attachmentAbort.abort()
     if (outcome === "failed") this.runtime.failed++
     else if (outcome === "reclaimed") this.runtime.reclaimed++
@@ -500,6 +625,7 @@ export class AntigravityRuntime {
   readonly idleConversationMs: number
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
+  get shutdownSignal(): AbortSignal { return this.shutdown.signal }
   readonly historyLimits: AgHistoryLimits
   contextExceeded(request: AgRequest, run?: AntigravityRun): boolean {
     if (!this.historyLimits.chunked) return false

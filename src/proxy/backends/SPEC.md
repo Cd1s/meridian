@@ -37,7 +37,8 @@ belong to [`chatgpt-backend`](../chatgpt/SPEC.md).)
   `server.ts` binds the listener. It may use the pure OpenAI translators, `auth`,
   `buildRuntime`, `headerSettings` and shared `telemetry-ui` presentation.
 - Generation runs only through the official CLI — no Google API key or model-SDK
-  fallback, and private CLI transcripts are never read.
+  fallback. The authorized current-turn final-text recovery below is the only
+  exception to the default prohibition on reading private CLI transcripts.
 - Client tools execute with the **client's** permissions via
   `MERIDIAN_AGY_ALLOW_TOOL_BRIDGE`; native browser/subagent capabilities need a
   separate explicit operator grant.
@@ -261,3 +262,39 @@ exit, cancellation and deadlines still abort the replay. Only the final
 answering phase requires response content; an empty final completion returns
 502 instead of HTTP 200 with zero usage. Normal stop-sequence and tool
 completion behavior is retained.
+
+### Final-text delivery and authorized native recovery
+
+Final response collection accepts ordinary `agent_response` deltas and complete
+`planner_response.response` / `modified_response` snapshots in step or successful
+result events. Snapshots extend or deduplicate published prefixes; conflicting
+published text fails closed. Recognized final-text updates buffered after the
+terminal result can complete the same turn. Thinking fields are never returned.
+
+This fork's operator explicitly authorized read-only recovery when a normally
+completed final answering phase exposes no visible text. `antigravityNativeRecord.ts`
+opens only that conversation UUID under the existing child HOME, using SQLite
+URI `mode=ro`, query-only mode and a short consistent transaction explicitly
+rolled back before close (including WAL visibility). It never scans sessions,
+imports history, changes native state or accesses credentials. Recovery validates
+bounded agy 1.2.7 protobuf fields against SQL status/type/metadata, trajectory,
+input prompt, send timestamp, execution ID and pre-input/pre-tool-result step
+watermarks. An older answer or pre-tool narration cannot satisfy a new phase.
+Only the latest completed final planner response without tool calls is eligible;
+reasoning and generation debug metadata are not decoded. Unsupported records
+fail closed. Intermediate ACK delivery still uses normal terminal completion,
+without reading native records.
+
+Recovery waits at most 525 ms across bounded retries, joins shutdown, and honors
+cancellation and failure. Recovered JSON goes through the original parse/schema
+validation. Both stream and native empty means final HTTP 502. Shape-only logs
+`antigravity.final_text_recovered` / `antigravity.final_text_empty` include source,
+request/run/conversation identity, byte counts and bounded event field names,
+never answer text, prompt, tool arguments, reasoning or credentials.
+
+AU 6a35fe29 established a correctly saved final answer at input10/response11 on
+dense warm turn25 after trimming, while the bridge returned empty-final502.
+Its raw CLI event stream was not captured, so the historical missing field/order
+is not established. Tests project the independently verified 1.2.7 format,
+exercise alternative/late channels and a 40-turn compacted dense conversation;
+actual provider delivery remains the next full AU canary gate.
