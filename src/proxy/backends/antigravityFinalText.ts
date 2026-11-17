@@ -33,19 +33,19 @@ export class AgFinalText {
   text = ''
   published = 0
   channel = 'none'
-  conflict = false
+  ignoredSnapshots = 0
   get visible(): boolean { return this.text.trim().length > 0 }
   accept(value: unknown): void {
     const frame = agFinalTextFrame(value)
     if (!frame) return
-    this.channel = frame.channel
     if (frame.snapshot !== undefined) {
       if (frame.snapshot.startsWith(this.text)) this.text = frame.snapshot
       else if (!this.text.startsWith(frame.snapshot)) {
         if (this.published === 0) this.text = frame.snapshot
-        else this.conflict = true
+        else { this.ignoredSnapshots++; return }
       }
     } else if (frame.delta) this.text += frame.delta
+    this.channel = frame.channel
   }
   take(): string {
     const text = this.text.slice(this.published)

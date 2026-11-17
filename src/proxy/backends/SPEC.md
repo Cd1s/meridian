@@ -269,8 +269,10 @@ completion behavior is retained.
 
 Final response collection accepts ordinary `agent_response` deltas and complete
 `planner_response.response` / `modified_response` snapshots in step or successful
-result events. Snapshots extend or deduplicate published prefixes; conflicting
-published text fails closed. Recognized final-text updates buffered after the
+result events. Snapshots extend or deduplicate published prefixes. A non-prefix snapshot
+after publication is advisory and ignored, with a shape-only log: planner
+snapshots can describe separate steps within one phase, whereas the published
+delta text remains authoritative. Recognized final-text updates buffered after the
 terminal result can complete the same turn. Thinking fields are never returned.
 
 This fork's operator explicitly authorized read-only recovery when a normally
@@ -278,13 +280,16 @@ completed final answering phase exposes no visible text. `antigravityNativeRecor
 opens only that conversation UUID under the existing child HOME, using SQLite
 URI `mode=ro`, query-only mode and a short consistent transaction explicitly
 rolled back before close (including WAL visibility). It never scans sessions,
-imports history, changes native state or accesses credentials. Recovery validates
+imports history, writes database content or accesses credentials. SQLite may create empty
+WAL coordination sidecars while opening a live database read-only. Recovery validates
 bounded agy 1.2.7 protobuf fields against SQL status/type/metadata, trajectory,
 input prompt, send timestamp, execution ID and pre-input/pre-tool-result step
 watermarks. An older answer or pre-tool narration cannot satisfy a new phase.
 Only the latest completed final planner response without tool calls is eligible;
 reasoning and generation debug metadata are not decoded. Unsupported records
-fail closed. Intermediate ACK delivery still uses normal terminal completion,
+fail closed. Executor/gen debug metadata and planner stop-reason fields are not
+used: clean completion is gated by the official CLI terminal SUCCESS with no
+error or denied actions, and native status/error checks supplement that gate. Intermediate ACK delivery still uses normal terminal completion,
 without reading native records.
 
 Recovery waits at most 525 ms across bounded retries, joins shutdown, and honors
@@ -293,6 +298,8 @@ validation. Both stream and native empty means final HTTP 502. Shape-only logs
 `antigravity.final_text_recovered` / `antigravity.final_text_empty` include source,
 request/run/conversation identity, byte counts and bounded event field names,
 never answer text, prompt, tool arguments, reasoning or credentials.
+`antigravity.final_text_snapshot_ignored` records the same bounded event shapes
+when a per-step snapshot cannot extend published text.
 
 AU 6a35fe29 established a correctly saved final answer at input10/response11 on
 dense warm turn25 after trimming, while the bridge returned empty-final502.
