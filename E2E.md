@@ -9506,7 +9506,13 @@ HOME/login and use isolated Meridian state. Run
 Require fresh warm400KB/800KB/1MB and cold700KB+ needle checks, plus at least40
 dense CJK warm turns crossing trims/reentry and dense cold replay. Assert exact
 head/tail values and final format without ACK prefixes on every turn, including
-the post-trim turn25 shape. Exercise a multi-step attachment/native-tool turn,
+the post-trim turn25 shape and the d187265 recovered turn10→turn11 shape.
+After every native recovery, assert the next normal/streamed answer equals only
+its current native final text, never previous+current; include consecutive
+recoveries and a following client-tool turn. Run at least30 dense turns
+(42 recommended), keeping exact per-turn head/tail/format checks. Review
+`antigravity.text_step_ignored` step/cursor diagnostics without response text.
+Exercise a multi-step attachment/native-tool turn,
 client-tool roundtrip, structured JSON, normal/parallel tools, images, effort,
 stream keepalives and explicit cancellation; measure cold latency. Inspect
 `antigravity.final_text_recovered` source/current-turn IDs and shape-only

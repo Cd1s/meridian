@@ -140,7 +140,10 @@ It does not record external tool outcomes.
 In-flight processes never enter that durable session cache. The fork's explicitly
 authorized final-text recovery may read only the current completed agy turn,
 never native history for replay or credentials; see the backend spec.
-`antigravityFinalText.ts` collects deltas and final snapshots, and
+`antigravityFinalText.ts` collects deltas and final snapshots and fences them
+with a monotonic completed-step cursor plus each submitted input marker. Native
+recovery commits the consumed response step; later turns cannot admit earlier
+indexed text or unowned text. MCP result phases advance the same boundary, and
 `antigravityNativeRecord.ts` validates bounded read-only 1.2.7 SQLite/protobuf
 records against input/phase watermarks, execution and conversation identity.
 Recovery joins cancellation/shutdown and retains JSON validation and the

@@ -22,7 +22,7 @@ import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravity
 import type { ValidateFunction } from "ajv"
 import { estimateAgTokens, estimateAgTextTokens } from './antigravityTokens'
 import { agHistoryLimits, agContextTooLarge, assertAgStep, planAgHistory, type AgHistoryLimits } from './antigravityHistory'
-import { AgFinalText, agEventShape, agFinalTextFrame } from './antigravityFinalText'
+import { AgFinalText, AgTextCursor, agEventShape, agFinalTextFrame } from './antigravityFinalText'
 import { AgNativeRecords, type AgNativeAnchor } from './antigravityNativeRecord'
 import { AgAttachments } from "./antigravityAttachments"
 import type { AntigravityOptions } from "../types"
@@ -76,6 +76,8 @@ export class AntigravityRun {
   private structuredText?: string
   private chunkedStructuredText = ""
   private finalText = new AgFinalText()
+  private readonly textCursor = new AgTextCursor()
+  private loggedIgnoredText = false
   private finalResponsePending = false
   private terminalSuccess = false
   private nativeAnchor?: AgNativeAnchor
@@ -151,13 +153,15 @@ export class AntigravityRun {
   }
   private beginInput(prompt: string): void {
     this.finalText = new AgFinalText()
+    this.loggedIgnoredText = false
     this.responseId = undefined
     this.eventShapes = []
     this.loggedTextRecovery = false
     this.finalResponsePending = false
     this.terminalSuccess = false
     const mark = this.conversationId ? this.nativeRecords.watermark(this.conversationId) : undefined
-    this.nativeAnchor = mark !== undefined ? { conversationId: this.conversationId, inputAfter: mark, responseAfter: mark, prompt, firstInput: false, startedAt: Date.now() }
+    this.textCursor.begin(mark)
+    this.nativeAnchor = mark !== undefined ? { conversationId: this.conversationId, inputAfter: this.textCursor.after, responseAfter: this.textCursor.after, prompt, firstInput: false, startedAt: Date.now() }
       : !this.conversationId && !this.restored && this.continuation === "new" && this.replayIndex === 0
         ? { inputAfter: -1, responseAfter: -1, prompt, firstInput: true, startedAt: Date.now() } : undefined
   }
@@ -222,6 +226,8 @@ export class AntigravityRun {
         if (!this.nativeAnchor || !this.conversationId) break
         const recovered = this.nativeRecords.recover(this.conversationId, this.nativeAnchor)
         if (!recovered) continue
+        this.textCursor.commit(recovered.responseStep)
+        this.nativeAnchor = { ...this.nativeAnchor, responseAfter: this.textCursor.committedThrough }
         this.finalText.text += recovered.text
         this.finalText.channel = 'native-record'
         this.logTextRecovery('native-record', recovered.text, { inputStep: recovered.inputStep, responseStep: recovered.responseStep })
@@ -331,14 +337,23 @@ export class AntigravityRun {
           const event = envelope.parse(raw)
           if (this.eventShapes.length >= 16) this.eventShapes.shift()
           this.eventShapes.push(agEventShape(raw))
+          if (event.event === "init" && event.conversation_id) this.conversationId = event.conversation_id
+          const scope = this.textCursor.observe(raw, this.nativeAnchor?.conversationId ?? this.conversationId)
+          const textFrame = agFinalTextFrame(raw)
+          if (scope.stale || (textFrame && (!scope.textAllowed || this.delivered.length > 0))) {
+            if (textFrame && !this.loggedIgnoredText) {
+              this.loggedIgnoredText = true
+              console.warn(JSON.stringify({ event: 'antigravity.text_step_ignored', requestId: this.responseId, runId: this.id, conversationId: this.conversationId, stepIndex: scope.stepIndex, after: this.textCursor.after, inputStep: this.textCursor.inputStep, events: this.eventShapes }))
+            }
+            if (scope.stale || event.event === 'step_update') return
+          }
           if (this.terminal) {
             if (this.finalResponsePending && this.terminalSuccess && event.event === 'step_update' && agFinalTextFrame(raw)) { this.collectText(raw, true); return }
             throw new Error("CLI emitted data after its terminal result")
           }
-          if (event.event === "init" && event.conversation_id) this.conversationId = event.conversation_id
           const step = event.step_update
           if ((step?.step_type === "tool" || step?.step_type === "subagent") && step.tool_name && agNativeTools(this.runtime.options).includes(step.tool_name)) this.runtime.recordNative({ runId: this.id, name: step.tool_name, state: step.state ?? "unknown", timestamp: Date.now() })
-          if (!this.loadingHistory) this.collectText(raw)
+          if (!this.loadingHistory && scope.textAllowed) this.collectText(raw)
           if (step?.state === "DONE" && step.usage) this.contextTokens = Math.max(this.contextTokens, step.usage.input_tokens ?? 0) + (step.usage.output_tokens ?? 0)
           if (step?.state === "DONE" && step.usage) {
             if (this.loadingHistory) {
@@ -353,6 +368,7 @@ export class AntigravityRun {
                 this.abort(classifyAgFailure(event.result.error || "History loading step denied an action"))
                 return
               }
+              this.textCursor.commit()
               this.replayIndex++
               if (this.contextTokens + estimateAgTextTokens(this.replaySteps[this.replayIndex]!) + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
                 this.abort(new AntigravityError("prompt is too long: history loading exceeded the context token safety cap; compact the conversation"))
@@ -475,7 +491,7 @@ export class AntigravityRun {
       this.contract === contractKey(request) && historyKey(this.history) === historyKey(request.messages.slice(0, this.history.length)) &&
       request.messages.slice(this.history.length).every(message => message.role === "user")
   }
-  rememberCompleted(): void { this.completedSnapshot = true; this.finalResponsePending = false }
+  rememberCompleted(): void { this.textCursor.commit(); this.completedSnapshot = true; this.finalResponsePending = false }
   discardSnapshot(): void { this.completedSnapshot = false }
   async resume(request: AgRequest, signal?: AbortSignal): Promise<void> {
     this.completedSnapshot = false
@@ -509,6 +525,8 @@ export class AntigravityRun {
   markDelivered(calls: AgCall[]): void {
     this.pauseModelTimer()
     this.delivered = calls
+    this.textCursor.nextPhase(this.conversationId ? this.nativeRecords.watermark(this.conversationId) : undefined)
+    this.queue.discardQueuedText()
     this.chunkedStructuredText = ""
     this.finalText = new AgFinalText()
     this.pendingTimer = setTimeout(() => this.abort(new AntigravityError("Client tool result deadline expired; completed history can be replayed", 409, "invalid_request_error")), this.runtime.pendingToolTimeoutMs)
@@ -540,12 +558,14 @@ export class AntigravityRun {
     this.chunkedStructuredText = ""
     this.finalText = new AgFinalText()
     this.loggedTextRecovery = false
+    this.loggedIgnoredText = false
     this.responseId = undefined
     this.eventShapes = []
+    const marker = this.conversationId ? this.nativeRecords.watermark(this.conversationId) : undefined
+    this.textCursor.nextPhase(marker)
     if (this.nativeAnchor && this.conversationId) {
-      const mark = this.nativeRecords.watermark(this.conversationId)
-      if (mark === undefined) this.nativeAnchor = undefined
-      else this.nativeAnchor = { ...this.nativeAnchor, responseAfter: Math.max(this.nativeAnchor.responseAfter, mark) }
+      if (marker === undefined) this.nativeAnchor = undefined
+      else this.nativeAnchor = { ...this.nativeAnchor, responseAfter: Math.max(this.nativeAnchor.responseAfter, this.textCursor.after) }
     }
     for (let index = 0; index < results.length; index++) {
       const result = results[index]!

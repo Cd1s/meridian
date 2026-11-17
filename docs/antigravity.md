@@ -172,6 +172,12 @@ performs no database content writes (SQLite may create WAL sidecars). Recovered
 JSON still requires the requested schema; native-empty final answers remain
 HTTP 502. Shape-only recovery logs identify the channel without response text.
 Unmatched supplemental planner snapshots cannot replace published delta text.
+A monotonic completed-step cursor and the current input marker isolate later
+warm turns from delayed old output. Recovery commits its response step exactly
+once; unindexed text after a native/indexed boundary must be resolved through the
+current native record. This preserves warm reuse without guessing which answer
+prefixes to remove. Shape-only `antigravity.text_step_ignored` diagnostics identify
+rejected old or unowned text.
 
 Repeated MCP request IDs reuse their original result within their MCP session;
 conflicting reuse is rejected. Native children have independent MCP sessions. Each
