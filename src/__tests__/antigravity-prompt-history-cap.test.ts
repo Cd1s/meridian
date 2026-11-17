@@ -16,8 +16,11 @@ const closing: Array<() => Promise<void>> = []
 const tempDirs: string[] = []
 const savedEnv = process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES
 const savedTrimEnv = process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS
+const savedChunkEnv = process.env.MERIDIAN_AGY_CHUNKED_HISTORY
 
 afterEach(async () => {
+  if (savedChunkEnv === undefined) delete process.env.MERIDIAN_AGY_CHUNKED_HISTORY
+  else process.env.MERIDIAN_AGY_CHUNKED_HISTORY = savedChunkEnv
   if (savedEnv === undefined) delete process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES
   else process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES = savedEnv
   if (savedTrimEnv === undefined) delete process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS
@@ -167,6 +170,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
   it("handles HTTP /v1/messages with MERIDIAN_AGY_TRIM_OLDEST_TURNS=1 and isolates promptCut by full prefix hash", async () => {
     process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES = "20000"
     process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = "1"
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "0"
 
     const runtime = new AntigravityRuntime({ executable, turnTimeoutMs: 10_000, idleConversationMs: 3000, allowToolBridge: true })
     const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: "antigravity" }, runtime)
@@ -205,6 +209,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
   it("does not apply full-history trimming to a restored conversation delta even when the env flag is enabled", async () => {
     process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES = "20000"
     process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = "1"
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "0"
     const runtime = new AntigravityRuntime({ executable, allowToolBridge: true })
     closing.push(() => runtime.close())
     await runtime.initialize()
@@ -219,6 +224,7 @@ describe.skipIf(process.platform === "win32")("Antigravity prompt history cap", 
   it("supports pending tool continuation on large trimmed history without 409", async () => {
     process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES = "20000"
     process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = "1"
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "0"
 
     const runtime = new AntigravityRuntime({ executable, turnTimeoutMs: 10_000, idleConversationMs: 3000, allowToolBridge: true })
     const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: "antigravity" }, runtime)
@@ -364,6 +370,7 @@ if (process.argv.includes("--version") || process.argv.includes("/config")) {
 
     process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES = "20000"
     process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = "1"
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "0"
     const runtime = new AntigravityRuntime({ executable: wrapper, turnTimeoutMs: 10_000, idleConversationMs: 1, allowToolBridge: true })
     const server = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: "antigravity" }, runtime)
     closing.push(server.closeBackend)
@@ -542,6 +549,7 @@ if (process.argv.includes("--version") || process.argv.includes("/config")) {
 
   it("parses MERIDIAN_AGY_TRIM_OLDEST_TURNS once at config boundary rather than inside renderAgPromptWithinLimit", () => {
     process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = "1"
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "0"
     const req = parseAgRequest(manyShortTurns(70, 140))
     expect(() => renderAgPromptWithinLimit(req, [], "", 20_000)).toThrow("prompt is too long")
   })

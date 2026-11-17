@@ -70,6 +70,10 @@ unsupported. Opt-in numeric budget adaptation keeps threshold remapping for both
 suffixed and unsuffixed Gemini slugs. Without enabled numeric thinking, explicit
 model level suffixes win over effort, while unsuffixed effort selects the closest
 discovered variant. Adaptation headers appear only after an actual adaptation.
+`antigravityHistory.ts` plans bounded sequential cold-history input steps and
+keeps tool pairs together; warm turns send only new content. Its estimated
+conversation-token safety cap falls back to existing trimming in a new process
+(see the backend spec for environment settings and ACK/structured-output rules).
 `antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport.
 Its bounded interrupted-continuation fingerprints permit only exact completed-result
 replay after cancellation, a retryable failed response (401/408/429/499/5xx) or a deadline joins the old process, before any subsequent client

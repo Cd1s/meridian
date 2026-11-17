@@ -95,6 +95,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         // The old pending call never receives a result under a changed context.
         return recoverResults(body, signal, continuationResults, run)
       }
+      if (runtime.contextExceeded(body, run)) return recoverResults(body, signal, continuationResults, run)
       const followup = suffix.map(message => ({ ...message, content: blocks(message).filter(b => b.type === "text" || b.type === "image" || b.type === "document" || b.type === "audio" || b.type === "video") })).filter(message => message.content.length > 0)
       if (JSON.stringify(run.request.tool_choice) !== JSON.stringify(body.tool_choice)) {
         followup.push({ role: "user", content: [{ type: "text", text: toolChoiceInstruction(body) }] })

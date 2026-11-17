@@ -106,23 +106,41 @@ or active-resume guarantee. No automatic client-side reconciliation UI is claime
 `MERIDIAN_AGY_IDLE_CONVERSATION_MS` keeps a completed conversation's live process
 for the next turn (default: the tool timeout); a later turn replays the full history.
 `MERIDIAN_AGY_MAX_CONCURRENT` bounds concurrent CLI processes (default 4).
-agy keeps only about 192,000 bytes of one input step and silently drops the rest;
-a started or replayed conversation sends its whole history in one step, history last.
-`MERIDIAN_AGY_MAX_PROMPT_BYTES` (default 190,000) keeps that prompt under the limit by
-shortening the oldest large tool results, arguments and text first and the newest round
-last, with a note to the model to re-read what it needs. A current request that alone does
-not fit fails with 400 `prompt is too long` instead of being answered from part of it.
-Setting `MERIDIAN_AGY_TRIM_OLDEST_TURNS=1` opts into dropping the oldest whole turns
-(at assistant boundaries, preserving tool pairing, a bounded first-user note,
-and the latest typed user instruction verbatim if crossed, targeting 75% of the limit
-so cached cuts only advance when growth crosses the limit again) before shrinking the
-newest round when older-turn middle omission alone still exceeds the limit.
-Request/response/attachment buffers are also bounded; see the backend guide.
+agy has a 512000-token total context window but a much smaller per-input-step
+limit. Warm continuations send only new user content or tool results;
+`MERIDIAN_AGY_MAX_PROMPT_BYTES` (default 190000) applies to that new step,
+not the whole client history. An oversized new message/result batch fails with
+400 instead of silently losing its end.
 
-These controls do not cap the entire multi-turn task's tokens, number of tool
-rounds, or external tool execution duration. Set those in the executing client or
-tool when available. A long shell command belongs to the client's cancellation
-and timeout policy. Cancelling generation does not refund tokens already used.
+Cold replay loads completed history in sequential ACK-only steps, then sends the
+latest user message or complete assistant/result batch with the real instructions.
+All tool execution is denied during loading. These fork settings control replay:
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `MERIDIAN_AGY_CHUNKED_HISTORY` | `1` | Set `0` to restore legacy single-prompt trimming. |
+| `MERIDIAN_AGY_HISTORY_STEP_BYTES` | `180000` | Rendered UTF-8 bytes per cold step, 1–190000, also bounded by `MERIDIAN_AGY_MAX_PROMPT_BYTES`. |
+| `MERIDIAN_AGY_HISTORY_MAX_STEPS` | `12` | Maximum cold steps including the final request, 1–64. |
+| `MERIDIAN_AGY_MAX_CONTEXT_TOKENS` | `480000` | Estimated live-context safety cap including output reserve, 1–512000. |
+
+Planning preserves order and tool pairing. A single indivisible message/pair that
+cannot fit, or a replay exceeding the step count, fails before model execution;
+split the content or compact the conversation. Cold loading adds model calls and
+latency. Context accounting estimates UTF-8 bytes/4 plus image allowance, tracks
+supplied input/output, and considers reported usage; hidden CLI context and the
+exact provider tokenizer remain unavailable. On reaching the safety cap the
+bridge starts fresh using the existing trimming fallback. Keep the production
+shim's trimming fallback enabled too.
+
+Legacy trimming shortens the oldest large tool results, arguments and text first
+and the newest round last, with an omission notice. Setting
+`MERIDIAN_AGY_TRIM_OLDEST_TURNS=1` also allows dropping oldest whole turns at
+assistant boundaries, preserving tool pairing, a bounded first-user note and the
+latest typed user instruction if crossed. It targets 75% of the input limit;
+cached cuts advance only when growth crosses the hard limit again. Current user
+text that cannot fit still fails with 400. Buffers and client tool-call counts
+remain independently bounded. External tool duration/cancellation belongs to
+the executing client. Cancelling generation does not refund tokens already used.
 
 After a CLI version/configuration/model probe fails, Meridian returns an error
 with `Retry-After` and holds new account checks for five seconds. It then requires

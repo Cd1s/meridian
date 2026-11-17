@@ -5,6 +5,7 @@ import { AgNativeSessions, type AgNativeSnapshot } from "./antigravitySessions"
 import { AgState } from "./antigravityState"
 import { agNativeTools, agNativeAllowed } from "./antigravityNative"
 import { agHookCommand, signalAgProcess } from "./antigravityProcess"
+import { writeFileSync, rmSync } from "node:fs"
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { promisify } from "node:util"
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
@@ -14,10 +15,11 @@ import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, agPromptByteLimit, agClientToolCallLimit, agTrimOldestTurns, renderAgPromptWithinLimit, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, renderAgPrompt, agPromptByteLimit, agClientToolCallLimit, agTrimOldestTurns, renderAgPromptWithinLimit, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 
 import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravitySchema"
 import type { ValidateFunction } from "ajv"
+import { agHistoryLimits, agContextTooLarge, assertAgStep, planAgHistory, type AgHistoryLimits } from './antigravityHistory'
 import { AgAttachments } from "./antigravityAttachments"
 import type { AntigravityOptions } from "../types"
 type AgToolReply = AgResult & { clientMessages?: AgMessage[] }
@@ -68,6 +70,7 @@ export class AntigravityRun {
   private outputBytes = 0
   readonly reusable: boolean
   private structuredText?: string
+  private chunkedStructuredText = ""
   private readonly toolValidators = new Map<string, ValidateFunction>()
   private readonly outputValidator?: ValidateFunction
   private exited = false
@@ -77,11 +80,15 @@ export class AntigravityRun {
   private pendingTimer?: ReturnType<typeof setTimeout>
   private killTimer?: ReturnType<typeof setTimeout>
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
+  private replaySteps: string[] = []
+  private replayIndex = 0
+  contextTokens = 0
+  get loadingHistory(): boolean { return this.replayIndex < this.replaySteps.length - 1 }
   private toolCalls = 0
   private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
   private settledResolve!: () => void
   readonly settled = new Promise<void>(resolve => { this.settledResolve = resolve })
-  constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest, private readonly restored?: AgNativeSnapshot) {
+  constructor(readonly runtime: AntigravityRuntime, readonly request: AgRequest, private readonly restored?: AgNativeSnapshot, private readonly compactContext = false) {
     this.grammars = new AgGrammars(request, this.attachmentAbort.signal)
     this.continuation = restored ? "restored" : "new"
     this.reusable = runtime.options.reuseConversations !== false && !request.output_config?.format && !request.stop_sequences?.length
@@ -91,15 +98,26 @@ export class AntigravityRun {
     for (const tool of request.tools) this.toolValidators.set(tool.name, schemas.compile(tool.input_schema, `Tool ${tool.name}`))
     if (request.output_config?.format) this.outputValidator = schemas.compile(request.output_config.format.schema, "output_config.format.schema")
   }
+  private get promptSuffix(): string {
+    return this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : ""
+  }
   private prompt(request: AgRequest, trimHistory = false, rawRequest: AgRequest = request): string {
     const native = agNativeTools(this.runtime.options)
-    const suffix = this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : ""
+    const suffix = this.promptSuffix
     const limit = agPromptByteLimit()
     return renderAgPromptWithinLimit(request, native, suffix, limit, trimHistory ? {
       trimOldestTurns: this.runtime.trimOldestTurns,
       previousCut: () => this.runtime.getPromptCut(rawRequest),
       onCut: cut => this.runtime.setPromptCut(rawRequest, cut),
     } : { trimOldestTurns: false })
+  }
+  private writeStep(): void {
+    const prompt = this.replaySteps[this.replayIndex]!
+    if (this.loadingHistory) writeFileSync(join(this.workspace!, 'history-loading'), '', { mode: 0o600 })
+    else rmSync(join(this.workspace!, 'history-loading'), { force: true })
+    this.contextTokens += Math.ceil(Buffer.byteLength(prompt) / 4)
+    this.child!.stdin.write(JSON.stringify({ event: "user", message: { content: prompt } }) + "\n")
+    if (!this.loadingHistory && !this.reusable) this.child!.stdin.end()
   }
   private beginTurn(): void {
     clearTimeout(this.timer)
@@ -130,7 +148,7 @@ export class AntigravityRun {
       const hookPath = join(this.workspace, "policy.cjs")
       // Workspace contains bridge configuration and supplied attachment bytes only.
       // Permit client MCP dispatch, exact supplied image reads, or schema submission.
-      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const allowed=(${agNativeAllowed.toString()})(t?.name,a,${JSON.stringify(agNativeTools(this.runtime.options))},${!!this.runtime.options.allowNativeBrowser},${!!this.runtime.options.allowNativeSubagents})||(t?.name==='call_mcp_tool'&&a?.ServerName==='client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||(t?.name==='view_file'&&JSON.parse(require('node:fs').readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(a?.AbsolutePath));const fs=require('node:fs');const audit=${JSON.stringify(join(this.workspace, 'policy-audit.jsonl'))};if(!fs.existsSync(audit)||fs.statSync(audit).size<65536)fs.appendFileSync(audit,JSON.stringify({name:t?.name,allowed,conversationId:p.conversationId})+'\\n',{mode:384});console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'The tool policy restricts actions to client dispatch, supplied attachments, schema submission and operator-enabled native capabilities'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid tool policy payload'}));}});`)
+      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const allowed=!require('node:fs').existsSync(${JSON.stringify(join(this.workspace, 'history-loading'))})&&((${agNativeAllowed.toString()})(t?.name,a,${JSON.stringify(agNativeTools(this.runtime.options))},${!!this.runtime.options.allowNativeBrowser},${!!this.runtime.options.allowNativeSubagents})||(t?.name==='call_mcp_tool'&&a?.ServerName==='client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||(t?.name==='view_file'&&JSON.parse(require('node:fs').readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(a?.AbsolutePath)));const fs=require('node:fs');const audit=${JSON.stringify(join(this.workspace, 'policy-audit.jsonl'))};if(!fs.existsSync(audit)||fs.statSync(audit).size<65536)fs.appendFileSync(audit,JSON.stringify({name:t?.name,allowed,conversationId:p.conversationId})+'\\n',{mode:384});console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'The tool policy restricts actions to client dispatch, supplied attachments, schema submission and operator-enabled native capabilities'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid tool policy payload'}));}});`)
       await writeFile(join(this.workspace, ".agents/hooks.json"), JSON.stringify({ client_policy: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: agHookCommand(process.execPath, hookPath), timeout: 5 }] }] } }))
       await writeFile(join(this.workspace, ".agents/mcp_config.json"), JSON.stringify({ mcpServers: {
         client: { serverUrl: `${this.runtime.mcpUrl}/${this.id}` },
@@ -149,16 +167,33 @@ export class AntigravityRun {
       if (this.request.output_config?.effort) args.push("--effort", this.request.output_config.effort)
       if (agNativeTools(this.runtime.options).length || (this.request.tools.length && this.runtime.options.allowToolBridge) || this.attachments.present) args.push("--dangerously-skip-permissions")
       if (this.stopped) { await this.cleanup(); return }
+      const preparedRequest = { ...this.request, messages }
+      const native = agNativeTools(this.runtime.options)
+      const suffix = this.promptSuffix
+      const contextExceeded = this.compactContext || this.runtime.contextExceeded(this.request)
+      const stepLimit = Math.min(this.runtime.historyLimits.stepBytes, agPromptByteLimit() || this.runtime.historyLimits.stepBytes)
+      this.replaySteps = contextExceeded
+        ? [renderAgPromptWithinLimit(preparedRequest, native, suffix, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192)) * 4)), { trimOldestTurns: true })]
+        : this.restored
+          ? [assertAgStep(renderAgPrompt(preparedRequest, native) + suffix, agPromptByteLimit())]
+          : this.runtime.historyLimits.chunked
+            ? planAgHistory(preparedRequest, native, suffix, stepLimit, this.runtime.historyLimits.maxSteps)
+            : [this.prompt(preparedRequest, true, this.request)]
+      if (this.replaySteps.length > 1 && this.request.output_config?.format) args.splice(args.indexOf("--json-schema"), 2)
+      const estimatedReplayTokens = this.replaySteps.reduce((sum, step) => sum + Math.ceil(Buffer.byteLength(step) / 4) + 32, 0)
+      if (estimatedReplayTokens + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
+        this.replaySteps = [renderAgPromptWithinLimit(preparedRequest, native, suffix, Math.min(stepLimit, Math.max(1, (this.runtime.historyLimits.contextTokens - (this.request.max_tokens ?? 8192) - 32) * 4)), { trimOldestTurns: true })]
+        if (this.request.output_config?.format && !args.includes("--json-schema")) args.push("--json-schema", join(this.workspace, "output-schema.json"))
+      }
       const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
       if (child.pid) this.runtime.nativeSessions?.register(this.workspace, child.pid)
       child.stdin.on("error", error => this.abort(new AntigravityError(`Antigravity input failed: ${error.message}`, 502, "api_error")))
-      child.stdin.write(JSON.stringify({ event: "user", message: { content: this.prompt({ ...this.request, messages }, !this.restored, this.request) } }) + "\n")
-      if (!this.reusable) child.stdin.end()
+      this.writeStep()
       let stderr = ""
       child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-8192) })
       child.stdout.on("data", chunk => {
         this.outputBytes += chunk.length
-        if (this.outputBytes > 16 * 1024 * 1024) this.abort(new AntigravityError("Antigravity output exceeded 16 MiB", 502, "api_error"))
+        if (this.outputBytes > (this.loadingHistory ? 64 * 1024 : 16 * 1024 * 1024)) this.abort(new AntigravityError("Antigravity output exceeded 16 MiB", 502, "api_error"))
       })
       const lines = createInterface({ input: child.stdout })
       lines.on("line", line => {
@@ -169,19 +204,37 @@ export class AntigravityRun {
           if (event.event === "init" && event.conversation_id) this.conversationId = event.conversation_id
           const step = event.step_update
           if ((step?.step_type === "tool" || step?.step_type === "subagent") && step.tool_name && agNativeTools(this.runtime.options).includes(step.tool_name)) this.runtime.recordNative({ runId: this.id, name: step.tool_name, state: step.state ?? "unknown", timestamp: Date.now() })
-          if (step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) this.queue.push({ kind: "text", text: step.text_delta })
+          if (!this.loadingHistory && this.replaySteps.length > 1 && this.request.output_config?.format && step?.step_type === "agent_response" && step.text_delta) this.chunkedStructuredText += step.text_delta
+          if (!this.loadingHistory && step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) this.queue.push({ kind: "text", text: step.text_delta })
+          if (step?.state === "DONE" && step.usage) this.contextTokens = Math.max(this.contextTokens, step.usage.input_tokens ?? 0) + (step.usage.output_tokens ?? 0)
           if (step?.state === "DONE" && step.usage) this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
           if (event.event === "result" && event.result) {
+            if (this.loadingHistory) {
+              if (event.result.status !== "SUCCESS" || event.result.denied_actions?.length) {
+                this.abort(classifyAgFailure(event.result.error || "History loading step denied an action"))
+                return
+              }
+              this.replayIndex++
+              if (this.contextTokens + Math.ceil(Buffer.byteLength(this.replaySteps[this.replayIndex]!) / 4) + (this.request.max_tokens ?? 8192) > this.runtime.historyLimits.contextTokens) {
+                this.abort(new AntigravityError("History loading exceeded the context token safety cap; compact the conversation"))
+                return
+              }
+              this.outputBytes = 0
+              this.resumeModelTimer()
+              this.writeStep()
+              return
+            }
             this.terminal = true
             if (event.result.status !== "SUCCESS" || event.result.denied_actions?.length) {
               this.abort(classifyAgFailure(event.result.error || "Antigravity denied an action; client-owned tool policy or account permission prevented completion"))
             } else if (this.pending.size) this.abort(new AntigravityError("Antigravity ended with unresolved client tools", 502, "api_error"))
             // Success is committed only after a clean process exit, not merely a result line.
             else if (this.request.output_config?.format) {
-              if (!Object.hasOwn(event.result, "structured_output") || event.result.structured_output === undefined) throw new Error("CLI omitted required structured_output")
-              const invalid = this.outputValidator && agSchemaError(this.outputValidator, event.result.structured_output)
+              const output = this.replaySteps.length > 1 ? JSON.parse(this.chunkedStructuredText) as unknown : event.result.structured_output
+              if (output === undefined) throw new Error("CLI omitted required structured_output")
+              const invalid = this.outputValidator && agSchemaError(this.outputValidator, output)
               if (invalid) throw new Error("CLI structured_output did not satisfy the requested schema: " + invalid)
-              this.structuredText = JSON.stringify(event.result.structured_output)
+              this.structuredText = JSON.stringify(output)
             }
             if (!this.stopped && this.reusable) {
               this.runtime.completed++
@@ -218,6 +271,7 @@ export class AntigravityRun {
     }
   }
   dispatchCall(id: string | number, name: string, input: Record<string, unknown>): Promise<AgToolReply> {
+    if (this.loadingHistory) return Promise.reject(new Error("Tools are disabled while loading conversation history"))
     const key = typeof id + ':' + id
     const identity = stable({ name, input })
     const existing = this.rpcCalls.get(key)
@@ -232,6 +286,7 @@ export class AntigravityRun {
   }
   dispatchBatch(id: string | number, input: Record<string, unknown>): Promise<AgToolReply> {
     const parsed = z.object({ calls: z.array(toolParams).min(2).max(16) }).strict().parse(input)
+    if (this.loadingHistory) return Promise.reject(new Error("Tools are disabled while loading conversation history"))
     const key = typeof id + ':' + id
     const identity = stable({ batch: parsed })
     const existing = this.rpcCalls.get(key)
@@ -297,7 +352,9 @@ export class AntigravityRun {
       Object.assign(this.request, request)
       this.history = request.messages
       this.terminal = false; this.idle = false; this.outputBytes = 0
-      this.child!.stdin.write(JSON.stringify({ event: "user", message: { content: this.prompt({ ...request, messages: delta }) } }) + "\n")
+      const prompt = assertAgStep(renderAgPrompt({ ...request, messages: delta }, agNativeTools(this.runtime.options)) + (this.promptSuffix), agPromptByteLimit())
+      this.contextTokens += Math.ceil(Buffer.byteLength(prompt) / 4)
+      this.child!.stdin.write(JSON.stringify({ event: "user", message: { content: prompt } }) + "\n")
       this.runtime.reused++
     } catch (error) {
       this.abort(error instanceof Error ? error : new Error(String(error)))
@@ -327,6 +384,9 @@ export class AntigravityRun {
     const prepared: AgResult[] = []
     for (const result of results) prepared.push(await this.attachments!.toolResult(result))
     const messages = await this.attachments!.messages(clientMessages)
+    const resultStep = JSON.stringify({ results: prepared, client_followup: messages })
+    assertAgStep(resultStep, agPromptByteLimit())
+    this.contextTokens += Math.ceil(Buffer.byteLength(resultStep) / 4)
     if (this.stopped || results.some(result => !this.pending.has(result.tool_use_id))) throw new AntigravityError("Tool result was not requested by this turn", 409)
     clearTimeout(this.pendingTimer)
     this.delivered = []
@@ -406,6 +466,11 @@ export class AntigravityRuntime {
   readonly idleConversationMs: number
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
+  readonly historyLimits: AgHistoryLimits
+  contextExceeded(request: AgRequest, run?: AntigravityRun): boolean {
+    const deltaTokens = run ? Math.ceil(Buffer.byteLength(renderAgPrompt({ ...request, messages: request.messages.slice(run.history.length) })) / 4) : 0
+    return agContextTooLarge(request, this.historyLimits, run ? run.contextTokens + deltaTokens : 0)
+  }
   // Warm live conversations; expired or restarted processes replay client history.
   readonly plugins: AgPlugins
   readonly state?: AgState
@@ -529,6 +594,7 @@ export class AntigravityRuntime {
   readonly trimOldestTurns: boolean
   readonly maxClientToolCalls = agClientToolCallLimit()
   constructor(readonly options: AntigravityOptions = {}) {
+    this.historyLimits = agHistoryLimits()
     this.plugins = new AgPlugins(options.plugins, options.pluginPaths)
     this.executable = options.executable ?? "agy"
     this.maxConcurrent = options.maxConcurrent ?? 4
@@ -665,7 +731,12 @@ export class AntigravityRuntime {
     if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (((request.tools.length && request.tool_choice?.type !== "none") || hasAgImages(request.messages)) && !this.options.allowToolBridge) throw new AntigravityError("Client tools and images require explicit MERIDIAN_AGY_ALLOW_TOOL_BRIDGE=1; see the Antigravity guide")
     const reusable = [...this.runs.values()].find(run => run.matches(request))
-    if (reusable) { await reusable.resume(request, signal); return reusable }
+    if (reusable) {
+      if (!this.contextExceeded(request, reusable)) { await reusable.resume(request, signal); return reusable }
+      reusable.busy = true
+      reusable.abort(new AntigravityError("Context token safety cap reached; replaying trimmed history", 409), "retired")
+      await reusable.settled
+    }
     const reclaim = this.runs.size + this.preparing >= this.maxConcurrent
       ? [...this.runs.values()].find(run => run.reclaimable) : undefined
     if (this.runs.size + this.preparing >= this.maxConcurrent && !reclaim) throw new AntigravityError("Antigravity process capacity is full with active requests", 429, "rate_limit_error", 5)
@@ -684,8 +755,8 @@ export class AntigravityRuntime {
       if (!(await this.availableModels()).includes(request.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
       if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
       if (signal?.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
-      const restored = this.nativeSessions?.claim(request)
-      const run = new AntigravityRun(this, request, restored)
+      const restored = this.contextExceeded(request) || reusable ? undefined : this.nativeSessions?.claim(request)
+      const run = new AntigravityRun(this, request, restored, !!reusable)
       if (restored) this.restored++
       this.runs.set(run.id, run)
       const cancel = () => run.abort(new AntigravityError("Request cancelled", 499, "api_error"))
