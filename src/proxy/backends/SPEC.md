@@ -46,6 +46,17 @@ belong to [`chatgpt-backend`](../chatgpt/SPEC.md).)
   expansion), the same as `meridian setup --client pi`.
 - Persistence (`statePath`) is opt-in and bounded; Antigravity plugins
   (`antigravityPlugins.ts`) are separate from Claude user plugins.
+- Prompt budget trimming (`MERIDIAN_AGY_MAX_PROMPT_BYTES`) preserves the default
+  400 `prompt is too long` rejection when middle omission is insufficient;
+  `MERIDIAN_AGY_TRIM_OLDEST_TURNS=1` opts into dropping oldest whole turns at
+  assistant boundaries before shrinking the newest round (retaining the newest
+  assistant/result pair, a bounded first-user note, and the latest typed user
+  instruction verbatim if crossed) for the execution prompt only, while keeping
+  the raw full history authoritative for warm reuse and using a
+  lazy, prefix-verified, bounded (512-entry, 30-minute TTL) in-memory LRU cut
+  cache with no durable persistence; when whole-turn trimming runs, it aims
+  below the hard limit (`AG_TRIM_TARGET_RATIO`, default 75%) so the cached cut
+  only advances when subsequent growth crosses the hard limit again.
 
 The full runtime, replay, recovery and persistence contract is in
 [`architecture`](../../../ARCHITECTURE.md) → *Antigravity runtime and combined
@@ -167,3 +178,46 @@ undergo bounded compatibility normalization:
 ### Combined normalization and history trimming
 
 Tagged `[system]\n` conversation blocks are steering, not a replacement for the latest actual typed user request when locating protected prompt content. Whole-turn cuts retain that user request and its direct media, then any subsequent tagged steering crossed by the cut in conversation order. Tagged steering still in the retained tail is protected from middle text elision at the direct text-block level; adjacent historical tool results and arguments remain eligible for ordinary elision. If protected instructions and steering alone cannot fit, the request still fails the prompt limit. The tag is a text convention, not an authority or security boundary; matching client-supplied text receives the same retention treatment. This applies to both freshly selected and cached cuts, without changing full-history identity or the top-level execution contract.
+
+## Long conversation input steps (fork)
+
+`antigravityHistory.ts` separates agy's 64K-token user-step limit from its
+512000-token conversation window. Warm user turns send only the appended user
+messages; pending tools return only new results/steering through the existing
+MCP envelope. The raw client history remains authoritative for identity checks.
+`MERIDIAN_AGY_MAX_PROMPT_BYTES` (190000 by default) bounds the new warm step,
+including combined result batches; oversize new content returns an explicit 400.
+
+Cold history is loaded sequentially when `MERIDIAN_AGY_CHUNKED_HISTORY=1`
+(the fork default; `0` restores legacy single-prompt trimming). The whole plan is
+validated before spawning. Each historical step requests only ACK; execution of
+all client/native tools and attachment reads is denied until the final step.
+The MCP catalog stays stable because CLI clients may cache it. ACK text never
+reaches the HTTP client, while priming usage is counted. Only the final step
+contains the real system/tool instructions and latest user message or complete
+assistant/result batch. Historical steps preserve order and complete tool pairs;
+an indivisible message/pair exceeding the step budget is rejected with 400
+rather than silently omitted. `MERIDIAN_AGY_HISTORY_STEP_BYTES` defaults to
+180000 (1–190000, additionally bounded by the prompt byte limit).
+`MERIDIAN_AGY_HISTORY_MAX_STEPS` defaults to 12 (1–64), including the final step;
+exceeding it fails before any model call. Failures, cancellation and deadlines
+abort the entire replay; final-only runs close stdin only after the final step.
+
+`MERIDIAN_AGY_MAX_CONTEXT_TOKENS` defaults to 480000 (1–512000). The existing
+UTF-8/4 estimate plus image allowance reserves requested output (8192 if unset),
+with a live supplied-input/output ledger and provider-reported input usage as
+additional lower bounds. This is an estimate, not an exact tokenizer or a
+measurement of hidden CLI context. Crossing it retires the warm process and
+uses the existing whole-turn/middle trimming in a fresh process. Preprocessing
+and total planned step overhead are checked too. An unexpectedly larger actual
+context reported during loading fails closed before sending further steps.
+Native snapshots are bypassed on this compaction path.
+
+For chunked structured output, the CLI-wide schema flag is omitted so ACKs are
+not forced through the final schema/finish tool. The final prompt requests JSON
+matching the exact schema; the bridge buffers, parses and validates it with the
+same Ajv validator before emitting the response on clean exit. Single-step
+structured output retains the native schema path. agy remains pinned to 1.2.7;
+neutral protocol names, client tool limits, normalization and shim fallback
+remain compatible. Real provider retention and replay latency are AU canary
+gates, not established by fixture tests.

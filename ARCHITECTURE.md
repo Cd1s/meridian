@@ -68,6 +68,22 @@ variant while keeping explicit `-low`/`-medium`/`-high` suffixes authoritative
 over `output_config.effort`, all before continuation identity is calculated.
 Runtime model discovery checks availability, and responses expose the effective
 model when adapted.
+`backends/antigravityProtocol.ts` owns pure request normalization, validation,
+history identity and prompt rendering. Late system messages remain tagged in-place
+in user content, with adjacent result-message coalescing when required for tool
+pairing; top-level system and contract identity remain stable. Historical thinking
+and assistant messages left empty by its removal are dropped, empty final user
+requests are rejected, and unknown blocks become text,
+and supported schema-less hosted tools are dropped with a response header and one
+warning. Numeric sampling parameters are accepted and ignored; betas remain
+unsupported. Opt-in numeric budget adaptation keeps threshold remapping for both
+suffixed and unsuffixed Gemini slugs. Without enabled numeric thinking, explicit
+model level suffixes win over effort, while unsuffixed effort selects the closest
+discovered variant. Adaptation headers appear only after an actual adaptation.
+`antigravityHistory.ts` plans bounded sequential cold-history input steps and
+keeps tool pairs together; warm turns send only new content. Its estimated
+conversation-token safety cap falls back to existing trimming in a new process
+(see the backend spec for environment settings and ACK/structured-output rules).
 `antigravityRuntime.ts` owns the official CLI subprocesses and loopback MCP transport.
 Its bounded interrupted-continuation fingerprints permit only exact completed-result
 replay after cancellation joins the old process, before any subsequent client

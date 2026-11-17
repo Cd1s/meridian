@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deterministic official-CLI protocol fixture. Never contacts a model service.
 const { spawnSync } = require('node:child_process')
-const { readFileSync } = require('node:fs')
+const { readFileSync, appendFileSync } = require('node:fs')
 const args = process.argv.slice(2)
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n')
 const nativePrompts = []
@@ -11,6 +11,27 @@ async function main(inputPrompt) {
   let prompt = args[args.indexOf('-p') + 1]
   if (inputPrompt !== undefined) prompt = inputPrompt
   nativePrompts.push(prompt)
+  if (inputPrompt !== undefined && process.env.AGY_FIXTURE_PROMPTS) appendFileSync(process.env.AGY_FIXTURE_PROMPTS, JSON.stringify(prompt) + '\n')
+  if (prompt.startsWith('History loading step.')) {
+    if (args.includes('--json-schema')) throw new Error('Schema transport must not constrain history ACKs')
+    const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
+    const pending = new Set()
+    for (const message of history) for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (block.type === 'tool_use') pending.add(block.id)
+      if (block.type === 'tool_result' && !pending.delete(block.tool_use_id)) throw new Error('Split tool pair')
+    }
+    if (pending.size) throw new Error('Split tool pair')
+    const config = JSON.parse(readFileSync('.agents/mcp_config.json', 'utf8'))
+    const rpc = async (method, params) => (await (await fetch(config.mcpServers.client.serverUrl, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json())
+    await rpc('tools/list')
+    if (!(await rpc('tools/call', { name: 'lookup', arguments: { key: 'unsafe' } })).error) throw new Error('Tool executed while loading')
+    const policy = spawnSync(process.execPath, ['policy.cjs'], { input: JSON.stringify({ toolCall: { name: 'view_file', args: { AbsolutePath: '/etc/passwd' } } }), encoding: 'utf8' })
+    if (JSON.parse(policy.stdout).decision !== 'deny') throw new Error('History policy failed')
+    if (process.env.AGY_FIXTURE_HISTORY_FAILURE) return emit({ event: 'result', result: { status: 'ERROR', error: 'History loading failed' } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'ACK' } })
+    emit({ event: 'step_update', step_update: { state: 'DONE', usage: { input_tokens: 100, output_tokens: 1 } } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   if (prompt === '/config' && process.env.AGY_FIXTURE_CONFIG_EXIT) return process.exit(2)
   if (prompt === '/config') return emit({ conversation_id: '', status: 'SUCCESS', duration_seconds: 0, num_turns: 0, response: 'customModelsConfig\t' + (process.env.AGY_FIXTURE_CUSTOM ? '{"fixture":{}}' : '') + '\nmodelProvider\t' + (process.env.AGY_FIXTURE_API ? 'gemini' : '') + '\nuseG1Credits\tfalse' })
   if (prompt === '/usage') return emit({command:{data:{groups:[{name:'Gemini Models',buckets:[{id:'gemini-5h',window:'5h',remaining_fraction:0.75,reset_time:'2099-01-01T00:00:00Z'}]}]}}})
@@ -141,6 +162,12 @@ async function main(inputPrompt) {
       answer = JSON.stringify(followup)
     } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).client_result)).join('|')
   }
+  if (prompt.includes('LONGCTX_NEEDLES')) {
+    const context = nativePrompts.join('\n')
+    if (!context.includes('NEEDLE_HEAD_742') || !context.includes('NEEDLE_TAIL_963')) throw new Error('Lost history needle')
+    answer = 'NEEDLE_HEAD_742 NEEDLE_TAIL_963'
+  }
+  if (prompt.includes('Return the final answer as JSON only')) answer = JSON.stringify({ answer })
   if (prompt.includes('NATIVE_SECOND')) {
     if (nativePrompts.length !== 2 || prompt.includes('NATIVE_FIRST')) throw new Error('Native continuation replayed history or spawned another process')
     answer = 'NATIVE_REUSED'
