@@ -48,6 +48,24 @@ try {
   const tail = randomBytes(8).toString('hex')
   cold.push({ role: 'assistant', content: 'Historical reads completed.' }, { role: 'user', content: question(tail) })
   await send('cold-700KB', cold, tail, [{ name: 'archive_read', input_schema: { type: 'object', properties: { part: { type: 'integer' } }, required: ['part'] } }])
+  if (process.env.MERIDIAN_E2E_DENSE === '1') {
+    const dense = []
+    for (let at = 0; at < 42; at++) {
+      const tail = randomBytes(8).toString('hex')
+      dense.push({ role: 'user', content: (at ? '' : `The original head fact is ${head}.\n`) + '漢字語文'.repeat(2000) + '\n' + question(tail) })
+      dense.push({ role: 'assistant', content: await send(`dense-warm-${at + 1}`, dense, tail) })
+    }
+    for (const [label, rounds, size] of [['dense-cold', 16, 8000], ['dense-AU-cap-fallback', 60, 10000]]) {
+      const history = [{ role: 'user', content: `The original head fact is ${head}. Read the historical archive.` }]
+      for (let at = 0; at < rounds; at++) history.push(
+        { role: 'assistant', content: [{ type: 'tool_use', id: `dense_${at}`, name: 'archive_read', input: { part: at } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: `dense_${at}`, content: '漢'.repeat(size) }] },
+      )
+      const tail = randomBytes(8).toString('hex')
+      history.push({ role: 'assistant', content: 'Historical reads completed.' }, { role: 'user', content: question(tail) })
+      await send(label, history, tail, [{ name: 'archive_read', input_schema: { type: 'object', properties: { part: { type: 'integer' } }, required: ['part'] } }])
+    }
+  }
 } finally {
   if (process.env.MERIDIAN_E2E_RECEIPT) await writeFile(process.env.MERIDIAN_E2E_RECEIPT, JSON.stringify({ model, receipts }, null, 2) + '\n', { mode: 0o600 })
 }

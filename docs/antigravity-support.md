@@ -121,6 +121,7 @@ All tool execution is denied during loading. These fork settings control replay:
 | --- | --- | --- |
 | `MERIDIAN_AGY_CHUNKED_HISTORY` | `1` | Set `0` to restore legacy cold/warm trimming and tool-result delivery, disabling new context/step guards. |
 | `MERIDIAN_AGY_HISTORY_STEP_BYTES` | `180000` | Rendered UTF-8 bytes per cold step, 1–190000, also bounded by `MERIDIAN_AGY_MAX_PROMPT_BYTES`. |
+| `MERIDIAN_AGY_MAX_STEP_TOKENS` | `52000` | Estimated tokens per new input step, 1–63000, below the upstream 64000 ceiling. Applies together with the byte limit. |
 | `MERIDIAN_AGY_HISTORY_MAX_STEPS` | `12` | Maximum cold steps including the final request, 1–64. |
 | `MERIDIAN_AGY_MAX_CONTEXT_TOKENS` | `480000` | Estimated live-context safety cap including output reserve, 1–512000. |
 
@@ -129,7 +130,8 @@ cannot fit, or a replay exceeding the step count, fails before model execution;
 split the content or compact the conversation. Indivisible-unit packing can
 reach the step-count cap before the token cap; this still fails explicitly.
 Cold loading adds model calls and
-latency. Context accounting estimates UTF-8 bytes/4 plus image allowance, tracks
+latency. Context accounting takes the maximum of UTF-8 bytes/4 and ASCII bytes/4 plus
+non-ASCII UTF-8 bytes, adds image allowance, and tracks
 supplied input/output, and considers reported usage; hidden CLI context and the
 exact provider tokenizer remain unavailable. On reaching the safety cap the
 bridge starts fresh using the existing trimming fallback, honoring whole-turn

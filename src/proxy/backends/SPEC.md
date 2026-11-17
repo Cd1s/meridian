@@ -201,12 +201,18 @@ assistant/result batch. Historical steps preserve order and complete tool pairs;
 an indivisible message/pair exceeding the step budget is rejected with 400
 rather than silently omitted. `MERIDIAN_AGY_HISTORY_STEP_BYTES` defaults to
 180000 (1–190000, additionally bounded by the prompt byte limit).
+`MERIDIAN_AGY_MAX_STEP_TOKENS` defaults to 52000 (1–63000), leaving margin
+below the measured 64000-token input-step ceiling. Both budgets apply to warm
+user deltas, prepared MCP result batches, restored deltas, cold ACK/final steps,
+and context-cap trimming. The planner packs against both exact additive scores
+before spawning, and every emitted step is checked. An indivisible dense input
+that fits bytes but exceeds tokens returns explicit 400.
 `MERIDIAN_AGY_HISTORY_MAX_STEPS` defaults to 12 (1–64), including the final step;
 exceeding it fails before any model call. Failures, cancellation and deadlines
 abort the entire replay; final-only runs close stdin only after the final step.
 
 `MERIDIAN_AGY_MAX_CONTEXT_TOKENS` defaults to 480000 (1–512000). The existing
-UTF-8/4 estimate plus image allowance reserves requested output (8192 if unset),
+conservative text estimate plus image allowance reserves requested output (8192 if unset),
 with a live supplied-input/output ledger and provider-reported input usage as
 additional lower bounds. This is an estimate, not an exact tokenizer or a
 measurement of hidden CLI context. Crossing it retires the warm process and
@@ -232,3 +238,21 @@ structured output retains the native schema path. agy remains pinned to 1.2.7;
 neutral protocol names, client tool limits, normalization and shim fallback
 remain compatible. Real provider retention and replay latency are AU canary
 gates, not established by fixture tests.
+
+### Dense-script safety correction
+
+Text estimates take the maximum of UTF-8 bytes/4 and ASCII bytes/4 plus all
+non-ASCII UTF-8 bytes. This uses a byte-fallback upper bound for CJK, kana,
+hangul, emoji and other non-ASCII scripts, counting each such code point as at
+least one token (usually more). ASCII-heavy requests never fall below the old
+estimate. The count endpoint, planning, compaction, actual-input ledger and
+context preflight use the same estimator. It deliberately compacts dense text
+earlier than an exact tokenizer might require; hidden CLI context remains
+unmeasured. AU's 1833452-byte dense case previously estimated 458796 tokens and
+passed preflight before native token errors; it now exceeds the 480000-token
+safety cap and enters explicit existing trimming before any loading call.
+
+A successful CLI result without history acknowledgement aborts loading rather
+than advancing. A completed final phase with no content returns 502, preventing
+native errors followed by empty SUCCESS from becoming HTTP 200 with zero usage.
+These guards retain normal stop-sequence and tool completion behavior.

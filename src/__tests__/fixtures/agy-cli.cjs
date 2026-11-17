@@ -27,6 +27,7 @@ async function main(inputPrompt) {
     if (!(await rpc('tools/call', { name: 'lookup', arguments: { key: 'unsafe' } })).error) throw new Error('Tool executed while loading')
     const policy = spawnSync(process.execPath, ['policy.cjs'], { input: JSON.stringify({ toolCall: { name: 'view_file', args: { AbsolutePath: '/etc/passwd' } } }), encoding: 'utf8' })
     if (JSON.parse(policy.stdout).decision !== 'deny') throw new Error('History policy failed')
+    if (process.env.AGY_FIXTURE_HISTORY_EMPTY) return emit({ event: 'result', result: { status: 'SUCCESS' } })
     if (process.env.AGY_FIXTURE_HISTORY_FAILURE) return emit({ event: 'result', result: { status: 'ERROR', error: 'History loading failed' } })
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'ACK' } })
     emit({ event: 'step_update', step_update: { state: 'DONE', usage: { input_tokens: 100, output_tokens: 1 } } })
@@ -58,6 +59,7 @@ async function main(inputPrompt) {
   if (prompt.includes('EFFORT_PROBE') && args[args.indexOf('--effort') + 1] !== 'high') throw new Error('Native effort flag missing')
   emit({ event: 'init' })
   if (prompt.includes('RATE_LIMIT')) return emit({event:'result',result:{status:'ERROR',error:'Quota exhausted; retry in 45 seconds'}})
+  if (prompt.includes('NATIVE_EMPTY_SUCCESS')) return emit({ event: 'result', result: { status: 'SUCCESS' } })
   if (prompt.includes('HANG')) { setInterval(() => {}, 1000); return }
   if (prompt.includes('MALFORMED')) { console.log('not JSON'); return }
   if (prompt.includes('DENIED')) return emit({ event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'mcp' }] } })

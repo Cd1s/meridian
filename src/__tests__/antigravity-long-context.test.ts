@@ -7,7 +7,7 @@ import { createAntigravityServer } from '../proxy/backends/antigravity'
 import { AntigravityRuntime } from '../proxy/backends/antigravityRuntime'
 import { agContextTooLarge, agHistoryLimits, planAgHistory } from '../proxy/backends/antigravityHistory'
 import { blocks, parseAgRequest, renderAgPrompt, type AgMessage } from '../proxy/backends/antigravityProtocol'
-import { estimateAgTokens } from '../proxy/backends/antigravityTokens'
+import { estimateAgTokens, estimateAgTextTokens } from '../proxy/backends/antigravityTokens'
 import { DEFAULT_PROXY_CONFIG } from '../proxy/types'
 
 const executable = fileURLToPath(new URL('./fixtures/agy-cli.cjs', import.meta.url))
@@ -25,7 +25,7 @@ function conversation(): AgMessage[] {
   const messages: AgMessage[] = [{ role: 'user', content: 'NEEDLE_HEAD_742' }]
   for (let at = 0; at < 24; at++) messages.push(
     { role: 'assistant', content: [{ type: 'tool_use', id: `old_${at}`, name: 'lookup', input: { key: `${at}` } }] },
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: `old_${at}`, content: `${at}:` + '中'.repeat(10_000) }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: `old_${at}`, content: `${at}:` + 'x'.repeat(30_000) }] },
   )
   messages.push({ role: 'assistant', content: 'done' }, { role: 'user', content: 'SKIP_TOOLS LONGCTX_NEEDLES NEEDLE_TAIL_963' })
   return messages
@@ -280,6 +280,106 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     expect(oversized.status).toBe(400)
   })
 
+  for (const [label, filler] of [
+    ['Chinese', '漢'.repeat(5000)],
+    ['CJK with code', '变量 = fn("中文");\n'.repeat(900)],
+    ['emoji and joining characters', '😀🧪‍🚀'.repeat(1000)],
+  ] as const) {
+    it(`keeps dense ${label} warm steps under both budgets with head/tail recall`, async () => {
+      const { runtime, send, prompts } = await fixture()
+      const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS NEEDLE_HEAD_742' }]
+      const first = await send(request(messages))
+      const initial = await first.json() as { content: AgMessage['content'] }
+      messages.push({ role: 'assistant', content: initial.content })
+      for (let at = 0; at < 28; at++) {
+        messages.push({ role: 'user', content: filler + ' SKIP_TOOLS LONGCTX_NEEDLES NEEDLE_TAIL_963' })
+        const response = await send(request(messages))
+        expect(response.status).toBe(200)
+        const result = await response.json() as { content: AgMessage['content'] }
+        expect(JSON.stringify(result.content)).toContain('NEEDLE_HEAD_742 NEEDLE_TAIL_963')
+        messages.push({ role: 'assistant', content: result.content })
+      }
+      expect(Buffer.byteLength(JSON.stringify(messages))).toBeGreaterThan(400_000)
+      expect(runtime.reused).toBe(28)
+      for (const step of await prompts()) {
+        expect(Buffer.byteLength(step)).toBeLessThanOrEqual(190_000)
+        expect(estimateAgTextTokens(step)).toBeLessThanOrEqual(52_000)
+      }
+    })
+    it(`loads dense ${label} cold history losslessly using the token budget`, async () => {
+      const { send, prompts } = await fixture()
+      const messages: AgMessage[] = [{ role: 'user', content: 'NEEDLE_HEAD_742' }]
+      for (let at = 0; at < 20; at++) messages.push(
+        { role: 'assistant', content: [{ type: 'tool_use', id: `dense_${at}`, name: 'lookup', input: { key: `${at}` } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: `dense_${at}`, content: filler }] },
+      )
+      messages.push({ role: 'user', content: 'SKIP_TOOLS LONGCTX_NEEDLES NEEDLE_TAIL_963' })
+      const body = request(messages)
+      const plan = planAgHistory(body, [], '', 180_000, 12)
+      expect(plan.length).toBeGreaterThan(2)
+      expect(plan.flatMap(decode)).toEqual(body.messages)
+      for (const step of plan) {
+        const independent = Math.ceil([...step].reduce((sum, point) => sum + (point.codePointAt(0)! <= 127 ? 0.25 : Buffer.byteLength(point)), 0))
+        expect(estimateAgTextTokens(step)).toBe(independent)
+        expect(independent).toBeLessThanOrEqual(52_000)
+        expect(Buffer.byteLength(step)).toBeLessThanOrEqual(180_000)
+      }
+      const response = await send(body)
+      expect(response.status).toBe(200)
+      expect(JSON.stringify(await response.json())).toContain('NEEDLE_HEAD_742 NEEDLE_TAIL_963')
+      expect((await prompts()).length).toBe(plan.length)
+    })
+  }
+
+  it('rejects a dense warm delta and tool result that fit bytes but exceed the token budget', async () => {
+    const { send, prompts } = await fixture()
+    const messages: AgMessage[] = [{ role: 'user', content: 'SKIP_TOOLS first' }]
+    const first = await send(request(messages))
+    const initial = await first.json() as { content: AgMessage['content'] }
+    const count = (await prompts()).length
+    messages.push({ role: 'assistant', content: initial.content }, { role: 'user', content: '漢'.repeat(20_000) })
+    expect((await send(request(messages))).status).toBe(400)
+    expect((await prompts()).length).toBe(count)
+    const tools: AgMessage[] = [{ role: 'user', content: 'lookup dense' }]
+    const pending = await send(request(tools))
+    const calls = await pending.json() as { content: Array<{ type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }> }
+    tools.push({ role: 'assistant', content: calls.content }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: calls.content[0]!.id, content: '漢'.repeat(20_000) }] })
+    expect((await send(request(tools))).status).toBe(400)
+  })
+
+  it('compacts the AU 1.83MB dense-history failure before any oversized step is sent', async () => {
+    process.env.MERIDIAN_AGY_TRIM_OLDEST_TURNS = '1'
+    const { send, prompts, runtime } = await fixture()
+    const messages: AgMessage[] = [{ role: 'user', content: 'NEEDLE_HEAD_742' }]
+    for (let at = 0; at < 60; at++) messages.push(
+      { role: 'assistant', content: [{ type: 'tool_use', id: `au_${at}`, name: 'lookup', input: { key: `${at}` } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: `au_${at}`, content: '漢'.repeat(10_000) }] },
+    )
+    messages.push({ role: 'user', content: 'SKIP_TOOLS LONGCTX_NEEDLES NEEDLE_TAIL_963' })
+    const body = request(messages)
+    expect(Math.ceil(Buffer.byteLength(renderAgPrompt(body)) / 4)).toBeLessThan(480_000)
+    expect(estimateAgTokens(body).input_tokens).toBeGreaterThan(1_000_000)
+    const response = await send(body)
+    expect(response.status).toBe(200)
+    expect(JSON.stringify(await response.json())).toContain('NEEDLE_HEAD_742 NEEDLE_TAIL_963')
+    const steps = await prompts()
+    expect(steps.length).toBe(1)
+    expect(steps[0]).toContain('omitted')
+    expect(estimateAgTextTokens(steps[0]!)).toBeLessThanOrEqual(52_000)
+    expect([...runtime.runs.values()][0]!.compacted).toBe(true)
+  })
+
+  it('rejects empty native success instead of reporting HTTP 200 with zero usage', async () => {
+    const { send, prompts } = await fixture()
+    const empty = await send(request([{ role: 'user', content: 'SKIP_TOOLS NATIVE_EMPTY_SUCCESS' }]))
+    expect(empty.status).toBe(502)
+    process.env.AGY_FIXTURE_HISTORY_EMPTY = '1'
+    const second = await fixture()
+    const response = await second.send(request(conversation()))
+    expect(response.status).toBe(502)
+    expect((await second.prompts()).length).toBe(1)
+  })
+
   it('aborts failed priming without sending the final request', async () => {
     process.env.AGY_FIXTURE_HISTORY_FAILURE = '1'
     const { send, prompts } = await fixture()
@@ -302,9 +402,17 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
 
 describe('Antigravity history configuration and token safety', () => {
   it('uses bounded defaults and validates explicit flags', () => {
-    expect(agHistoryLimits({})).toEqual({ chunked: true, stepBytes: 180_000, maxSteps: 12, contextTokens: 480_000 })
+    expect(agHistoryLimits({})).toEqual({ chunked: true, stepBytes: 180_000, stepTokens: 52_000, maxSteps: 12, contextTokens: 480_000 })
     expect(agHistoryLimits({ MERIDIAN_AGY_CHUNKED_HISTORY: '0' }).chunked).toBe(false)
-    for (const [name, value] of [['MERIDIAN_AGY_HISTORY_STEP_BYTES', '190001'], ['MERIDIAN_AGY_HISTORY_MAX_STEPS', '0'], ['MERIDIAN_AGY_MAX_CONTEXT_TOKENS', '512001'], ['MERIDIAN_AGY_CHUNKED_HISTORY', 'yes']]) expect(() => agHistoryLimits({ [name!]: value })).toThrow(name!)
+    for (const [name, value] of [['MERIDIAN_AGY_HISTORY_STEP_BYTES', '190001'], ['MERIDIAN_AGY_HISTORY_MAX_STEPS', '0'], ['MERIDIAN_AGY_MAX_STEP_TOKENS', '64000'], ['MERIDIAN_AGY_MAX_CONTEXT_TOKENS', '512001'], ['MERIDIAN_AGY_CHUNKED_HISTORY', 'yes']]) expect(() => agHistoryLimits({ [name!]: value })).toThrow(name!)
+  })
+  it('conservatively counts CJK, kana, hangul, emoji and other dense scripts', () => {
+    for (const text of ['中文漢字', 'かなカナ', '한국어', '😀🧪‍🚀', 'العربية', 'देवनागरी']) {
+      expect(estimateAgTextTokens(text)).toBeGreaterThanOrEqual([...text].length)
+      expect(estimateAgTextTokens(text)).toBe(Buffer.byteLength(text))
+    }
+    for (const text of ['plain ASCII code'.repeat(1000), 'const x = "中文";'.repeat(1000)]) expect(estimateAgTextTokens(text)).toBeGreaterThanOrEqual(Math.ceil(Buffer.byteLength(text) / 4))
+    expect(estimateAgTextTokens('a'.repeat(1000))).toBe(250)
   })
   it('reserves requested output tokens, including at the boundary', () => {
     const body = request(conversation())
