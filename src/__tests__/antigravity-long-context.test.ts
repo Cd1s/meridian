@@ -369,16 +369,52 @@ describe.skipIf(process.platform === 'win32')('Antigravity long context', () => 
     expect([...runtime.runs.values()][0]!.compacted).toBe(true)
   })
 
-  it('rejects empty native success instead of reporting HTTP 200 with zero usage', async () => {
+  for (const mode of ['absent', 'empty', 'whitespace', 'thinking', 'variant']) {
+    it(`accepts normally completed dense-CJK history chunks with ${mode} visible ACKs`, async () => {
+      process.env.AGY_FIXTURE_HISTORY_ACK_MODE = mode
+      const { send, prompts } = await fixture()
+      const messages: AgMessage[] = [{ role: 'user', content: 'NEEDLE_HEAD_742' }]
+      for (let at = 0; at < 16; at++) messages.push(
+        { role: 'assistant', content: [{ type: 'tool_use', id: `ack_${at}`, name: 'lookup', input: { key: `${at}` } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: `ack_${at}`, content: '漢'.repeat(8000) }] },
+      )
+      messages.push({ role: 'user', content: 'SKIP_TOOLS LONGCTX_NEEDLES NEEDLE_TAIL_963' })
+      const body = request(messages)
+      const expected = planAgHistory(body, [], '', 180_000, 20, 52_000)
+      expect(expected.length).toBe(9)
+      const response = await send(body)
+      expect(response.status).toBe(200)
+      const result = await response.json() as { content: unknown }
+      expect(result.content).toEqual([{ type: 'text', text: 'NEEDLE_HEAD_742 NEEDLE_TAIL_963' }])
+      const steps = await prompts()
+      expect(steps.length).toBe(expected.length)
+      expect(steps.flatMap(decode).map(message => ({ ...message, content: blocks(message) }))).toEqual(body.messages.map(message => ({ ...message, content: blocks(message) })))
+      expect(steps.every(step => estimateAgTextTokens(step) <= 52_000 && Buffer.byteLength(step) <= 180_000)).toBe(true)
+    })
+  }
+
+  it('keeps the final empty-response guard after successfully completed silent history steps', async () => {
+    process.env.AGY_FIXTURE_HISTORY_ACK_MODE = 'absent'
     const { send, prompts } = await fixture()
     const empty = await send(request([{ role: 'user', content: 'SKIP_TOOLS NATIVE_EMPTY_SUCCESS' }]))
     expect(empty.status).toBe(502)
-    process.env.AGY_FIXTURE_HISTORY_EMPTY = '1'
-    const second = await fixture()
-    const response = await second.send(request(conversation()))
+    const body = request(conversation())
+    body.messages[body.messages.length - 1] = { role: 'user', content: 'SKIP_TOOLS NATIVE_EMPTY_SUCCESS' }
+    const before = (await prompts()).length
+    const response = await send(body)
     expect(response.status).toBe(502)
-    expect((await second.prompts()).length).toBe(1)
+    expect((await prompts()).length - before).toBe(planAgHistory(body, [], '', 180_000, 12).length)
   })
+
+  for (const failure of ['DENIED', 'SUCCESS_ERROR']) {
+    it(`rejects ${failure} history steps even when their terminal status says SUCCESS`, async () => {
+      process.env.AGY_FIXTURE_HISTORY_ACK_MODE = 'absent'
+      process.env[`AGY_FIXTURE_HISTORY_${failure}`] = '1'
+      const { send, prompts } = await fixture()
+      expect((await send(request(conversation()))).status).toBe(502)
+      expect((await prompts()).length).toBe(1)
+    })
+  }
 
   it('aborts failed priming without sending the final request', async () => {
     process.env.AGY_FIXTURE_HISTORY_FAILURE = '1'
