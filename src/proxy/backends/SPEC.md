@@ -66,6 +66,15 @@ provider service*; public routes and headers are in
 
 ## Turn deadlines
 
+The native conversation's client-tool count and MCP request replay ledger are
+bounded by `MERIDIAN_AGY_MAX_TOOL_CALLS` (default 256, integer 1–65536, captured at
+runtime construction). An operator may raise this limit for long agent tasks;
+invalid explicit settings fail startup. This is a Meridian bridge limit, separate
+from agy's model-generator invocation limit. Single and parallel calls use the
+same allowance; a batch exceeding it is rejected before any call is dispatched.
+Duplicate MCP requests replay their original result without spending another
+call. The independent 32-outstanding-tool bound and 16-call batch bound remain.
+
 `turnTimeoutMs` bounds each model and preprocessing phase independently. Delivering
 client tools pauses the phase clock; accepting a complete result batch starts a
 new phase with the full allowance. This lets long client-tool loops continue when

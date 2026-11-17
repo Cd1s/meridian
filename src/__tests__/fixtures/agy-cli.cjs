@@ -50,6 +50,26 @@ async function main(inputPrompt) {
     return value.result
   }
   const { tools } = await rpc('tools/list')
+  const longLoop = prompt.match(/CLIENT_TOOL_LOOP_(\d+)/)
+  if (longLoop) {
+    for (let at = 0; at < Number(longLoop[1]); at++) {
+      const params = { name: tools[0].name, arguments: { key: String(at) } }
+      const first = await rpc('tools/call', params)
+      const repeated = await rpc('tools/call', params, nextId)
+      if (JSON.stringify(first) !== JSON.stringify(repeated)) throw new Error('Duplicate MCP result changed')
+    }
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'LONG_LOOP_COMPLETE' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
+  const longBatchLoop = prompt.match(/CLIENT_BATCH_LOOP_(\d+)/)
+  if (longBatchLoop) {
+    const batch = tools.find(tool => tool.name === 'meridian_parallel')
+    for (let at = 0; at < Number(longBatchLoop[1]); at += 16) {
+      await rpc('tools/call', { name: batch.name, arguments: { calls: Array.from({ length: 16 }, (_, index) => ({ name: 'lookup', arguments: { key: String(at + index) } })) } })
+    }
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'LONG_LOOP_COMPLETE' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   if (prompt.includes('MODEL_DELAY')) await new Promise(resolve => setTimeout(resolve, 3100))
   if (prompt.includes('UNICODE_CHUNKS')) {
     const { request } = require('node:http')
