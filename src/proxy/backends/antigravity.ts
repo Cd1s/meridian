@@ -15,7 +15,7 @@ import { buildRuntime } from "../buildRuntime"
 import { hasValidApiKey } from "../auth"
 import { headerSettingsResponse, healthHostname } from "../../headerSettings"
 import { AntigravityRuntime, type AntigravityRun } from "./antigravityRuntime"
-import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequestWithMeta, type AgBlock, type AgResult, type AgRequest } from "./antigravityProtocol"
+import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequestWithMeta, resolveAgRequest, type AgBlock, type AgResult, type AgRequest } from "./antigravityProtocol"
 
 function droppedToolHeaders(names: string[]): Record<string, string> {
   if (!names.length) return {}
@@ -123,11 +123,22 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
   async function messages(request: Request, saveCompletedAnswers = true): Promise<Response> {
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.headers.has("x-meridian-profile")) throw new AntigravityError("Antigravity uses the current agy account; Claude profile routing is unavailable")
-    const { request: body, droppedTools } = parseAgRequestWithMeta(await runtime.plugins.request(await readBody(request), request.signal), runtime.options.adaptThinkingBudgets)
+    const adaptThinkingBudgets = !!runtime.options.adaptThinkingBudgets
+    const rawRequest = await runtime.plugins.request(await readBody(request), request.signal)
+    const rawObject = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : undefined
+    const originalModel = typeof rawObject?.model === "string" ? rawObject.model : undefined
+    const originalThinkingType = rawObject?.thinking && typeof rawObject.thinking === "object" ? (rawObject.thinking as Record<string, unknown>).type : undefined
+    const originalEffort = rawObject?.output_config && typeof rawObject.output_config === "object" ? (rawObject.output_config as Record<string, unknown>).effort : undefined
+    const { request: body, droppedTools } = await (async () => {
+      const resolved = await resolveAgRequest(rawRequest, adaptThinkingBudgets, () => runtime.availableModels())
+      return { request: resolved, droppedTools: parseAgRequestWithMeta(rawRequest, adaptThinkingBudgets).droppedTools }
+    })()
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+    const budgetAdapted = adaptThinkingBudgets && originalThinkingType === "enabled"
+    const effortOrModelAdapted = body.model !== originalModel || body.output_config?.effort !== originalEffort
     const adaptationHeaders: Record<string, string> = {
-      ...(runtime.options.adaptThinkingBudgets ? {
-        "x-meridian-thinking-budgets": "approximate-effort",
+      ...(budgetAdapted ? { "x-meridian-thinking-budgets": "approximate-effort" } : {}),
+      ...(budgetAdapted || effortOrModelAdapted ? {
         "x-meridian-effective-model": body.model,
         ...(body.output_config?.effort ? { "x-meridian-effective-effort": body.output_config.effort } : {}),
       } : {}),
@@ -337,7 +348,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
       if (request.method === "POST" && path === "/v1/messages/count_tokens") {
-        const { request: parsed, droppedTools } = parseAgRequestWithMeta(await readBody(request), runtime.options.adaptThinkingBudgets)
+        const { request: parsed, droppedTools } = parseAgRequestWithMeta(await readBody(request), !!runtime.options.adaptThinkingBudgets)
         return Response.json(estimateAgTokens(parsed), {
           headers: {
             "x-meridian-token-count": "estimate",
