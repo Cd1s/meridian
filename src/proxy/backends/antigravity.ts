@@ -25,11 +25,50 @@ function droppedToolHeaders(names: string[]): Record<string, string> {
   return { "x-meridian-dropped-tools": sample.join(","), "x-meridian-dropped-tools-count": String(names.length) }
 }
 
+const AG_REQUEST_BODY_LIMIT = 8 * 1024 * 1024
+const AG_REQUEST_BODY_TARGET = Math.floor(7.5 * 1024 * 1024)
+const AG_IMAGE_OMIT_NOTE = "[image omitted to fit the 8 MiB request limit]"
+
+type JsonArray = unknown[]
+type ImageSlot = { container: JsonArray; index: number }
+
+function jsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value))
+}
+
+function imageSlots(value: unknown, slots: ImageSlot[] = []): ImageSlot[] {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      const item = value[index]
+      if (item && typeof item === "object" && !Array.isArray(item) && (item as { type?: unknown }).type === "image") slots.push({ container: value, index })
+      imageSlots(item, slots)
+    }
+  } else if (value && typeof value === "object") {
+    for (const child of Object.values(value)) imageSlots(child, slots)
+  }
+  return slots
+}
+
+/** Replace oldest inline images until an oversized Anthropic body fits the safe 7.5 MiB target. */
+export function shrinkOversizedAgImages(value: unknown, target = AG_REQUEST_BODY_TARGET): { value: unknown; changed: boolean; bytes: number } {
+  let bytes = jsonBytes(value)
+  if (bytes <= target) return { value, changed: false, bytes }
+  const slots = imageSlots(value)
+  let changed = false
+  for (const slot of slots) {
+    if (bytes <= target) break
+    slot.container[slot.index] = { type: "text", text: AG_IMAGE_OMIT_NOTE }
+    changed = true
+    bytes = jsonBytes(value)
+  }
+  return { value, changed, bytes }
+}
+
 function errorResponse(error: unknown): Response {
   const e = error instanceof AntigravityError ? error : new AntigravityError(error instanceof Error ? error.message : String(error), 503, "api_error")
   return Response.json({ type: "error", error: { type: e.type, message: e.message } }, { status: e.status, headers: e.retryAfter ? { "retry-after": String(e.retryAfter) } : {} })
 }
-async function readBody(request: Request): Promise<unknown> {
+async function readBody(request: Request, shrinkImages = false): Promise<unknown> {
   if (!request.body) throw new AntigravityError("Missing request body")
   const reader = request.body.getReader()
   const chunks: Uint8Array[] = []; let length = 0
@@ -37,10 +76,17 @@ async function readBody(request: Request): Promise<unknown> {
     while (true) {
       const { done, value } = await reader.read(); if (done) break
       length += value.length
-      if (length > 8 * 1024 * 1024) { await reader.cancel(); throw new AntigravityError("Request exceeds 8 MiB", 413) }
+      if (length > 16 * 1024 * 1024) { await reader.cancel(); throw new AntigravityError("Request exceeds 16 MiB", 413) }
       chunks.push(value)
     }
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown
+    if (!shrinkImages) {
+      if (jsonBytes(value) > AG_REQUEST_BODY_LIMIT) throw new AntigravityError("Request exceeds 8 MiB", 413)
+      return value
+    }
+    const compacted = shrinkOversizedAgImages(value)
+    if (compacted.bytes > AG_REQUEST_BODY_LIMIT) throw new AntigravityError("Request exceeds 8 MiB after image adaptation", 413)
+    return compacted.value
   } catch (error) {
     if (error instanceof AntigravityError) throw error
     throw new AntigravityError("Invalid JSON request body")
@@ -125,7 +171,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.headers.has("x-meridian-profile")) throw new AntigravityError("Antigravity uses the current agy account; Claude profile routing is unavailable")
     const adaptThinkingBudgets = !!runtime.options.adaptThinkingBudgets
-    const pluginRequest = await runtime.plugins.request(await readBody(request), request.signal)
+    const pluginRequest = await runtime.plugins.request(await readBody(request, true), request.signal)
     const rawRequest = await augmentAgRequestWithYouTube(pluginRequest, request.signal)
     const rawObject = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : undefined
     const originalModel = typeof rawObject?.model === "string" ? rawObject.model : undefined
@@ -350,7 +396,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         return Response.json({ object: "list", data: models.map(id => ({ id, type: "model", object: "model", display_name: id, owned_by: "antigravity" })), has_more: false, first_id: models[0], last_id: models.at(-1) })
       }
       if (request.method === "POST" && path === "/v1/messages/count_tokens") {
-        const { request: parsed, droppedTools } = parseAgRequestWithMeta(await readBody(request), !!runtime.options.adaptThinkingBudgets)
+        const { request: parsed, droppedTools } = parseAgRequestWithMeta(await readBody(request, true), !!runtime.options.adaptThinkingBudgets)
         return Response.json(estimateAgTokens(parsed), {
           headers: {
             "x-meridian-token-count": "estimate",
