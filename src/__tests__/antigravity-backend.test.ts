@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { afterEach, describe, expect, it } from "bun:test"
 import { fileURLToPath } from "node:url"
-import { createAntigravityServer } from "../proxy/backends/antigravity"
+import { createAntigravityServer, shrinkOversizedAgImages } from "../proxy/backends/antigravity"
 import { AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
 import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
 import { parseAgRequest, renderAgPrompt, historyKey, contractKey } from "../proxy/backends/antigravityProtocol"
@@ -30,6 +30,32 @@ const initial = (content = "Get receipt") => ({ model: "fixture-model", max_toke
 afterEach(async () => { for (const close of closing.splice(0)) await close() })
 
 describe("Antigravity request contract", () => {
+  it("shrinks oldest inline images with a neutral notice before the body limit", () => {
+    const image = (data: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data } })
+    const request = {
+      messages: [{ role: "user", content: [image("A".repeat(2400)), { type: "text", text: "keep this" }, image("B".repeat(2400))] }],
+    }
+    const compacted = shrinkOversizedAgImages(request, 3500)
+    expect(compacted.changed).toBe(true)
+    expect(compacted.bytes).toBeLessThanOrEqual(3500)
+    const content = (compacted.value as { messages: Array<{ content: Array<Record<string, unknown>> }> }).messages[0]!.content
+    expect(content[0]).toEqual({ type: "text", text: "[image omitted to fit the 8 MiB request limit]" })
+    expect(content[1]).toEqual({ type: "text", text: "keep this" })
+    expect((content[2]!.source as { data: string }).data).toBe("B".repeat(2400))
+  })
+
+  it("shrinks images nested in tool results while retaining the newest media", () => {
+    const image = (data: string) => ({ type: "image", source: { type: "base64", media_type: "image/png", data } })
+    const request = {
+      messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: [image("A".repeat(1800)), image("B".repeat(1800))] }] }],
+    }
+    const compacted = shrinkOversizedAgImages(request, 2500)
+    const result = (compacted.value as { messages: Array<{ content: Array<Record<string, unknown>> }> }).messages[0]!.content[0]!
+    const resultContent = result.content as Array<Record<string, unknown>>
+    expect(resultContent[0]).toEqual({ type: "text", text: "[image omitted to fit the 8 MiB request limit]" })
+    expect((resultContent[1]!.source as { data: string }).data).toBe("B".repeat(1800))
+  })
+
   for (const count of [129, 256]) it(`preserves all ${count} client tool definitions`, () => {
     const tools = Array.from({ length: count }, (_, index) => ({ ...tool, name: `lookup_${index + 1}` }))
     const request = parseAgRequest({ ...initial(), tools, tool_choice: { type: "tool", name: `lookup_${count}` } })

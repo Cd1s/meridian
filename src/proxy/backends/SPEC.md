@@ -58,6 +58,14 @@ belong to [`chatgpt-backend`](../chatgpt/SPEC.md).)
   cache with no durable persistence; when whole-turn trimming runs, it aims
   below the hard limit (`AG_TRIM_TARGET_RATIO`, default 75%) so the cached cut
   only advances when subsequent growth crosses the hard limit again.
+- Anthropic JSON bodies are admitted up to 16 MiB for the adaptation pass. When
+  a body exceeds the 8 MiB upstream limit, the oldest inline image blocks,
+  including images nested in `tool_result`, are replaced with the neutral text
+  marker `[image omitted to fit the 8 MiB request limit]` until the body fits a
+  7.5 MiB target. The newest image is retained when the target can be reached.
+  Bodies that remain over 8 MiB, or requests without shrinkable images, return
+  413. The adaptation applies before request schema validation and never changes
+  the caller's original object outside the current request.
 
 The full runtime, replay, recovery and persistence contract is in
 [`architecture`](../../../ARCHITECTURE.md) → *Antigravity runtime and combined
