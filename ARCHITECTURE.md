@@ -83,6 +83,8 @@ generated paths. `antigravityUrl.ts` validates/pins public HTTPS image downloads
 `antigravityMedia.ts` owns local ffmpeg/Whisper adaptation. `antigravityNative.ts`
 defines the separately opted-in browser/subagent policy; browser MCP uses isolated
 Chrome. `antigravityProcess.ts` contains platform quoting and process termination.
+`antigravityYouTube.ts` provides the separately opted-in, bounded yt-dlp metadata
+and subtitle enrichment path for public YouTube links.
 `antigravityProbe.ts` runs only official version/configuration/model-discovery commands, bounds
 output and deadlines, and joins termination (including forced kill) before one
 timeout retry for configuration or model discovery (never version or ordinary exits). Failed read-only probes impose a five-second account-check cooldown with Retry-After; generation is never retried by this mechanism. Runtime account validation remains fresh and shared
