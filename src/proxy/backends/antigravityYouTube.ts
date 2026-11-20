@@ -9,6 +9,7 @@ const exec = promisify(execFile)
 
 const YOUTUBE_URL = /https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?(?:[^\s#]*?&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/g
 const CONTEXT_PREFIX = "[YouTube video context added by Meridian"
+const LEGACY_CONTEXT_PREFIX = "[YouTube video context added by the gateway"
 const MAX_CONTEXT_BYTES = 60_000
 const MAX_VIDEOS_PER_MESSAGE = 3
 const MAX_CACHE_ENTRIES = 500
@@ -161,7 +162,7 @@ function videoIds(text: string): string[] {
 function isContextBlock(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const block = value as { text?: unknown }
-  return typeof block.text === "string" && block.text.startsWith(CONTEXT_PREFIX)
+  return typeof block.text === "string" && (block.text.startsWith(CONTEXT_PREFIX) || block.text.startsWith(LEGACY_CONTEXT_PREFIX))
 }
 
 function textBlockVideoIds(value: unknown): string[] {

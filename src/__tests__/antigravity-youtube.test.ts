@@ -82,5 +82,11 @@ describe("Antigravity YouTube context", () => {
     ] }] }
     const enriched = await augmentAgRequestWithYouTube(body)
     expect(enriched).toEqual(body)
+
+    const legacy = { model: "gemini-fixture-low", messages: [{ role: "user", content: [
+      { type: "text", text: "https://youtu.be/dQw4w9WgXcQ" },
+      { type: "text", text: "[YouTube video context added by the gateway for https://www.youtube.com/watch?v=dQw4w9WgXcQ]" },
+    ] }] }
+    expect(await augmentAgRequestWithYouTube(legacy)).toEqual(legacy)
   })
 })
