@@ -13,7 +13,8 @@ depends-on: [telemetry-ui]
 Serve Anthropic Messages, OpenAI Chat Completions and a documented OpenAI
 Responses subset through Google's official, signed-in `agy` CLI (preview):
 subprocess lifecycle, the loopback MCP tool bridge for client-owned tools,
-warm-process reuse and history replay, attachments/media adaptation, bounded
+warm-process reuse and history replay, attachments/media adaptation, optional
+YouTube context enrichment, bounded
 saved-answer and tool-ID recovery, optional private SQLite state, read-only
 account/quota probes, provider status, and explicit Pi/OpenCode client setup.
 
@@ -66,6 +67,16 @@ belong to [`chatgpt-backend`](../chatgpt/SPEC.md).)
   Bodies that remain over 8 MiB, or requests without shrinkable images, return
   413. The adaptation applies before request schema validation and never changes
   the caller's original object outside the current request.
+- When `MERIDIAN_AGY_YOUTUBE_CONTEXT=1` is enabled, user text containing up to
+  three public YouTube URLs per message is enriched before schema validation
+  with bounded title, channel, duration, description and subtitle text fetched
+  through the configured `MERIDIAN_AGY_YTDLP_PATH` executable. An optional
+  `MERIDIAN_AGY_YOUTUBE_PROXY` is passed to that executable. Metadata and
+  subtitles are held in a bounded in-memory cache, subtitle text is capped at
+  60,000 UTF-8 bytes per video, and failures become a short diagnostic block so
+  ordinary text requests still proceed. The feature is opt-in because the
+  official CLI cannot open video URLs itself. No source media, credentials or
+  raw subprocess output is logged.
 
 The full runtime, replay, recovery and persistence contract is in
 [`architecture`](../../../ARCHITECTURE.md) → *Antigravity runtime and combined

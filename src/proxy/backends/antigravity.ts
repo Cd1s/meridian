@@ -16,6 +16,7 @@ import { hasValidApiKey } from "../auth"
 import { headerSettingsResponse, healthHostname } from "../../headerSettings"
 import { AntigravityRuntime, type AntigravityRun } from "./antigravityRuntime"
 import { AntigravityError, forcedAgTool, toolChoiceInstruction, blocks, contractKey, historyKey, sameAgExecutionContract, parseAgRequestWithMeta, resolveAgRequestWithMeta, type AgBlock, type AgResult, type AgRequest } from "./antigravityProtocol"
+import { augmentAgRequestWithYouTube } from "./antigravityYouTube"
 
 const AG_REQUEST_BODY_LIMIT = 8 * 1024 * 1024
 const AG_REQUEST_BODY_TARGET = Math.floor(7.5 * 1024 * 1024)
@@ -166,7 +167,8 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     if (runtime.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     if (request.headers.has("x-meridian-profile")) throw new AntigravityError("Antigravity uses the current agy account; Claude profile routing is unavailable")
     const adaptThinkingBudgets = !!runtime.options.adaptThinkingBudgets
-    const rawRequest = await runtime.plugins.request(await readBody(request, true), request.signal)
+    const pluginRequest = await runtime.plugins.request(await readBody(request, true), request.signal)
+    const rawRequest = await augmentAgRequestWithYouTube(pluginRequest, request.signal)
     const rawObject = rawRequest && typeof rawRequest === "object" ? rawRequest as Record<string, unknown> : undefined
     const originalModel = typeof rawObject?.model === "string" ? rawObject.model : undefined
     const originalThinkingType = rawObject?.thinking && typeof rawObject.thinking === "object" ? (rawObject.thinking as Record<string, unknown>).type : undefined
