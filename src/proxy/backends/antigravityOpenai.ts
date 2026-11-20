@@ -6,6 +6,7 @@ import { createSseTranslator, translateOpenAiToAnthropic, translateAnthropicToOp
 import { createResponsesSseTranslator, translateResponsesToAnthropic, translateAnthropicToResponses, buildResponsesToolAliases, responsesToolAlias, resolveCodexThreadIdentity } from '../openaiResponses'
 import type { AgResponseJobs, AgResponseEvent } from './antigravityJobs'
 import { AntigravityError, parseAgRequest } from './antigravityProtocol'
+import { augmentAgRequestWithYouTube } from './antigravityYouTube'
 import { AgResponseStore, agResponseScope } from './antigravityResponses'
 
 const json = z.record(z.string(), z.unknown())
@@ -155,7 +156,7 @@ export async function agOpenai(request: Request, raw: unknown, responses: boolea
     ...(chat?.stop !== undefined ? { stop_sequences: typeof chat.stop === 'string' ? [chat.stop] : chat.stop } : {}),
     output_config: { ...translated.output_config, ...(effort ? { effort } : {}), ...(outputFormat?.type === 'json_schema' ? { format: { type: 'json_schema', schema: outputFormat.schema } } : {}) },
   }
-  const validatedBody = parseAgRequest(body)
+  const validatedBody = parseAgRequest(await augmentAgRequestWithYouTube(body, request.signal))
   if (execution?.countTokens) return Response.json({ object: 'response.input_tokens', ...estimateAgTokens(validatedBody) }, { headers: { 'x-meridian-token-count': 'estimate' } })
   if (responseRequest?.background) {
     if (!jobs) throw new AntigravityError('Background response service unavailable', 503)
@@ -164,7 +165,7 @@ export async function agOpenai(request: Request, raw: unknown, responses: boolea
     const queued = jobs.start(scope, savedInput, data.model, (signal, id) => agOpenai(new Request(request.url, { method: 'POST', headers: request.headers, signal }), { ...rawObject, background: false, stream: true }, true, messages, store, jobs, { id, background: true }))
     return data.stream ? jobs.stream(String(queued.id), scope, -1, request.signal) : Response.json(queued)
   }
-  const upstream = await messages(new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(body), signal: request.signal }))
+  const upstream = await messages(new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(await augmentAgRequestWithYouTube(body, request.signal)), signal: request.signal }))
   if (!upstream.ok) return upstream
   const ctx = { toolAliases: buildResponsesToolAliases(resp?.tools), responseId: execution?.id ?? 'resp_agy_' + randomUUID().replaceAll('-', ''), completionId: 'chatcmpl-agy-' + randomUUID(), model: data.model, created: Math.floor(Date.now() / 1000), includeUsage: chat?.stream_options?.include_usage }
   if (!data.stream) {
