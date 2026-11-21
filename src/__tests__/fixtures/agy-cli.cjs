@@ -4,6 +4,7 @@ const { spawnSync } = require('node:child_process')
 const { readFileSync, appendFileSync, existsSync, writeFileSync } = require('node:fs')
 const args = process.argv.slice(2)
 let nativeStreamStep, nativeStreamCid, deferredNativeText
+let maxInvocationStops = 0
 const emit = value => {
   if (nativeStreamStep !== undefined && value.event === 'step_update') value = { ...value, step_update: { conversation_id: nativeStreamCid, step_index: nativeStreamStep, ...value.step_update } }
   process.stdout.write(JSON.stringify(value) + '\n')
@@ -181,6 +182,10 @@ async function main(inputPrompt) {
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: JSON.stringify(results) } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }
+  if (prompt.startsWith('Continue the current task from where it stopped.')) {
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'CONTINUED' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
   const lastContent = history.at(-1).content
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []
@@ -204,6 +209,14 @@ async function main(inputPrompt) {
     const results = await Promise.all(calls)
     if (priorToolStep !== undefined && prompt.includes('DEFER_TOOL_TEXT')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: priorToolStep, text_delta: 'STALE_PRE_TOOL' } })
     if (prompt.includes('MODEL_DELAY')) await new Promise(resolve => setTimeout(resolve, 3100))
+<<<<<<< HEAD
+=======
+
+    if (prompt.includes('MAX_INVOCATIONS') && maxInvocationStops++ === 0) {
+      return emit({ event: 'result', result: { status: 'ERROR', error: 'executor stopped after maximum invocations', termination_reason: 'EXECUTOR_TERMINATION_REASON_MAX_INVOCATIONS' } })
+    }
+
+>>>>>>> 89a2098 (fix(antigravity): continue after agy invocation limit)
     if (prompt.includes('FAIL_CONTINUATION_504')) { setInterval(() => {}, 1000); return }
     if (prompt.includes('FAIL_CONTINUATION')) {
       const error = prompt.includes('_503') ? 'Service unavailable' : prompt.includes('_429') ? 'Quota exhausted; retry in 1 seconds' : prompt.includes('_401') ? 'Authentication required' : 'Fixture process lost after receiving tool results'
