@@ -68,7 +68,7 @@ describe("Antigravity request contract", () => {
 
   it("rejects images and unsupported controls before creating a process", () => {
     expect(() => parseAgRequest({ ...initial(), messages: [{ role: "user", content: [{ type: "image", source: {} }] }] })).toThrow("text")
-    expect(() => parseAgRequest({ ...initial(), temperature: 0 })).toThrow("temperature")
+    expect(parseAgRequest({ ...initial(), temperature: 0 }).temperature).toBeUndefined()
     expect(() => parseAgRequest({ ...initial(), thinking: { type: "enabled", budget_tokens: 100 } }, false)).toThrow()
     expect(() => parseAgRequest({ ...initial(), tool_choice: { type: "tool", name: "unknown" } })).toThrow()
   })

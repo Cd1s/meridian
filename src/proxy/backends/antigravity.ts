@@ -105,7 +105,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
       }
       if (signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
       const run = await runtime.create(body, signal, compactContext)
-      if (previous) run.continuation = reason
+      if (previous) run.continuation = "client-context-replay"
       runtime.forgetInterruptedContinuation(body)
       for (const result of results) runtime.rememberConsumedTool(result.tool_use_id)
       run.busy = true
