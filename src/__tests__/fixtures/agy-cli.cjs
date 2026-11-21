@@ -1,18 +1,73 @@
 #!/usr/bin/env node
 // Deterministic official-CLI protocol fixture. Never contacts a model service.
 const { spawnSync } = require('node:child_process')
-const { readFileSync } = require('node:fs')
+const { readFileSync, appendFileSync, existsSync, writeFileSync } = require('node:fs')
 const args = process.argv.slice(2)
-const emit = value => process.stdout.write(JSON.stringify(value) + '\n')
+let nativeStreamStep, nativeStreamCid, deferredNativeText
+const emit = value => {
+  if (nativeStreamStep !== undefined && value.event === 'step_update') value = { ...value, step_update: { conversation_id: nativeStreamCid, step_index: nativeStreamStep, ...value.step_update } }
+  process.stdout.write(JSON.stringify(value) + '\n')
+}
 const nativePrompts = []
+const nativeConversationId = args.includes('--conversation') ? args[args.indexOf('--conversation') + 1] : require('node:crypto').randomUUID()
 async function main(inputPrompt) {
   if (args[0] === '--version') return console.log(process.env.AGY_FIXTURE_VERSION || '1.5.5')
   if (args[0] === 'models') return console.log('fixture-model\tFixture Model\nfixture-model-high\tFixture High\ngemini-fixture-low\tGemini Low\ngemini-fixture-medium\tGemini Medium\ngemini-fixture-high\tGemini High')
   let prompt = args[args.indexOf('-p') + 1]
   if (inputPrompt !== undefined) prompt = inputPrompt
   nativePrompts.push(prompt)
+  const native = inputPrompt !== undefined && process.env.AGY_FIXTURE_NATIVE_RECORDS ? require('./agy-native-record.cjs') : undefined
+  const nativeTurn = native?.input(process.env.HOME, nativeConversationId, prompt)
+  if (nativeTurn) {
+    nativeStreamStep = nativeTurn.inputIdx; nativeStreamCid = nativeConversationId
+    emit({ event: 'init', conversation_id: nativeConversationId })
+    const stale = deferredNativeText; deferredNativeText = undefined
+    if (stale) emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: stale.step, text_delta: stale.text + '\n' } })
+    emit({ event: 'step_update', step_update: { step_type: 'user_input', state: 'DONE' } })
+    if (stale && !stale.taggedOnly) {
+      emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: stale.step, planner_response: { response: stale.text } } })
+      // Untagged delayed output cannot establish ownership in the next turn.
+      process.stdout.write(JSON.stringify({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: stale.text + '\n' } }) + '\n')
+    }
+  } else { nativeStreamStep = undefined; nativeStreamCid = undefined }
+  if (inputPrompt !== undefined && process.env.AGY_FIXTURE_PROCESS_LOG) appendFileSync(process.env.AGY_FIXTURE_PROCESS_LOG, JSON.stringify({ pid: process.pid, cid: nativeConversationId, index: nativePrompts.length - 1, hash: require('node:crypto').createHash('sha256').update(prompt).digest('hex'), history: prompt.startsWith('History loading step.'), workspace: process.cwd() }) + '\n')
+  if (inputPrompt !== undefined && process.env.AGY_FIXTURE_PROMPTS) appendFileSync(process.env.AGY_FIXTURE_PROMPTS, JSON.stringify(prompt) + '\n')
+  if (prompt.startsWith('History loading step.')) {
+    if (args.includes('--json-schema')) throw new Error('Schema transport must not constrain history ACKs')
+    const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
+    const pending = new Set()
+    for (const message of history) for (const block of Array.isArray(message.content) ? message.content : []) {
+      if (block.type === 'tool_use') pending.add(block.id)
+      if (block.type === 'tool_result' && !pending.delete(block.tool_use_id)) throw new Error('Split tool pair')
+    }
+    if (pending.size) throw new Error('Split tool pair')
+    const config = JSON.parse(readFileSync('.agents/mcp_config.json', 'utf8'))
+    const rpc = async (method, params) => (await (await fetch(config.mcpServers.client.serverUrl, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json())
+    await rpc('tools/list')
+    if (!(await rpc('tools/call', { name: 'lookup', arguments: { key: 'unsafe' } })).error) throw new Error('Tool executed while loading')
+    const policy = spawnSync(process.execPath, ['policy.cjs'], { input: JSON.stringify({ toolCall: { name: 'view_file', args: { AbsolutePath: '/etc/passwd' } } }), encoding: 'utf8' })
+    if (JSON.parse(policy.stdout).decision !== 'deny') throw new Error('History policy failed')
+    if (process.env.AGY_FIXTURE_PARTIAL_HISTORY) return process.stdout.write('x'.repeat(70000))
+    if (process.env.AGY_FIXTURE_HISTORY_BURST) for (let index = 0; index < 96; index++) emit({ event: 'step_update', step_update: { step_type: 'thinking', text_delta: 'buffered update '.repeat(4) } })
+    const failAt = Number(process.env.AGY_FIXTURE_SUBSCRIBER_AT || 1), onceFile = process.env.AGY_FIXTURE_SUBSCRIBER_ONCE
+    if (nativePrompts.length === failAt && (process.env.AGY_FIXTURE_SUBSCRIBER_ALWAYS || (onceFile && !existsSync(onceFile)))) {
+      if (onceFile) writeFileSync(onceFile, '')
+      if (process.env.AGY_FIXTURE_SUBSCRIBER_AUDIT_ALLOWED) appendFileSync('policy-audit.jsonl', JSON.stringify({ name: 'fixture-side-effect', allowed: true }) + '\n')
+      if (process.env.AGY_FIXTURE_SUBSCRIBER_TOOL_EVENT) emit({ event: 'step_update', step_update: { step_type: 'tool', tool_name: 'fixture-tool', state: 'DONE' } })
+      return emit({ event: 'result', result: { status: 'ERROR', error: process.env.AGY_FIXTURE_SUBSCRIBER_NEAR_MATCH ? 'Policy refused: subscriber fell behind updates, stalled for 6s' : 'the connection to the agent was interrupted before the response finished: subscriber fell behind updates, stalled for 6s', ...(process.env.AGY_FIXTURE_SUBSCRIBER_DENIED ? { denied_actions: [{}] } : {}) } })
+    }
+    if (process.env.AGY_FIXTURE_HISTORY_FAILURE) return emit({ event: 'result', result: { status: 'ERROR', error: 'History loading failed' } })
+    if (process.env.AGY_FIXTURE_HISTORY_SUCCESS_ERROR) return emit({ event: 'result', result: { status: 'SUCCESS', error: 'Fixture explicit failure' } })
+    if (process.env.AGY_FIXTURE_HISTORY_DENIED) return emit({ event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'fixture' }] } })
+    if (nativeTurn) nativeStreamStep = native.answer(nativeTurn, 'ACK')
+    const mode = process.env.AGY_FIXTURE_HISTORY_ACK_MODE || (process.env.AGY_FIXTURE_HISTORY_EMPTY ? 'absent' : 'normal')
+    if (mode === 'thinking') emit({ event: 'step_update', step_update: { step_type: 'thinking', text_delta: 'The chunk is stored.' } })
+    else if (mode !== 'absent') emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: mode === 'empty' ? '' : mode === 'whitespace' ? ' \n ' : mode === 'variant' ? '已记录。' : 'ACK' } })
+    if (mode !== 'absent') emit({ event: 'step_update', step_update: { state: 'DONE', usage: { input_tokens: 100, output_tokens: 1 } } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   if (prompt === '/config' && process.env.AGY_FIXTURE_CONFIG_EXIT) return process.exit(2)
-  if (prompt === '/config') return emit({ conversation_id: '', status: 'SUCCESS', duration_seconds: 0, num_turns: 0, response: 'customModelsConfig\t' + (process.env.AGY_FIXTURE_CUSTOM ? '{"fixture":{}}' : '') + '\nmodelProvider\t' + (process.env.AGY_FIXTURE_API ? 'gemini' : '') + '\nuseG1Credits\tfalse' })
+  if (prompt === '/config') return emit({ conversation_id: '', status: 'SUCCESS', duration_seconds: 0, num_turns: 0, response: 'customModelsConfig\t' + (process.env.AGY_FIXTURE_CUSTOM ? '{\"fixture\":{}}' : '') + '\nmodelProvider\t' + (process.env.AGY_FIXTURE_API ? 'gemini' : '') + '\nuseG1Credits\tfalse' })
   if (prompt === '/usage') return emit({command:{data:{groups:[{name:'Gemini Models',buckets:[{id:'gemini-5h',window:'5h',remaining_fraction:0.75,reset_time:'2099-01-01T00:00:00Z'}]}]}}})
   if (prompt.includes('POLICY_PROBE')) {
     const check = (input, decision) => {
@@ -22,9 +77,9 @@ async function main(inputPrompt) {
     check({toolCall:{name:'view_file',args:{AbsolutePath:'/etc/passwd'}}}, 'deny')
     check({toolCall:{name:'run_command',args:{CommandLine:'id'}}}, 'deny')
     check({toolCall:{name:'call_mcp_tool',args:{ServerName:'other',ToolName:'lookup'}}}, 'deny')
-    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'unknown'}}}, 'deny')
+    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'client',ToolName:'unknown'}}}, 'deny')
     check('invalid JSON', 'deny')
-    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'meridian_client',ToolName:'lookup'}}}, 'allow')
+    check({toolCall:{name:'call_mcp_tool',args:{ServerName:'client',ToolName:'lookup'}}}, 'allow')
   }
   if (prompt.includes('IMAGE_PROBE')) {
     const paths = JSON.parse(readFileSync('attachment-paths.json', 'utf8'))
@@ -35,13 +90,15 @@ async function main(inputPrompt) {
     }
   }
   if (prompt.includes('EFFORT_PROBE') && args[args.indexOf('--effort') + 1] !== 'high') throw new Error('Native effort flag missing')
-  emit({ event: 'init' })
+  if (!nativeTurn) emit({ event: 'init' })
+  if (process.env.AGY_FIXTURE_SUBSCRIBER_FINAL && !prompt.startsWith('History loading step.')) return emit({ event: 'result', result: { status: 'ERROR', error: 'subscriber fell behind updates, stalled for 6s' } })
   if (prompt.includes('RATE_LIMIT')) return emit({event:'result',result:{status:'ERROR',error:'Quota exhausted; retry in 45 seconds'}})
+  if (prompt.includes('NATIVE_EMPTY_SUCCESS')) return emit({ event: 'result', result: { status: 'SUCCESS' } })
   if (prompt.includes('HANG')) { setInterval(() => {}, 1000); return }
   if (prompt.includes('MALFORMED')) { console.log('not JSON'); return }
   if (prompt.includes('DENIED')) return emit({ event: 'result', result: { status: 'SUCCESS', denied_actions: [{ action: 'mcp' }] } })
   const config = JSON.parse(readFileSync('.agents/mcp_config.json', 'utf8'))
-  const url = config.mcpServers.meridian_client.serverUrl
+  const url = config.mcpServers.client.serverUrl
   let nextId = 0
   const rpc = async (method, params, retryId) => {
     const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: retryId ?? ++nextId, method, params }) })
@@ -50,6 +107,27 @@ async function main(inputPrompt) {
     return value.result
   }
   const { tools } = await rpc('tools/list')
+  const longLoop = prompt.match(/CLIENT_TOOL_LOOP_(\d+)/)
+  if (longLoop) {
+    for (let at = 0; at < Number(longLoop[1]); at++) {
+      const params = { name: tools[0].name, arguments: { key: String(at) } }
+      const first = await rpc('tools/call', params)
+      const repeated = await rpc('tools/call', params, nextId)
+      if (JSON.stringify(first) !== JSON.stringify(repeated)) throw new Error('Duplicate MCP result changed')
+    }
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'LONG_LOOP_COMPLETE' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
+  const longBatchLoop = prompt.match(/CLIENT_BATCH_LOOP_(\d+)/)
+  if (longBatchLoop) {
+    const batch = tools.find(tool => tool.name === 'workspace_parallel')
+    for (let at = 0; at < Number(longBatchLoop[1]); at += 16) {
+      await rpc('tools/call', { name: batch.name, arguments: { calls: Array.from({ length: 16 }, (_, index) => ({ name: 'lookup', arguments: { key: String(at + index) } })) } })
+    }
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'LONG_LOOP_COMPLETE' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
+  if (prompt.includes('MODEL_DELAY')) await new Promise(resolve => setTimeout(resolve, 3100))
   if (prompt.includes('UNICODE_CHUNKS')) {
     const { request } = require('node:http')
     const input = { key: 'café/你好/🧪.txt' }
@@ -76,7 +154,7 @@ async function main(inputPrompt) {
   if (prompt.includes('MCP_BATCH') || prompt.includes('MCP_SESSIONS')) {
     let results
     if (prompt.includes('MCP_BATCH')) {
-      const batch = tools.find(tool => tool.name === 'meridian_parallel')
+      const batch = tools.find(tool => tool.name === 'workspace_parallel')
       let invalid = false
       try { await rpc('tools/call', { name: batch.name, arguments: { calls: [{ name: 'lookup', arguments: { key: 'a' } }, { name: 'lookup', arguments: { key: 7 } }] } }) }
       catch (error) { if (!String(error).includes('Invalid arguments')) throw error; invalid = true }
@@ -103,9 +181,21 @@ async function main(inputPrompt) {
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []
   let answer = replayedResults.length ? replayedResults.map(b => (b.is_error ? 'FAILED:' : '') + b.content).join('|') : 'READY'
   if (!replayedResults.length && tools.length && !prompt.includes("SKIP_TOOLS")) {
+    const priorToolStep = nativeTurn ? native.answer(nativeTurn, 'Prior tool narration', { tool: true }) : undefined
+    if (priorToolStep !== undefined) nativeStreamStep = priorToolStep
+    if (prompt.includes('STRUCTURED_PROSE')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'I will look this up before answering.' } })
     emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 100, output_tokens: 5 } } })
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
     if (prompt.includes('RPC_RETRY')) calls.push(rpc('tools/call', {name:tools[0].name,arguments:{key:'probe0'}},2))
+    if (priorToolStep !== undefined && prompt.includes('DEFER_TOOL_TEXT')) {
+      void (async () => {
+        const gate = process.env.AGY_FIXTURE_TOOL_GATE
+        if (!gate) throw new Error('Missing deferred-tool fixture gate')
+        while (!existsSync(gate)) await new Promise(resolve => setTimeout(resolve, 1))
+        emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: priorToolStep, text_delta: 'QUEUED_PRE_TOOL' } })
+        writeFileSync(gate + '.emitted', '')
+      })()
+    }
     const results = await Promise.all(calls)
     if (priorToolStep !== undefined && prompt.includes('DEFER_TOOL_TEXT')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: priorToolStep, text_delta: 'STALE_PRE_TOOL' } })
     if (prompt.includes('MODEL_DELAY')) await new Promise(resolve => setTimeout(resolve, 3100))
@@ -117,25 +207,66 @@ async function main(inputPrompt) {
     if (prompt.includes('LARGE_NEXT_TOOL')) await Promise.all([0, 1].map(() => rpc('tools/call', { name: tools[0].name, arguments: { key: 'x'.repeat(700000) } })))
     if (prompt.includes('NEXT_TOOL')) await rpc('tools/call', { name: tools[0].name, arguments: { key: 'next' } })
     if (prompt.includes('STEERING')) {
-      const followup = JSON.parse(results[0].content[0].text).meridian_client_followup
+      const followup = JSON.parse(results[0].content[0].text).client_followup
       answer = JSON.stringify(followup)
-    } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).meridian_client_result)).join('|')
+    } else answer = results.map(result => (result.isError ? 'FAILED:' : '') + ((value) => typeof value === 'string' ? value : value.map(b => b.text).join(''))(JSON.parse(result.content[0].text).client_result)).join('|')
   }
+  if (prompt.includes('TRIM_TAIL_ONLY')) {
+    if (!prompt.includes('NEEDLE_TAIL_963')) throw new Error('Lost latest request after trimming')
+    answer = 'NEEDLE_TAIL_963'
+  }
+  if (prompt.includes('LONGCTX_NEEDLES')) {
+    const context = nativePrompts.join('\n')
+    if (!context.includes('NEEDLE_HEAD_742') || !context.includes('NEEDLE_TAIL_963')) throw new Error('Lost history needle')
+    answer = 'NEEDLE_HEAD_742 NEEDLE_TAIL_963'
+  }
+  if (prompt.includes('Return the final answer as JSON only')) answer = JSON.stringify({ answer })
+  if (prompt.includes('FENCED_JSON')) answer = '```json\n' + answer + '\n```'
   if (prompt.includes('NATIVE_SECOND')) {
     if (nativePrompts.length !== 2 || prompt.includes('NATIVE_FIRST')) throw new Error('Native continuation replayed history or spawned another process')
     answer = 'NATIVE_REUSED'
   }
-  emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
+  const exact = [...prompt.matchAll(/TURN_ANSWER_([A-Z0-9_]+)/g)].at(-1)
+  if (exact) answer = exact[1]
+  const schemaTransport = args.includes('--json-schema')
+  if (nativeTurn && !prompt.includes('NATIVE_EMPTY_AFTER_TOOL')) nativeStreamStep = native.answer(nativeTurn, prompt.includes('NATIVE_RECORD_EMPTY') ? '' : prompt.includes('BAD_NATIVE_JSON') ? 'PRIVATE_INVALID_JSON' : prompt.includes('WRONG_NATIVE_SCHEMA') ? '{"answer":123}' : schemaTransport ? JSON.stringify({ answer }) : answer, { thinking: 'PRIVATE_REASONING_NEVER_RETURN', ...(prompt.includes('NATIVE_RECORD_WRONG_EXEC') ? { execution: require('node:crypto').randomUUID() } : {}) })
+  const hidden = /NATIVE_RECORD_ONLY|NATIVE_RECORD_EMPTY|NATIVE_RECORD_WRONG_EXEC|NATIVE_EMPTY_AFTER_TOOL|FINAL_RESPONSE_SNAPSHOT|FINAL_RESULT_SNAPSHOT|FINAL_LATE_RESPONSE|FINAL_UNRECOGNIZED/.test(prompt)
+  if (prompt.includes('FINAL_MULTISTEP_SNAPSHOT')) {
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'First planner step. ' } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: 'First planner step. ' } } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer } } })
+  }
+  else if (prompt.includes('FINAL_RESPONSE_SNAPSHOT')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer, modified_response: answer } } })
+  else if (prompt.includes('FINAL_UNRECOGNIZED')) emit({ event: 'step_update', step_update: { step_type: 'assistant_output', final_content: { public_text: answer } } })
+  else if (prompt.includes('FINAL_BUFFERED_TAIL')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'REA' } })
+  else if (!hidden) {
+    const frame = { event: 'step_update', step_update: { step_type: 'agent_response', text_delta: answer + (prompt.includes('CURRENT_NEWLINE') ? '\n' : '') } }
+    if (prompt.includes('UNSCOPED_CURRENT_TEXT')) process.stdout.write(JSON.stringify(frame) + '\n')
+    else emit(frame)
+  }
   emit({ event: 'step_update', step_update: { state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 120, output_tokens: 10, cache_read_tokens: 20 } } })
   const schemaPath = args.includes('--json-schema') && args[args.indexOf('--json-schema') + 1]
   if (schemaPath) JSON.parse(readFileSync(schemaPath, 'utf8'))
-  emit({ event: 'result', result: { status: 'SUCCESS', ...(schemaPath && !prompt.includes('MISSING_STRUCTURED') ? { structured_output: prompt.includes('BAD_STRUCTURED') ? { output: { answer } } : { answer } } : {}) } })
+  if (prompt.includes('FINAL_BUFFERED_TAIL')) {
+    const frames = [{ event: 'result', result: { status: 'SUCCESS' } }]
+    for (let at = 0; at < 36; at++) frames.push({ event: 'step_update', step_update: { step_type: 'agent_response', response: 'REA' } })
+    frames.push({ event: 'step_update', step_update: { step_type: 'agent_response', response: answer } })
+    const packet = frames.map(frame => JSON.stringify(frame) + '\n').join('')
+    if (Buffer.byteLength(packet) > 4096 || nativeTurn) throw new Error('Buffered-tail fixture must fit one atomic legacy pipe write')
+    process.stdout.write(packet)
+  } else emit({ event: 'result', result: { status: 'SUCCESS', ...(prompt.includes('FINAL_RESULT_SNAPSHOT') ? { planner_response: { response: answer } } : {}), ...(prompt.includes('STALE_RESULT_SNAPSHOT') ? { response: 'FIRST_ONLY\n' + answer + '\n' } : {}), ...(schemaPath && !prompt.includes('MISSING_STRUCTURED') ? { structured_output: prompt.includes('BAD_STRUCTURED') ? { output: { answer } } : { answer } } : {}) } })
+  if (prompt.includes('FINAL_LATE_RESPONSE')) { await new Promise(resolve => setTimeout(resolve, 5)); emit({ event: 'step_update', step_update: { step_type: 'agent_response', state: 'DONE', planner_response: { response: answer } } }) }
+  if (nativeTurn && prompt.includes('NATIVE_DEFERRED_CURSOR')) deferredNativeText = { step: nativeStreamStep, text: answer, taggedOnly: prompt.includes('NATIVE_DEFERRED_TAGGED_ONLY') }
   if (prompt.includes('BAD_EXIT')) process.exitCode = 1
   if (prompt.includes('LINGER')) setInterval(() => {}, 1000)
 }
 async function run() {
   if (!args.includes('--input-format')) return main()
   const lines = require('node:readline').createInterface({ input: process.stdin })
-  for await (const line of lines) await main(JSON.parse(line).message.content)
+  for await (const line of lines) {
+    if (process.env.AGY_FIXTURE_SLOW_STDIN) await new Promise(resolve => setTimeout(resolve, 30))
+    await main(JSON.parse(line).message.content)
+  }
 }
 run().catch(error => { console.error(error); process.exitCode = 1 })
