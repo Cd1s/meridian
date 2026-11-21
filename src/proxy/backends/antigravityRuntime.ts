@@ -42,13 +42,21 @@ const exec = promisify(execFile)
 const envelope = z.object({
   event: z.string(), conversation_id: z.string().optional(),
   step_update: z.object({ step_type: z.string().optional(), tool_name: z.string().optional(), state: z.string().optional(), text_delta: z.string().optional(), usage: z.object({ input_tokens: z.number().optional(), output_tokens: z.number().optional(), cache_read_tokens: z.number().optional() }).optional() }).optional(),
-  result: z.object({ status: z.string(), error: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
+  result: z.object({ status: z.string(), error: z.string().optional(), termination_reason: z.string().optional(), terminationReason: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
 })
 const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]).optional(), method: z.string(), params: z.record(z.string(), z.unknown()).optional() })
 const toolParams = z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) })
 
 function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value))
+}
+
+function agInvocationLimit(raw: unknown, result?: z.infer<typeof envelope>['result']): boolean {
+  if (!result || result.status === "SUCCESS") return false
+  const text = [result.error, result.termination_reason, result.terminationReason].filter(Boolean).join(" ").toUpperCase()
+  if (/MAX[_ -](?:GENERATOR[_ -])?INVOCATIONS?/.test(text) || /(?:MAXIMUM|MAX)[^\n]{0,80}INVOCATIONS?/.test(text)) return true
+  const source = raw && typeof raw === "object" ? JSON.stringify(raw).toUpperCase() : ""
+  return /MAX[_ -](?:GENERATOR[_ -])?INVOCATIONS?/.test(source)
 }
 
 
@@ -98,6 +106,8 @@ export class AntigravityRun {
   private pendingTimer?: ReturnType<typeof setTimeout>
   private killTimer?: ReturnType<typeof setTimeout>
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
+  private lastActionWasClientTool = false
+  private invocationContinues = 0
   private replaySteps: string[] = []
   private replayIndex = 0
   private encodedSteps: Array<{ frame: string; tokens: number }> = []
@@ -458,6 +468,10 @@ export class AntigravityRun {
           await this.writeStep()
           return
         }
+        if (agInvocationLimit(raw, event.result) && this.lastActionWasClientTool && !this.finalResponsePending) {
+          await this.continueAfterInvocationLimit()
+          return
+        }
         this.terminal = true
         if (event.result.status !== "SUCCESS" || event.result.error || event.result.denied_actions?.length) {
           this.abort(classifyAgFailure(event.result.error || "Antigravity denied an action; client-owned tool policy or account permission prevented completion"))
@@ -483,6 +497,28 @@ export class AntigravityRun {
         }
       }
     } catch (error) { this.abort(new AntigravityError(`Invalid Antigravity stream: ${String(error)}`, 502, "api_error")) }
+  }
+  private async continueAfterInvocationLimit(): Promise<void> {
+    if (this.invocationContinues >= this.runtime.maxInvocationContinues) {
+      this.abort(new AntigravityError(`Antigravity invocation limit reached and MERIDIAN_AGY_MAX_INVOCATION_CONTINUES=${this.runtime.maxInvocationContinues} was exhausted`, 502, "api_error"))
+      return
+    }
+    if (!this.child || this.child.stdin.destroyed || this.pending.size) {
+      this.abort(new AntigravityError("Antigravity invocation limit reached with unresolved client tools", 502, "api_error"))
+      return
+    }
+    this.invocationContinues++
+    this.terminal = false
+    this.finalResponsePending = false
+    this.terminalSuccess = false
+    this.responseId = undefined
+    this.outputBytes = 0
+    this.eventShapes = []
+    const prompt = "Continue the current task from where it stopped. Previous tool calls are complete."
+    this.beginInput(prompt)
+    this.contextTokens += estimateAgTextTokens(prompt)
+    this.resumeModelTimer()
+    await writeAgFrame(this.child.stdin, JSON.stringify({ event: "user", message: { content: prompt } }) + "\n", this.attachmentAbort.signal)
   }
   dispatchCall(id: string | number, name: string, input: Record<string, unknown>): Promise<AgToolReply> {
     if (this.loadingHistory) return Promise.reject(new Error("Tools are disabled while loading conversation history"))
@@ -534,6 +570,7 @@ export class AntigravityRun {
     if (this.pending.size >= 32) throw new Error("Too many outstanding tools")
     if (this.toolCalls >= this.runtime.maxClientToolCalls) throw new Error(`Antigravity conversation exceeded ${this.runtime.maxClientToolCalls} client tool calls`)
     this.toolCalls++
+    this.lastActionWasClientTool = true
     const call: AgCall = { type: "tool_use", id: "toolu_agy_" + randomUUID().replaceAll("-", ""), name, input }
     return new Promise((resolve, reject) => {
       this.pending.set(call.id, { call, resolve, reject })
@@ -555,6 +592,7 @@ export class AntigravityRun {
     this.continuation = "live"
     this.busy = true
     this.idle = false
+    this.lastActionWasClientTool = false
     clearTimeout(this.pendingTimer)
     this.beginTurn()
     const cancel = () => this.abort(new AntigravityError("Request cancelled", 499, "api_error"))
@@ -630,6 +668,7 @@ export class AntigravityRun {
       this.runtime.toolOwners.delete(result.tool_use_id)
       pending.resolve({ ...prepared[index]!, clientMessages: index === 0 ? messages : [] })
     }
+    this.lastActionWasClientTool = true
   }
   async stopAtSequence(): Promise<void> {
     this.abort(new AntigravityError("Client stop sequence reached", 499, "api_error"), "completed")
@@ -705,6 +744,7 @@ export class AntigravityRuntime {
   readonly turnMaxDurationMs: number
   readonly pendingToolTimeoutMs: number
   readonly idleConversationMs: number
+  readonly maxInvocationContinues: number
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
   get shutdownSignal(): AbortSignal { return this.shutdown.signal }
@@ -852,6 +892,8 @@ export class AntigravityRuntime {
     // The new option has its own range; leaving it unset retains every
     // previously accepted tool deadline rather than adding a startup refusal.
     if (options.idleConversationMs !== undefined && (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000)) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
+    this.maxInvocationContinues = options.maxInvocationContinues ?? 64
+    if (!Number.isSafeInteger(this.maxInvocationContinues) || this.maxInvocationContinues < 0 || this.maxInvocationContinues > 1024) throw new Error("Antigravity invocation continuations must be an integer from 0 to 1024")
     this.state = options.statePath ? new AgState(options.statePath) : undefined
     try {
     this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
