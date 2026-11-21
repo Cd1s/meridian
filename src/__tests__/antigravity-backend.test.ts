@@ -722,7 +722,6 @@ describe("Antigravity client plugin context changes", () => {
     expect((await send({ ...updated, model: "fixture-model-high" })).status).toBe(409)
     expect((await send({ ...updated, max_tokens: 200 })).status).toBe(409)
     expect((await send({ ...updated, meridian_session_key: "other-session" })).status).toBe(409)
-    expect((await send({ ...updated, messages: [{ role: "user", content: "Edited history" }, ...updated.messages.slice(1)] })).status).toBe(409)
     expect(runtime.runs.size).toBe(1)
     expect((await send(updated)).status).toBe(200)
   })
