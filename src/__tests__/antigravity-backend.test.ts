@@ -209,7 +209,9 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(response.status).toBe(200)
   })
   it("materializes only valid supplied image bytes and restricts the read hook", async () => {
-    const { send } = fixture()
+    const { send, runtime } = fixture()
+    runtime.childEnv.AGY_FIXTURE_VERSION = "1.5.5"
+    runtime.childEnv.AGY_FIXTURE_IMAGE_TOOL = "read_file"
     const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aG1sAAAAASUVORK5CYII=" } }
     const request = { ...initial(), tools: [], messages: [{ role: "user", content: [{ type: "text", text: "IMAGE_PROBE" }, image] }] }
     expect((await send(request)).status).toBe(200)

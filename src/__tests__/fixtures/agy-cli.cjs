@@ -67,7 +67,10 @@ async function main(inputPrompt) {
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }
   if (prompt === '/config' && process.env.AGY_FIXTURE_CONFIG_EXIT) return process.exit(2)
-  if (prompt === '/config') return emit({ conversation_id: '', status: 'SUCCESS', duration_seconds: 0, num_turns: 0, response: 'customModelsConfig\t' + (process.env.AGY_FIXTURE_CUSTOM ? '{\"fixture\":{}}' : '') + '\nmodelProvider\t' + (process.env.AGY_FIXTURE_API ? 'gemini' : '') + '\nuseG1Credits\tfalse' })
+  if (prompt === '/config') {
+    if ((process.env.AGY_FIXTURE_VERSION || '1.5.5') === '1.2.7') return emit({ command: { data: { config: { customModelsConfig: process.env.AGY_FIXTURE_CUSTOM ? { fixture: {} } : {}, modelProvider: process.env.AGY_FIXTURE_API ? 'gemini' : '', useG1Credits: false } } } })
+    return emit({ conversation_id: '', status: 'SUCCESS', duration_seconds: 0, num_turns: 0, response: 'customModelsConfig\t' + (process.env.AGY_FIXTURE_CUSTOM ? '{\"fixture\":{}}' : '') + '\nmodelProvider\t' + (process.env.AGY_FIXTURE_API ? 'gemini' : '') + '\nuseG1Credits\tfalse' })
+  }
   if (prompt === '/usage') return emit({command:{data:{groups:[{name:'Gemini Models',buckets:[{id:'gemini-5h',window:'5h',remaining_fraction:0.75,reset_time:'2099-01-01T00:00:00Z'}]}]}}})
   if (prompt.includes('POLICY_PROBE')) {
     const check = (input, decision) => {
@@ -84,7 +87,7 @@ async function main(inputPrompt) {
   if (prompt.includes('IMAGE_PROBE')) {
     const paths = JSON.parse(readFileSync('attachment-paths.json', 'utf8'))
     if (paths.length !== 1 || !prompt.includes(paths[0]) || prompt.includes('iVBORw0KGgo')) throw new Error('Image reference missing or bytes leaked')
-    const imageTool = (process.env.AGY_FIXTURE_VERSION || '1.5.5') === '1.5.5' ? 'read_file' : 'view_file'
+    const imageTool = process.env.AGY_FIXTURE_IMAGE_TOOL || ((process.env.AGY_FIXTURE_VERSION || '1.5.5') === '1.5.5' ? 'read_file' : 'view_file')
     for (const [path, decision] of [[paths[0], 'allow'], ['/etc/passwd', 'deny'], [paths[0] + '/../policy.cjs', 'deny']]) {
       const result = spawnSync(process.execPath, ['policy.cjs'], { input: JSON.stringify({ toolCall: { name: imageTool, args: { AbsolutePath: path } } }), encoding: 'utf8' })
       if (JSON.parse(result.stdout).decision !== decision) throw new Error('Image policy mismatch')
