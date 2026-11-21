@@ -30,6 +30,7 @@ describe("Antigravity image attachments", () => {
     expect((await stat(paths[0]!)).mode & 0o777).toBe(0o600)
     expect(JSON.stringify(messages)).toContain(paths[0]!)
     expect(JSON.stringify(result)).toContain(paths[0]!)
+    expect(JSON.stringify(messages)).toContain("view_file or read_file")
     expect(JSON.stringify([messages, result])).not.toContain(data)
     expect(JSON.stringify(result)).toContain("caption")
   })

@@ -84,8 +84,9 @@ async function main(inputPrompt) {
   if (prompt.includes('IMAGE_PROBE')) {
     const paths = JSON.parse(readFileSync('attachment-paths.json', 'utf8'))
     if (paths.length !== 1 || !prompt.includes(paths[0]) || prompt.includes('iVBORw0KGgo')) throw new Error('Image reference missing or bytes leaked')
+    const imageTool = (process.env.AGY_FIXTURE_VERSION || '1.5.5') === '1.5.5' ? 'read_file' : 'view_file'
     for (const [path, decision] of [[paths[0], 'allow'], ['/etc/passwd', 'deny'], [paths[0] + '/../policy.cjs', 'deny']]) {
-      const result = spawnSync(process.execPath, ['policy.cjs'], { input: JSON.stringify({ toolCall: { name: 'view_file', args: { AbsolutePath: path } } }), encoding: 'utf8' })
+      const result = spawnSync(process.execPath, ['policy.cjs'], { input: JSON.stringify({ toolCall: { name: imageTool, args: { AbsolutePath: path } } }), encoding: 'utf8' })
       if (JSON.parse(result.stdout).decision !== decision) throw new Error('Image policy mismatch')
     }
   }
