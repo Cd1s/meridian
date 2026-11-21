@@ -171,8 +171,9 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     const originalModel = typeof rawObject?.model === "string" ? rawObject.model : undefined
     const originalThinkingType = rawObject?.thinking && typeof rawObject.thinking === "object" ? (rawObject.thinking as Record<string, unknown>).type : undefined
     const originalEffort = rawObject?.output_config && typeof rawObject.output_config === "object" ? (rawObject.output_config as Record<string, unknown>).effort : undefined
-    const body = await resolveAgRequest(rawRequest, adaptThinkingBudgets, () => runtime.availableModels())
+    const { request: body, droppedTools } = await resolveAgRequestWithMeta(rawRequest, adaptThinkingBudgets, () => runtime.availableModels())
     if (request.signal.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
+    if (droppedTools.length) console.warn(`[antigravity] Dropped unsupported hosted tools: ${droppedTools.join(", ")}`)
     const budgetAdapted = adaptThinkingBudgets && originalThinkingType === "enabled"
     const effortOrModelAdapted = body.model !== originalModel || body.output_config?.effort !== originalEffort
     const adaptationHeaders: Record<string, string> = {
@@ -181,6 +182,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         "x-meridian-effective-model": body.model,
         ...(body.output_config?.effort ? { "x-meridian-effective-effort": body.output_config.effort } : {}),
       } : {}),
+      ...(droppedTools.length ? { "x-meridian-dropped-tools": droppedTools.join(",") } : {}),
     }
     const scope = agResponseScope(request.headers)
     const canSaveAnswer = saveCompletedAnswers && !runtime.options.allowNativeBrowser && !runtime.options.allowNativeSubagents
