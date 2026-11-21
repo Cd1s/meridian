@@ -241,6 +241,7 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_TURN_MAX_DURATION_MS` | `7200000` | Absolute per-turn deadline including client tool waits; also bounds the CLI print timeout |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending client tool-result deadline |
 | `MERIDIAN_AGY_IDLE_CONVERSATION_MS` | tool timeout | How long a completed conversation keeps its live process for the next turn (explicit values: 1–86400000); afterwards that turn replays the full history. Unset preserves the existing tool timeout, including values above this new option's limit. |
+| `MERIDIAN_AGY_MAX_INVOCATION_CONTINUES` | `64` | Maximum same-conversation continuations after agy reports `EXECUTOR_TERMINATION_REASON_MAX_INVOCATIONS` while a client-tool task is unfinished; `0` disables recovery and values above 1024 are rejected |
 | `MERIDIAN_AGY_MAX_PROMPT_BYTES` | `190000` | UTF-8 byte limit of one prompt sent to agy, which keeps only about 192,000 bytes of an input step and drops the rest (the newest messages). Past it the oldest large tool results, arguments and text are shortened, the newest last; a current request that alone does not fit returns 400 `prompt is too long`. `0` disables it. |
 | `MERIDIAN_AGY_TRIM_OLDEST_TURNS` | unset | Set to `1` to opt into dropping the oldest whole turns (at assistant boundaries, preserving `tool_use`/`tool_result` pairing, a bounded first-user note, and verbatim latest typed user instruction if crossed, targeting 75% of `MERIDIAN_AGY_MAX_PROMPT_BYTES` so a prefix-validated cached cut only advances when growth crosses the hard limit again) before shrinking the newest round when older-turn middle omission still exceeds `MERIDIAN_AGY_MAX_PROMPT_BYTES`. |
 
@@ -1071,6 +1072,14 @@ tasks can set, for example, `MERIDIAN_AGY_MAX_TOOL_CALLS=16384` and restart idle
 instances. This does not alter agy's own generator settings, tool permissions,
 the 32 outstanding calls limit, or the 16-call parallel batch limit. Higher
 allowances retain more conversation and replay data until the run is retired.
+
+agy also has a per-turn generator invocation limit. When it emits
+`EXECUTOR_TERMINATION_REASON_MAX_INVOCATIONS` after a completed client-tool
+batch, Meridian sends `Continue the current task from where it stopped. Previous
+tool calls are complete.` into the same live conversation. This resets agy's
+per-turn counter while preserving the tool-result history. The recovery is
+bounded by `MERIDIAN_AGY_MAX_INVOCATION_CONTINUES`; exhausting the bound returns
+a diagnostic 502.
 
 
 The fork keeps warm long context enabled: matching live turns send only appended

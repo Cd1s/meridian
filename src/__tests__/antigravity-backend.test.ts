@@ -277,6 +277,24 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(await decode(await send(followup))).toEqual(answer) // Saved answer, no duplicate execution.
     expect((await send({ ...followup, tool_choice: { type: "none" }, messages: [...followup.messages, { role: "user", content: "A new user turn with completed context" }] })).status).toBe(200)
   })
+  it("continues the live agy conversation after an invocation-limit result", async () => {
+    const { send } = fixture({ reuseConversations: true, maxInvocationContinues: 1 })
+    const request = initial("MAX_INVOCATIONS")
+    const first = await decode(await send(request))
+    const call = first.content.find(block => block.type === "tool_use")!
+    const answer = await decode(await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "done" }] }] }))
+    expect(answer.stop_reason).toBe("end_turn")
+    expect(answer.content).toEqual([{ type: "text", text: "CONTINUED" }])
+  })
+  it("surfaces a clear error when invocation continuations are exhausted", async () => {
+    const { send } = fixture({ reuseConversations: true, maxInvocationContinues: 0 })
+    const request = initial("MAX_INVOCATIONS")
+    const first = await decode(await send(request))
+    const call = first.content.find(block => block.type === "tool_use")!
+    const answer = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "done" }] }] })
+    expect(answer.status).toBe(502)
+    expect(await answer.text()).toContain("MAX_INVOCATION_CONTINUES=0")
+  })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
     const { send } = fixture()
     const request = initial("UNICODE_CHUNKS")
