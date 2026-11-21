@@ -209,14 +209,11 @@ async function main(inputPrompt) {
     const results = await Promise.all(calls)
     if (priorToolStep !== undefined && prompt.includes('DEFER_TOOL_TEXT')) emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: priorToolStep, text_delta: 'STALE_PRE_TOOL' } })
     if (prompt.includes('MODEL_DELAY')) await new Promise(resolve => setTimeout(resolve, 3100))
-<<<<<<< HEAD
-=======
 
     if (prompt.includes('MAX_INVOCATIONS') && maxInvocationStops++ === 0) {
       return emit({ event: 'result', result: { status: 'ERROR', error: 'executor stopped after maximum invocations', termination_reason: 'EXECUTOR_TERMINATION_REASON_MAX_INVOCATIONS' } })
     }
 
->>>>>>> 89a2098 (fix(antigravity): continue after agy invocation limit)
     if (prompt.includes('FAIL_CONTINUATION_504')) { setInterval(() => {}, 1000); return }
     if (prompt.includes('FAIL_CONTINUATION')) {
       const error = prompt.includes('_503') ? 'Service unavailable' : prompt.includes('_429') ? 'Quota exhausted; retry in 1 seconds' : prompt.includes('_401') ? 'Authentication required' : 'Fixture process lost after receiving tool results'
