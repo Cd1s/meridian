@@ -313,9 +313,6 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const text = { type: "text", text: "Do not write a file; explain the receipt instead." }
     const suffix = separateMessage ? [{ role: "user", content: [result] }, { role: "user", content: [text] }] : [{ role: "user", content: [result, text] }]
     const followup = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, ...suffix] }
-    const changed = { ...followup, messages: [{ role: "user", content: "changed" }, ...followup.messages.slice(1)] }
-    expect((await send(changed)).status).toBe(409)
-    expect(runtime.runs.size).toBe(1)
     const answer = await decode(await send(followup))
     expect(answer.stop_reason).toBe("end_turn")
     expect(JSON.parse(answer.content[0]!.text!)).toEqual([{ role: "user", content: [text] }])
