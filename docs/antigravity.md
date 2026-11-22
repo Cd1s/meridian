@@ -85,8 +85,9 @@ When running from a checkout, replace `meridian` with `node dist/cli.js` after
 
 Before generation, Meridian verifies the official CLI version and its current
 subscription configuration. Simultaneous checks in one runtime share the same
-in-flight check; later requests validate again. Version validation precedes the
-configuration command.
+in-flight check. Successful checks are cached for the configured verification
+TTL, with stale-while-revalidate during the second half of that window. Version
+validation precedes the configuration command.
 
 Both `/config` and `agy models` discovery probes have a 20-second deadline. If either times out, Meridian terminates
 and joins it (forcing termination after one second if needed), waits 250 ms, and
@@ -104,6 +105,15 @@ Diagnostics report reason, attempt, elapsed time, deadline, exit/signal and outp
 size without exposing CLI configuration contents. A recovered timeout is logged.
 This handles a reproduced timeout mode; it does not explain the CLI's internal
 stall or guarantee every historical 503 has the same cause.
+
+Verification and model discovery have independent caches. A configuration change
+made while a cached verification is valid is detected within the verification
+TTL, or immediately after an agy failure or an authentication, quota,
+subscription or configuration error. Set `MERIDIAN_AGY_VERIFY_TTL_MS=0` to
+restore strict per-request verification checks. Model discovery serves the last
+successful list while refreshing it in the background after its TTL. The first
+load blocks, and a model absent from the cached list triggers one blocking refresh
+before Meridian reports it as unknown.
 
 The live fault gate withholds the first official `/config` result until the real
 production deadline and requires a fresh successful configuration check before
@@ -238,6 +248,8 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_WHISPER_MODEL` | unset | Local whisper.cpp model for audio transcription |
 | `MERIDIAN_AGY_MAX_CONCURRENT` | `4` | Maximum live processes; idle pending tools can yield capacity |
 | `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Full model/preprocessing deadline for each phase, refreshed after each accepted tool-result batch; paused while waiting for client tools |
+| `MERIDIAN_AGY_VERIFY_TTL_MS` | `120000` | Successful agy version/configuration verification cache lifetime; stale-while-revalidate after half the TTL; `0` restores per-request checks |
+| `MERIDIAN_AGY_MODELS_TTL_MS` | `600000` | Successful `agy models` cache lifetime; stale lists refresh in the background; `0` restores the previous 60-second cache behavior |
 | `MERIDIAN_AGY_TURN_MAX_DURATION_MS` | `7200000` | Absolute per-turn deadline including client tool waits; also bounds the CLI print timeout |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending client tool-result deadline |
 | `MERIDIAN_AGY_IDLE_CONVERSATION_MS` | tool timeout | How long a completed conversation keeps its live process for the next turn (explicit values: 1–86400000); afterwards that turn replays the full history. Unset preserves the existing tool timeout, including values above this new option's limit. |

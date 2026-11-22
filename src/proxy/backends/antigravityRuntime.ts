@@ -47,6 +47,20 @@ const envelope = z.object({
 const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]).optional(), method: z.string(), params: z.record(z.string(), z.unknown()).optional() })
 const toolParams = z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) })
 
+type VerifyCacheMode = "hit" | "miss" | "swr"
+
+function envDuration(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value >= 0 ? value : fallback
+}
+
+function isAuthLikeAgFailure(error: unknown): boolean {
+  const status = error instanceof AntigravityError ? error.status : undefined
+  if (status === 401 || status === 403) return true
+  const message = error instanceof Error ? error.message : String(error)
+  return /\b401\b|\b403\b|sign[ -]?in|unauthenticated|authentication|token expired|quota|subscription|configuration/i.test(message)
+}
+
 function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value))
 }
@@ -390,10 +404,14 @@ export class AntigravityRun {
       this.drainClock.unref()
       lines.on("line", line => this.updates!.push(line))
       lines.once("close", () => { void this.updates!.finish().catch(() => undefined) })
-      child.once("error", error => this.abort(new AntigravityError(`Cannot start agy: ${error.message}`, 503, "api_error")))
+      child.once("error", error => {
+        this.runtime.invalidateVerificationCache()
+        this.abort(new AntigravityError(`Cannot start agy: ${error.message}`, 503, "api_error"))
+      })
       child.once("close", (code, signal) => { void (async () => {
         this.exited = true
         await this.updates!.finish().catch(() => undefined)
+        if (code !== 0 || signal) this.runtime.invalidateVerificationCache()
         if (this.terminal && !this.stopped && !this.reusable) {
           if (code !== 0 || signal) this.abort(classifyAgFailure("Antigravity exited unsuccessfully after its result"))
           else {
@@ -682,7 +700,10 @@ export class AntigravityRun {
     this.attachmentAbort.abort()
     this.updates?.cancel()
     this.child?.stdout.destroy()
-    if (outcome === "failed") this.runtime.failed++
+    if (outcome === "failed") {
+      this.runtime.failed++
+      if (isAuthLikeAgFailure(error)) this.runtime.invalidateVerificationCache()
+    }
     else if (outcome === "reclaimed") this.runtime.reclaimed++
     else if (outcome === "completed" && !this.exited) this.runtime.completed++
     this.queue.fail(error)
@@ -854,6 +875,10 @@ export class AntigravityRuntime {
   reclaimed = 0
   completed = 0
   failed = 0
+  verifyCacheHits = 0
+  verifyCacheMisses = 0
+  modelsCacheHits = 0
+  modelsRefreshes = 0
   preparing = 0
   readonly nativeActivity: Array<{ runId: string; name: string; state: string; timestamp: number }> = []
   recordNative(event: { runId: string; name: string; state: string; timestamp: number }): void { try { this.state?.put("native", randomUUID(), "", JSON.stringify(event), Date.now() + 30 * 86400000, 500, 1024 * 1024) } catch (error) { this.stateError = String(error) }; this.nativeActivity.unshift(event); this.nativeActivity.length = Math.min(this.nativeActivity.length, 500) }
@@ -871,6 +896,11 @@ export class AntigravityRuntime {
   private initialization?: Promise<void>
   private models: string[] = []
   private checkedAt = 0
+  private readonly verifyTtlMs: number
+  private readonly modelsTtlMs: number
+  private verification?: { verifiedAt: number; version: string }
+  private verificationEpoch = 0
+  private lastVerifyCacheMode: VerifyCacheMode = "miss"
   private verifying?: Promise<void>
   private checking?: Promise<string[]>
   private closing?: Promise<void>
@@ -894,6 +924,8 @@ export class AntigravityRuntime {
     if (options.idleConversationMs !== undefined && (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000)) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
     this.maxInvocationContinues = options.maxInvocationContinues ?? 64
     if (!Number.isSafeInteger(this.maxInvocationContinues) || this.maxInvocationContinues < 0 || this.maxInvocationContinues > 1024) throw new Error("Antigravity invocation continuations must be an integer from 0 to 1024")
+    this.verifyTtlMs = envDuration("MERIDIAN_AGY_VERIFY_TTL_MS", 120_000)
+    this.modelsTtlMs = envDuration("MERIDIAN_AGY_MODELS_TTL_MS", 600_000)
     this.state = options.statePath ? new AgState(options.statePath) : undefined
     try {
     this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
@@ -949,14 +981,49 @@ export class AntigravityRuntime {
     return this.quotaCheck
   }
   private accountRetryAt = 0
+  invalidateVerificationCache(): void {
+    this.verificationEpoch++
+    this.verification = undefined
+  }
+  private beginVerification(): Promise<void> {
+    const epoch = this.verificationEpoch
+    const run = this.verifyAccountOnce().then(() => {
+      if (this.verifyTtlMs > 0 && this.verificationEpoch === epoch) this.verification = { verifiedAt: Date.now(), version: this.cliVersion }
+    }).catch(error => this.probeFailed(error))
+    const settled = run.finally(() => { if (this.verifying === settled) this.verifying = undefined })
+    this.verifying = settled
+    return settled
+  }
   async verifyAccount(): Promise<void> {
     if (this.shutdown.signal.aborted) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
     const retryAfter = Math.ceil((this.accountRetryAt - Date.now()) / 1000)
     if (retryAfter > 0) throw new AntigravityError(`Antigravity account checks are cooling down after a CLI failure; retry in ${retryAfter} seconds. No model request was sent.`, 503, "api_error", retryAfter)
-    this.verifying ??= this.verifyAccountOnce().catch(error => this.probeFailed(error)).finally(() => { this.verifying = undefined })
-    return this.verifying
+    if (this.verifyTtlMs > 0 && this.verification) {
+      const age = Date.now() - this.verification.verifiedAt
+      if (age <= this.verifyTtlMs / 2) {
+        this.cliVersion = this.verification.version
+        this.verifyCacheHits++
+        this.lastVerifyCacheMode = "hit"
+        return
+      }
+      if (age <= this.verifyTtlMs) {
+        this.cliVersion = this.verification.version
+        this.verifyCacheHits++
+        if (!this.verifying) {
+          void this.beginVerification().catch(error => console.debug(`[antigravity] verification cache revalidation failed: ${String(error)}`))
+        }
+        this.lastVerifyCacheMode = "swr"
+        return
+      }
+    }
+    const pending = this.verifying
+    if (!pending) this.verifyCacheMisses++
+    const verification = pending ?? this.beginVerification()
+    await verification
+    this.lastVerifyCacheMode = "miss"
   }
   private probeFailed(error: unknown): never {
+    this.invalidateVerificationCache()
     if (error instanceof ProbeFailure && error.reason !== 'cancelled') {
       this.accountRetryAt = Date.now() + 5000
       throw new AntigravityError(error.message + '; retry after 5 seconds. Check that agy --version, agy -p /config and agy models work in your terminal.', 503, "api_error", 5)
@@ -988,21 +1055,42 @@ export class AntigravityRuntime {
       if (setting("modelProvider")?.trim() || setting("gcp")?.trim() || setting("useG1Credits") !== "false") throw new Error("Antigravity requires default account authentication with paid overage credits disabled; configure agy first")
     }
   }
-  async availableModels(): Promise<string[]> {
-    if (Date.now() - this.checkedAt < 60_000) return this.models
+  private refreshModels(): Promise<string[]> {
     this.checking ??= (async () => {
+      this.modelsRefreshes++
       await this.verifyAccount()
       const output = await readAgProbe(this.executable, "models", { env: this.childEnv, signal: this.shutdown.signal }).catch(error => this.probeFailed(error))
       const models = output.split("\n").filter(line => line.includes("\t")).map(line => line.split("\t")[0]!).filter(Boolean)
-      if (!models.length) throw new Error("No account models available; sign in using agy")
+      if (!models.length) {
+        this.invalidateVerificationCache()
+        throw new Error("No account models available; sign in using agy")
+      }
       this.models = models; this.checkedAt = Date.now(); return models
     })().finally(() => { this.checking = undefined })
     return this.checking
   }
+  private refreshModelsInBackground(): void {
+    void this.refreshModels().catch(error => console.debug(`[antigravity] model cache refresh failed: ${String(error)}`))
+  }
+  async availableModels(requestedModel?: string): Promise<string[]> {
+    if (!this.models.length) return this.refreshModels()
+    const ttl = this.modelsTtlMs === 0 ? 60_000 : this.modelsTtlMs
+    const age = Date.now() - this.checkedAt
+    const missing = requestedModel !== undefined && !this.models.includes(requestedModel)
+    if (missing) return this.refreshModels()
+    if (age <= ttl) {
+      this.modelsCacheHits++
+      return this.models
+    }
+    if (this.modelsTtlMs === 0) return this.refreshModels()
+    this.modelsCacheHits++
+    if (!this.checking) this.refreshModelsInBackground()
+    return this.models
+  }
   async initialize(): Promise<void> {
     this.initialization ??= (async () => {
+      this.invalidateVerificationCache()
       await this.plugins.init()
-      await this.availableModels()
       if (this.options.allowNativeBrowser) {
         try {
           const version = await exec(this.options.browserMcpExecutable ?? "chrome-devtools-mcp", ["--version"], { env: this.childEnv, timeout: 10000, maxBuffer: 65536, signal: this.shutdown.signal })
@@ -1020,6 +1108,7 @@ export class AntigravityRuntime {
       const address = this.server.address()
       if (!address || typeof address === "string") throw new Error("Cannot bind MCP listener")
       this.mcpUrl = `http://127.0.0.1:${address.port}`
+      void this.verifyAccount().then(() => this.availableModels()).catch(error => console.debug(`[antigravity] startup warm-up failed: ${String(error)}`))
     })().catch(error => { this.initialization = undefined; throw error })
     return this.initialization
   }
@@ -1055,12 +1144,21 @@ export class AntigravityRuntime {
       reclaim.busy = true
       reclaim.abort(new AntigravityError("Idle tool process reclaimed; completed history can be replayed", 409), "reclaimed")
     }
+    const prepareStarted = performance.now()
+    let verifyMs = 0
+    let modelsMs = 0
+    let verifyCache: VerifyCacheMode = "miss"
     try {
       if (reclaim) await reclaim.settled
       await this.initialize()
-      // Model discovery may be cached, subscription/provider authorization cannot be.
+      const verifyStarted = performance.now()
       await this.verifyAccount()
-      if (!(await this.availableModels()).includes(request.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
+      verifyCache = this.lastVerifyCacheMode
+      verifyMs = performance.now() - verifyStarted
+      const modelsStarted = performance.now()
+      const models = await this.availableModels(request.model)
+      modelsMs = performance.now() - modelsStarted
+      if (!models.includes(request.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
       if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
       if (signal?.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
       if (creation.deadline !== undefined && creation.deadline <= Date.now()) throw new AntigravityError("Antigravity turn exceeded its absolute deadline", 504, "api_error")
@@ -1072,7 +1170,10 @@ export class AntigravityRuntime {
       signal?.addEventListener("abort", cancel, { once: true })
       try { await run.start() } finally { signal?.removeEventListener("abort", cancel) }
       return run
-    } finally { this.preparing-- }
+    } finally {
+      if (!reusable) console.debug(`[antigravity] fresh turn prepared verifyMs=${Math.round(verifyMs)} modelsMs=${Math.round(modelsMs)} prepareMs=${Math.round(performance.now() - prepareStarted)} verifyCache=${verifyCache}`)
+      this.preparing--
+    }
   }
   private async handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let rpcId: string | number | undefined

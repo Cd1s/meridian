@@ -4,8 +4,8 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readAgProbe } from '../proxy/backends/antigravityProbe'
-import { AntigravityRuntime } from '../proxy/backends/antigravityRuntime'
-import { parseAgRequest } from '../proxy/backends/antigravityProtocol'
+import { AntigravityRun, AntigravityRuntime } from '../proxy/backends/antigravityRuntime'
+import { AntigravityError, parseAgRequest } from '../proxy/backends/antigravityProtocol'
 
 const roots: string[] = []
 const fixturePaths = new Set<string>()
@@ -60,6 +60,20 @@ else {
   const env = { ...process.env, AG_PROBE_ROOT: root, AG_PROBE_MODE: mode, AG_PROBE_SETTINGS: settings === undefined ? '' : JSON.stringify(settings) }
   const controller = new AbortController()
   return { root, executable, env, controller, options: { env, signal: controller.signal, timeoutMs: 1000, killGraceMs: 50 }, ready: () => existsSync(join(root, 'count')), calls: () => readFileSync(join(root, 'calls'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as { args: string[]; pid: number }) }
+}
+
+async function withEnv(values: Record<string, string | undefined>, operation: () => Promise<void>): Promise<void> {
+  const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]))
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  try { await operation() } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
 }
 
 async function cancelWhenReady(f: ReturnType<typeof fixture>, pending: Promise<string>, attempts: number, ready = f.ready) {
@@ -140,7 +154,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
       await new Promise(resolve => setTimeout(resolve, 5050))
       await runtime.verifyAccount()
       await runtime.verifyAccount()
-      expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(3)
+      expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
     } finally { await runtime.close() }
   }, 15000)
   it('also cools down model discovery failures before another account or model probe', async () => {
@@ -204,14 +218,134 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
     expect(await pending).toContain('reason=cancelled')
     expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(1)
   })
-  it('shares simultaneous account checks, without caching the validation for later requests', async () => {
+  it('shares simultaneous account checks and caches successful validation', async () => {
     const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
     Object.assign(runtime.childEnv, f.env)
     try {
       await Promise.all([runtime.verifyAccount(), runtime.verifyAccount(), runtime.verifyAccount()])
       expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(1)
       await runtime.verifyAccount()
+      expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(1)
+    } finally { await runtime.close() }
+  })
+  it('re-verifies after the configured verification TTL expires', async () => {
+    await withEnv({ MERIDIAN_AGY_VERIFY_TTL_MS: '20' }, async () => {
+      const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+      Object.assign(runtime.childEnv, f.env)
+      try {
+        await runtime.verifyAccount()
+        await new Promise(resolve => setTimeout(resolve, 30))
+        await runtime.verifyAccount()
+        expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
+        expect(runtime.verifyCacheMisses).toBe(2)
+      } finally { await runtime.close() }
+    })
+  })
+  it('starts exactly one stale verification revalidation without blocking', async () => {
+    await withEnv({ MERIDIAN_AGY_VERIFY_TTL_MS: '100' }, async () => {
+      const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+      Object.assign(runtime.childEnv, f.env)
+      try {
+        await runtime.verifyAccount()
+        ;(runtime as any).verification.verifiedAt = Date.now() - 60
+        await Promise.all(Array.from({ length: 50 }, () => runtime.verifyAccount()))
+        for (let attempt = 0; attempt < 100 && f.calls().filter(call => call.args[1] === '/config').length < 2; attempt++) await new Promise(resolve => setTimeout(resolve, 10))
+        expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
+        expect(runtime.verifyCacheHits).toBe(50)
+      } finally { await runtime.close() }
+    })
+  })
+  it('invalidates the old verification when stale revalidation fails', async () => {
+    await withEnv({ MERIDIAN_AGY_VERIFY_TTL_MS: '1000' }, async () => {
+      const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+      Object.assign(runtime.childEnv, f.env)
+      try {
+        await runtime.verifyAccount()
+        ;(runtime as any).verification.verifiedAt = Date.now() - 600
+        runtime.childEnv.AG_PROBE_MODE = 'exit'
+        await runtime.verifyAccount()
+        for (let attempt = 0; attempt < 100 && f.calls().filter(call => call.args[1] === '/config').length < 2; attempt++) await new Promise(resolve => setTimeout(resolve, 10))
+        await new Promise(resolve => setTimeout(resolve, 50))
+        runtime.childEnv.AG_PROBE_MODE = 'success'
+        ;(runtime as any).accountRetryAt = 0
+        await runtime.verifyAccount()
+        expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(3)
+      } finally { await runtime.close() }
+    })
+  })
+  it('coalesces fifty concurrent cache misses into one verification', async () => {
+    await withEnv({ MERIDIAN_AGY_VERIFY_TTL_MS: '0' }, async () => {
+      const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+      Object.assign(runtime.childEnv, f.env)
+      try {
+        await Promise.all(Array.from({ length: 50 }, () => runtime.verifyAccount()))
+        expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(1)
+      } finally { await runtime.close() }
+    })
+  })
+  it('retains the old per-request verification call count when verification caching is disabled', async () => {
+    await withEnv({ MERIDIAN_AGY_VERIFY_TTL_MS: '0' }, async () => {
+      const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+      Object.assign(runtime.childEnv, f.env)
+      try {
+        await runtime.verifyAccount(); await runtime.verifyAccount()
+        expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
+      } finally { await runtime.close() }
+    })
+  })
+  it('invalidates verification after an authentication-like run failure', async () => {
+    const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env)
+    try {
+      await runtime.verifyAccount()
+      const run = new AntigravityRun(runtime, parseAgRequest({ model: 'gemini-test', messages: [{ role: 'user', content: 'Fixture' }] }))
+      run.abort(new AntigravityError('sign in required', 401, 'authentication_error'))
+      await runtime.verifyAccount()
       expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
+    } finally { await runtime.close() }
+  })
+  it('serves models from cache and refreshes once in the background after expiry', async () => {
+    await withEnv({ MERIDIAN_AGY_MODELS_TTL_MS: '10' }, async () => {
+      const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+      Object.assign(runtime.childEnv, f.env)
+      try {
+        await runtime.availableModels()
+        await new Promise(resolve => setTimeout(resolve, 20))
+        expect(await runtime.availableModels()).toEqual(['gemini-test'])
+        await new Promise(resolve => setTimeout(resolve, 50))
+        expect(f.calls().filter(call => call.args[0] === 'models')).toHaveLength(2)
+        expect(runtime.modelsCacheHits).toBeGreaterThanOrEqual(1)
+        expect(runtime.modelsRefreshes).toBe(2)
+      } finally { await runtime.close() }
+    })
+  })
+  it('forces one blocking model refresh before rejecting an unknown model', async () => {
+    const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env)
+    try {
+      await runtime.availableModels()
+      expect(await runtime.availableModels('new-model')).toEqual(['gemini-test'])
+      expect(f.calls().filter(call => call.args[0] === 'models')).toHaveLength(2)
+    } finally { await runtime.close() }
+  })
+  it('uses the previous sixty-second models cache behavior when models TTL is zero', async () => {
+    await withEnv({ MERIDIAN_AGY_MODELS_TTL_MS: '0' }, async () => {
+      const f = fixture('success'), runtime = new AntigravityRuntime({ executable: f.executable })
+      Object.assign(runtime.childEnv, f.env)
+      try {
+        await runtime.availableModels(); await runtime.availableModels()
+        expect(f.calls().filter(call => call.args[0] === 'models')).toHaveLength(1)
+      } finally { await runtime.close() }
+    })
+  })
+  it('does not delay initialize for warm-up and swallows warm-up failures', async () => {
+    const f = fixture('exit'), runtime = new AntigravityRuntime({ executable: f.executable })
+    Object.assign(runtime.childEnv, f.env)
+    const started = performance.now()
+    try {
+      await runtime.initialize()
+      expect(performance.now() - started).toBeLessThan(500)
+      await new Promise(resolve => setTimeout(resolve, 100))
     } finally { await runtime.close() }
   })
   it('accepts explicit false credits in default settings and rechecks account authorization', async () => {
@@ -222,7 +356,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
       await runtime.verifyAccount()
       expect(await runtime.availableModels()).toEqual(['gemini-test'])
       await runtime.verifyAccount()
-      expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(3)
+      expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(1)
       expect(f.calls().filter(call => call.args[0] === 'models')).toHaveLength(1)
       expect(runtime.runs.size).toBe(0)
     } finally { await runtime.close() }
@@ -269,7 +403,7 @@ describe.skipIf(process.platform === 'win32')('Antigravity read-only subscriptio
         await runtime.verifyAccount()
         expect(f.calls().map(call => call.args[0])).toEqual(['--version', '-p', '--version', '-p'])
         expect(await runtime.availableModels()).toEqual(['gemini-test'])
-        expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(3)
+        expect(f.calls().filter(call => call.args[1] === '/config')).toHaveLength(2)
         expect(f.calls().filter(call => call.args[0] === 'models')).toHaveLength(1)
         expect(runtime.runs.size).toBe(0)
       } finally { await runtime.close() }

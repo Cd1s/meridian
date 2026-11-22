@@ -537,6 +537,7 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const { send, runtime } = fixture()
     expect((await send({ ...initial(), tools: [] })).status).toBe(200)
     runtime.childEnv.AGY_FIXTURE_API = "1"
+    runtime.invalidateVerificationCache()
     expect((await send({ ...initial(), tools: [] })).status).toBe(503)
     delete runtime.childEnv.AGY_FIXTURE_API
     runtime.childEnv.AGY_FIXTURE_VERSION = "2.0.0"
