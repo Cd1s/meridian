@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, agClientToolCallLimit, agPromptByteLimit, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 import { agHistoryLimits, assertAgStep, planAgHistory } from "./antigravityHistory"
 import { estimateAgTextTokens, estimateAgTokens } from "./antigravityTokens"
 import { renderAgColdTrim } from "./antigravityColdTrim"
@@ -50,6 +50,17 @@ type VerifyCacheMode = "hit" | "miss" | "swr"
 const VERIFY_TTL_MAX_MS = 600_000
 const MODELS_TTL_MAX_MS = 3_600_000
 const MODELS_FORCED_REFRESH_MIN_MS = 10_000
+const SPARE_MAX_HARD_CAP = 4
+
+interface AgSpareSlot {
+  key: string
+  workspace: string
+  child: ChildProcessWithoutNullStreams
+  alive: boolean
+  claimed: boolean
+  discarding: boolean
+  idleTimer: ReturnType<typeof setTimeout>
+}
 
 function envDuration(name: string, fallback: number): number {
   const value = Number(process.env[name])
@@ -70,6 +81,11 @@ function executableFingerprint(executable: string, env: NodeJS.ProcessEnv): stri
   return `${executable}\0${stat}\0${context}`
 }
 
+function spareMemoryMb(raw: string): number | undefined {
+  const match = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(raw)
+  return match ? Number(match[1]) / 1024 : undefined
+}
+
 function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value))
 }
@@ -87,6 +103,10 @@ export class AntigravityRun {
   private workspace?: string
   conversationId?: string
   continuation = "new"
+  private readonly timingStarted = performance.now()
+  private timingReported = false
+  private spareMode: "hit" | "miss" | "off" = "off"
+  private timing = { workspace: undefined as number | undefined, spawned: undefined as number | undefined, prompt: undefined as number | undefined, firstEvent: undefined as number | undefined, firstToken: undefined as number | undefined, result: undefined as number | undefined }
   private completedSnapshot = false
   private attachments?: AgAttachments
   private readonly grammars: AgGrammars
@@ -215,11 +235,21 @@ export class AntigravityRun {
   private pauseModelTimer(): void {
     clearTimeout(this.timer)
   }
+  private markTiming(key: keyof typeof this.timing): void { if (this.timing[key] === undefined) this.timing[key] = performance.now() }
+  private reportTiming(): void {
+    if (this.timingReported || process.env.MERIDIAN_AGY_TRACE_TIMING !== "1" || this.continuation !== "new") return
+    this.timingReported = true
+    const elapsed = (value: number | undefined) => value === undefined ? undefined : Math.round(value - this.timingStarted)
+    console.debug(JSON.stringify({ event: "antigravity.turn_timing", spare: this.spareMode, workspaceFilesMs: elapsed(this.timing.workspace), agySpawnedMs: elapsed(this.timing.spawned), promptFrameMs: elapsed(this.timing.prompt), firstAgyEventMs: elapsed(this.timing.firstEvent), firstModelTokenMs: elapsed(this.timing.firstToken), resultMs: elapsed(this.timing.result) }))
+  }
   async start(): Promise<void> {
     this.beginTurn()
     try {
       await this.grammars.prepare()
-      this.workspace = this.restored?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(tmpdir(), "meridian-agy-")))
+      const spareKey = !this.restored ? this.runtime.spareKeyFor(this.request) : undefined
+      const spare = spareKey ? this.runtime.takeSpare(spareKey) : undefined
+      this.spareMode = spare ? "hit" : spareKey ? "miss" : "off"
+      this.workspace = this.restored?.workspace ?? spare?.workspace ?? await realpath(await mkdtemp(this.runtime.nativeSessions ? join(this.runtime.nativeSessions.directory, "conversation-") : join(tmpdir(), "meridian-agy-")))
       this.runtime.nativeSessions?.register(this.workspace)
       await mkdir(join(this.workspace, ".agents"), { recursive: true })
       const tools = [...this.request.tools, ...[parallelAgTool({ ...this.request, tool_choice: { type: "auto" } })].filter(tool => tool !== undefined)]
@@ -240,6 +270,7 @@ export class AntigravityRun {
           args: ["--headless", "--isolated", "--no-usage-statistics", "--no-performance-crux", "--filesystem-root", this.workspace],
         } } : {}),
       } }))
+      this.markTiming("workspace")
       if (this.stopped) { await this.cleanup(); return }
       const args = [...(this.restored ? ["--conversation", this.restored.conversationId] : ["--new-project"]), "--add-dir", this.workspace, "--input-format", "stream-json", "--model", this.request.model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(this.runtime.turnMaxDurationMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
       if (this.request.output_config?.format) {
@@ -250,10 +281,12 @@ export class AntigravityRun {
       if (this.request.output_config?.effort) args.push("--effort", this.request.output_config.effort)
       if (agNativeTools(this.runtime.options).length || (this.request.tools.length && this.runtime.options.allowToolBridge) || this.attachments.present) args.push("--dangerously-skip-permissions")
       if (this.stopped) { await this.cleanup(); return }
-      const child = this.child = spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+      const child = this.child = spare?.child ?? spawn(this.runtime.executable, args, { cwd: this.workspace, env: this.runtime.childEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+      this.markTiming("spawned")
       if (child.pid) this.runtime.nativeSessions?.register(this.workspace, child.pid)
       child.stdin.on("error", error => this.abort(new AntigravityError(`Antigravity input failed: ${error.message}`, 502, "api_error")))
       this.writeReplayStep()
+      this.markTiming("prompt")
       let stderr = ""
       child.stderr.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-8192) })
       child.stdout.on("data", chunk => {
@@ -265,6 +298,7 @@ export class AntigravityRun {
         if (this.stopped) return
         try {
           if (this.terminal) throw new Error("CLI emitted data after its terminal result")
+          this.markTiming("firstEvent")
           const event = envelope.parse(JSON.parse(line))
           if (event.event === "init" && event.conversation_id && !this.conversationId) this.conversationId = event.conversation_id
           if (this.steps.length > 1 && !this.acceptReplayFrame(event)) return
@@ -296,8 +330,10 @@ export class AntigravityRun {
             if (step.text_delta.trim()) this.replayFinalText = true
             this.queue.push({ kind: "text", text: step.text_delta })
           }
+          if (step?.step_type === "agent_response" && step.text_delta) this.markTiming("firstToken")
           if (step?.state === "DONE" && step.usage) this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
           if (event.event === "result" && event.result) {
+            this.markTiming("result")
             this.terminal = true
             if (event.result.status !== "SUCCESS" || event.result.error || event.result.denied_actions?.length) {
               this.abort(classifyAgFailure(event.result.error || "Antigravity denied an action; client-owned tool policy or account permission prevented completion"))
@@ -339,6 +375,7 @@ export class AntigravityRun {
         if (this.reusable && !this.stopped) this.abort(new Error("Native conversation process exited"), this.idle ? "retired" : "failed")
         void this.cleanup()
       })
+      this.runtime.refillSpare(this.request)
 
     } catch (error) {
       this.abort(error instanceof Error ? error : new Error(String(error)))
@@ -508,6 +545,7 @@ export class AntigravityRun {
     return this.cleaning
   }
   private async cleanupOnce(): Promise<void> {
+    this.reportTiming()
     clearTimeout(this.timer); clearTimeout(this.absoluteTimer); clearTimeout(this.pendingTimer); clearTimeout(this.killTimer)
     this.runtime.settling.add(this.settled)
     this.runtime.runs.delete(this.id)
@@ -632,12 +670,26 @@ export class AntigravityRuntime {
   private checking?: Promise<string[]>
   private modelsRetryAt = 0
   private lastForcedModelsRefreshAt = 0
+  private readonly spareEnabled: boolean
+  private readonly spareMax: number
+  private readonly spareIdleMs: number
+  private readonly spareMinMemMb: number
+  private readonly spareMemInfoPath: string
+  private readonly spares = new Map<string, AgSpareSlot>()
+  private readonly spareRefilling = new Set<string>()
+  private spareReservations = 0
   private closing?: Promise<void>
   readonly maxClientToolCalls = agClientToolCallLimit()
   verifyCacheHits = 0
   verifyCacheMisses = 0
   modelsCacheHits = 0
   modelsRefreshes = 0
+  spareHits = 0
+  spareMisses = 0
+  spareSpawned = 0
+  spareDiscarded = 0
+  spareReaped = 0
+  sparesIdle = 0
   constructor(readonly options: AntigravityOptions = {}) {
     this.plugins = new AgPlugins(options.plugins, options.pluginPaths)
     this.executable = options.executable ?? "agy"
@@ -655,6 +707,14 @@ export class AntigravityRuntime {
     this.verifyTtlMs = Math.min(VERIFY_TTL_MAX_MS, envDuration("MERIDIAN_AGY_VERIFY_TTL_MS", 120_000))
     this.modelsTtlMs = Math.min(MODELS_TTL_MAX_MS, envDuration("MERIDIAN_AGY_MODELS_TTL_MS", 600_000))
     this.modelsMaxStaleMs = this.modelsTtlMs > 0 ? this.modelsTtlMs * 6 : 0
+    this.spareEnabled = process.env.MERIDIAN_AGY_SPARE === "1"
+    const spareMax = Number(process.env.MERIDIAN_AGY_SPARE_MAX ?? "1")
+    this.spareMax = Number.isSafeInteger(spareMax) && spareMax > 0 ? Math.min(SPARE_MAX_HARD_CAP, spareMax) : 1
+    const spareIdleMs = Number(process.env.MERIDIAN_AGY_SPARE_IDLE_MS ?? "600000")
+    this.spareIdleMs = Number.isFinite(spareIdleMs) && spareIdleMs >= 0 ? spareIdleMs : 600_000
+    const spareMinMemMb = Number(process.env.MERIDIAN_AGY_SPARE_MIN_MEM_MB ?? "2048")
+    this.spareMinMemMb = Number.isFinite(spareMinMemMb) && spareMinMemMb >= 0 ? spareMinMemMb : 2048
+    this.spareMemInfoPath = process.env.MERIDIAN_AGY_MEMINFO_PATH ?? "/proc/meminfo"
     this.state = options.statePath ? new AgState(options.statePath) : undefined
     try {
     this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
@@ -709,11 +769,58 @@ export class AntigravityRuntime {
     })().finally(() => { this.quotaCheck = undefined })
     return this.quotaCheck
   }
+  spareKeyFor(request: AgRequest): string | undefined {
+    const toolsOn = request.tools.length > 0
+    if (!this.spareEnabled || (toolsOn && !this.options.allowToolBridge) || request.output_config?.format || this.options.allowNativeBrowser || this.options.allowNativeSubagents || hasAgImages(request.messages)) return undefined
+    if (request.messages.some(message => blocks(message).some(block => block.type !== "text" && block.type !== "tool_use" && block.type !== "tool_result"))) return undefined
+    return JSON.stringify({ model: request.model, effort: request.output_config?.effort ?? null, toolsOn, dangerousPermissions: toolsOn, printTimeout: Math.ceil(this.turnMaxDurationMs / 1000), sandbox: true })
+  }
+  private async spareMemoryAvailableMb(): Promise<number | undefined> {
+    try { return spareMemoryMb(await readFile(this.spareMemInfoPath, "utf8")) } catch { return undefined }
+  }
+  private async spawnSpare(request: AgRequest, key: string): Promise<void> {
+    const available = await this.spareMemoryAvailableMb()
+    if (this.draining || this.shutdown.signal.aborted || available === undefined || available < this.spareMinMemMb || this.spares.has(key)) return
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), "meridian-agy-spare-")))
+    await mkdir(join(workspace, ".agents"), { recursive: true })
+    const args = ["--new-project", "--add-dir", workspace, "--input-format", "stream-json", "--model", request.model, "--output-format", "stream-json", "--print-timeout", `${Math.ceil(this.turnMaxDurationMs / 1000)}s`, "--disable-slash-commands", "--sandbox"]
+    if (request.output_config?.effort) args.push("--effort", request.output_config.effort)
+    if (request.tools.length) args.push("--dangerously-skip-permissions")
+    const child = spawn(this.executable, args, { cwd: workspace, env: { ...this.childEnv, MERIDIAN_AGY_SPARE_CHILD: "1" }, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true })
+    const slot: AgSpareSlot = { key, workspace, child, alive: true, claimed: false, discarding: false, idleTimer: setTimeout(() => this.discardSpare(slot, true), this.spareIdleMs) }
+    slot.idleTimer.unref()
+    child.stderr.on("data", chunk => { if (!slot.claimed && /fatal|unauthenticated|authentication|sign[ -]?in|quota|subscription|configuration/i.test(String(chunk))) this.discardSpare(slot) })
+    child.once("error", () => { if (!slot.claimed) this.discardSpare(slot) })
+    child.once("close", () => { slot.alive = false; if (!slot.claimed && !slot.discarding && this.spares.get(key) === slot) { this.spares.delete(key); this.spareDiscarded++; void rm(workspace, { recursive: true, force: true }) } })
+    this.spares.set(key, slot); this.spareSpawned++; this.sparesIdle = this.spares.size
+  }
+  refillSpare(request: AgRequest): void {
+    const key = this.spareKeyFor(request)
+    if (!key || this.spareRefilling.has(key) || this.draining || this.spares.size + this.spareReservations >= this.spareMax) return
+    this.spareRefilling.add(key); this.spareReservations++
+    void this.spawnSpare(request, key).catch(error => console.debug(`[antigravity] spare spawn failed: ${String(error)}`)).finally(() => { this.spareRefilling.delete(key); this.spareReservations-- })
+  }
+  takeSpare(key: string): AgSpareSlot | undefined {
+    if (!this.spareEnabled) return undefined
+    const slot = this.spares.get(key)
+    if (!slot || !slot.alive || slot.discarding) { this.spareMisses++; if (slot) this.discardSpare(slot); return undefined }
+    this.spares.delete(key); this.sparesIdle = this.spares.size; slot.claimed = true; clearTimeout(slot.idleTimer); this.spareHits++; return slot
+  }
+  private discardSpare(slot: AgSpareSlot, reaped = false): void {
+    if (slot.discarding || slot.claimed) return
+    slot.discarding = true; clearTimeout(slot.idleTimer)
+    if (this.spares.get(slot.key) === slot) this.spares.delete(slot.key)
+    this.sparesIdle = this.spares.size; if (reaped) this.spareReaped++; else this.spareDiscarded++
+    if (slot.alive && slot.child.pid) { signalAgProcess(slot.child, "SIGTERM"); const timer = setTimeout(() => signalAgProcess(slot.child, "SIGKILL"), 1000); timer.unref() }
+    void (slot.alive ? new Promise<void>(resolve => slot.child.once("close", () => resolve())) : Promise.resolve()).finally(() => rm(slot.workspace, { recursive: true, force: true }))
+  }
+  private discardAllSpares(): void { for (const slot of [...this.spares.values()]) this.discardSpare(slot) }
   private accountRetryAt = 0
   invalidateVerificationCache(): void {
     this.verificationEpoch++
     this.verification = undefined
     this.accountRetryAt = 0
+    this.discardAllSpares()
   }
   private beginVerification(): Promise<void> {
     const epoch = this.verificationEpoch
@@ -917,6 +1024,7 @@ export class AntigravityRuntime {
   private async closeOnce(): Promise<void> {
     this.draining = true
     this.shutdown.abort()
+    this.discardAllSpares()
     // Initialization can be awaiting account checks while close is called.
     await Promise.allSettled([this.initialization, this.statusRefresh, this.quotaCheck, this.verifying, this.checking])
     const runs = [...this.runs.values()]

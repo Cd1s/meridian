@@ -216,6 +216,11 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_MAX_TOOL_CALLS` | `256` | Client-call and MCP replay-ledger allowance per live process, integer 1–65536; independent of deadlines and the 128-call warm-reuse cutoff |
 | `MERIDIAN_AGY_VERIFY_TTL_MS` | `120000` | Successful agy version/configuration verification cache lifetime, capped at 600000 ms; stale-while-revalidate after half the TTL; `0` restores per-request checks |
 | `MERIDIAN_AGY_MODELS_TTL_MS` | `600000` | Successful `agy models` cache lifetime, capped at 3600000 ms; stale lists refresh in the background and are retried with backoff; `0` restores the previous 60-second behavior |
+| `MERIDIAN_AGY_SPARE` | `0` | Enable one idle pre-started agy process for eligible fresh turns |
+| `MERIDIAN_AGY_SPARE_MAX` | `1` | Maximum idle spare processes, hard-capped at 4 |
+| `MERIDIAN_AGY_SPARE_IDLE_MS` | `600000` | Idle lifetime before an unused spare is terminated |
+| `MERIDIAN_AGY_SPARE_MIN_MEM_MB` | `2048` | Minimum `MemAvailable` required before spawning a spare |
+| `MERIDIAN_AGY_MEMINFO_PATH` | `/proc/meminfo` | Memory-information path used by the spare guard |
 | `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Full model/preprocessing deadline for each phase, refreshed after each accepted tool-result batch; paused while waiting for client tools |
 | `MERIDIAN_AGY_TURN_MAX_DURATION_MS` | `7200000` | Absolute per-turn deadline including client tool waits; also passed as CLI `--print-timeout` on every turn (including tool-less turns) |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending client tool-result deadline |
@@ -237,6 +242,14 @@ The model cache serves a stale list while one background refresh runs, requires
 a blocking refresh after six TTLs, and keeps the prior list when a background
 refresh fails. Health JSON exposes `verifyCacheHits`, `verifyCacheMisses`,
 `modelsCacheHits`, and `modelsRefreshes`.
+
+Warm spares are disabled by default. Eligible fresh turns include text and
+completed client-tool history when the spawn-time model, effort, permission,
+timeout and sandbox arguments match. Media, schemas, native capabilities and
+restored conversations remain on the cold path. The spare sends no model
+request before the first prompt frame, and is reaped on invalidation or
+shutdown. `spareHits`, `spareMisses`, `spareSpawned`, `spareDiscarded`,
+`spareReaped`, and `sparesIdle` are exposed in health JSON.
 
 Capacity exhaustion returns 429 with `Retry-After`. No unbounded request queue
 is created. Bodies are capped at 8 MiB; upstream stdout is capped at 16 MiB.
