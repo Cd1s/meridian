@@ -17,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
-import { agHistoryLimits, assertAgStep, planAgHistory } from "./antigravityHistory"
+import { agHistoryLimits, agContextBudget, assertAgStep, planAgHistory } from "./antigravityHistory"
 import { estimateAgTextTokens, estimateAgTokens } from "./antigravityTokens"
 import { renderAgColdTrim } from "./antigravityColdTrim"
 
@@ -162,8 +162,9 @@ export class AntigravityRun {
   }
   private plan(request: AgRequest): string[] {
     const { historyLimits: limits, promptBytes } = this.runtime
+    const contextTokens = this.runtime.contextBudget(request.model)
     const native = agNativeTools(this.runtime.options)
-    const maxTokens = Math.min(limits.stepTokens, limits.contextTokens - (request.max_tokens ?? 8192) - 32)
+    const maxTokens = Math.min(limits.stepTokens, contextTokens - (request.max_tokens ?? 8192) - 32)
     if (maxTokens < 1) throw new AntigravityError("prompt is too long: output reserve exceeds the estimated context budget")
     const full = renderAgPrompt(request, native) + this.promptSuffix
     if (this.restored) {
@@ -173,14 +174,14 @@ export class AntigravityRun {
     if ((!promptBytes || Buffer.byteLength(full) <= promptBytes) && estimateAgTextTokens(full) <= maxTokens) return [full]
     if (limits.chunked && !request.output_config?.format &&
       !this.runtime.options.allowNativeBrowser && !this.runtime.options.allowNativeSubagents &&
-      estimateAgTokens(request).input_tokens + (request.max_tokens ?? 8192) <= limits.contextTokens) {
+      estimateAgTokens(request).input_tokens + (request.max_tokens ?? 8192) <= contextTokens) {
       const steps = planAgHistory(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), limits.maxSteps, maxTokens)
-      if (steps.reduce((sum, step) => sum + estimateAgTextTokens(step) + 32, 0) + (request.max_tokens ?? 8192) <= limits.contextTokens) return steps
+      if (steps.reduce((sum, step) => sum + estimateAgTextTokens(step) + 32, 0) + (request.max_tokens ?? 8192) <= contextTokens) return steps
     }
     return [renderAgColdTrim(request, native, this.promptSuffix, { bytes: promptBytes, tokens: maxTokens, estimateTokens: estimateAgTextTokens })]
   }
   private contextFits(next: number, output?: number): boolean {
-    return Math.max(this.writtenTokens, this.reportedInput) + this.outputTokens + next + 32 + (output ?? 8192) <= this.runtime.historyLimits.contextTokens
+    return Math.max(this.writtenTokens, this.reportedInput) + this.outputTokens + next + 32 + (output ?? 8192) <= this.runtime.contextBudget(this.request.model)
   }
   private checkContext(prompt: string, output?: number): void {
     if (!this.contextFits(estimateAgTextTokens(prompt), output)) throw new AntigravityError("prompt is too long: new input exceeds the estimated Antigravity context budget")
@@ -690,40 +691,41 @@ export class AntigravityRuntime {
   spareDiscarded = 0
   spareReaped = 0
   sparesIdle = 0
+  contextBudget(model: string): number { return agContextBudget(model) }
   constructor(readonly options: AntigravityOptions = {}) {
-    this.plugins = new AgPlugins(options.plugins, options.pluginPaths)
-    this.executable = options.executable ?? "agy"
-    this.maxConcurrent = options.maxConcurrent ?? 4
-    this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000
-    if (!Number.isSafeInteger(this.turnTimeoutMs) || this.turnTimeoutMs <= 0 || this.turnTimeoutMs > 2_147_483_647) throw new Error("Antigravity model phase deadline must be an integer from 1 to 2147483647 ms")
-    this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
-    for (const value of [this.maxConcurrent, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
-    this.turnMaxDurationMs = options.turnMaxDurationMs ?? 7_200_000
-    if (!Number.isSafeInteger(this.turnMaxDurationMs) || this.turnMaxDurationMs <= 0 || this.turnMaxDurationMs > 2_147_483_647) throw new Error("Antigravity absolute turn deadline must be an integer from 1 to 2147483647 ms")
-    this.idleConversationMs = options.idleConversationMs ?? this.pendingToolTimeoutMs
-    // The new option has its own range; leaving it unset retains every
-    // previously accepted tool deadline rather than adding a startup refusal.
-    if (options.idleConversationMs !== undefined && (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000)) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
-    this.verifyTtlMs = Math.min(VERIFY_TTL_MAX_MS, envDuration("MERIDIAN_AGY_VERIFY_TTL_MS", 120_000))
-    this.modelsTtlMs = Math.min(MODELS_TTL_MAX_MS, envDuration("MERIDIAN_AGY_MODELS_TTL_MS", 600_000))
-    this.modelsMaxStaleMs = this.modelsTtlMs > 0 ? this.modelsTtlMs * 6 : 0
-    this.spareEnabled = process.env.MERIDIAN_AGY_SPARE === "1"
-    const spareMax = Number(process.env.MERIDIAN_AGY_SPARE_MAX ?? "1")
-    this.spareMax = Number.isSafeInteger(spareMax) && spareMax > 0 ? Math.min(SPARE_MAX_HARD_CAP, spareMax) : 1
-    const spareIdleMs = Number(process.env.MERIDIAN_AGY_SPARE_IDLE_MS ?? "600000")
-    this.spareIdleMs = Number.isFinite(spareIdleMs) && spareIdleMs >= 0 ? spareIdleMs : 600_000
-    const spareMinMemMb = Number(process.env.MERIDIAN_AGY_SPARE_MIN_MEM_MB ?? "2048")
-    this.spareMinMemMb = Number.isFinite(spareMinMemMb) && spareMinMemMb >= 0 ? spareMinMemMb : 2048
-    this.spareMemInfoPath = process.env.MERIDIAN_AGY_MEMINFO_PATH ?? "/proc/meminfo"
-    this.state = options.statePath ? new AgState(options.statePath) : undefined
-    try {
-    this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
-    for (const json of this.state?.list('exchanges').reverse() ?? []) this.record(exchangeSchema.parse(JSON.parse(json)), false)
-    for (const json of this.state?.list('native') ?? []) this.nativeActivity.push(nativeSchema.parse(JSON.parse(json)))
-    } catch (error) { this.state?.close(); throw error }
-    this.childEnv = { ...process.env }
-    for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
-  }
+  this.plugins = new AgPlugins(options.plugins, options.pluginPaths)
+  this.executable = options.executable ?? "agy"
+  this.maxConcurrent = options.maxConcurrent ?? 4
+  this.turnTimeoutMs = options.turnTimeoutMs ?? 300_000
+  if (!Number.isSafeInteger(this.turnTimeoutMs) || this.turnTimeoutMs <= 0 || this.turnTimeoutMs > 2_147_483_647) throw new Error("Antigravity model phase deadline must be an integer from 1 to 2147483647 ms")
+  this.pendingToolTimeoutMs = options.pendingToolTimeoutMs ?? 60_000
+  for (const value of [this.maxConcurrent, this.pendingToolTimeoutMs]) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Antigravity limits must be positive integers")
+  this.turnMaxDurationMs = options.turnMaxDurationMs ?? 7_200_000
+  if (!Number.isSafeInteger(this.turnMaxDurationMs) || this.turnMaxDurationMs <= 0 || this.turnMaxDurationMs > 2_147_483_647) throw new Error("Antigravity absolute turn deadline must be an integer from 1 to 2147483647 ms")
+  this.idleConversationMs = options.idleConversationMs ?? this.pendingToolTimeoutMs
+  // The new option has its own range; leaving it unset retains every
+  // previously accepted tool deadline rather than adding a startup refusal.
+  if (options.idleConversationMs !== undefined && (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000)) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
+  this.verifyTtlMs = Math.min(VERIFY_TTL_MAX_MS, envDuration("MERIDIAN_AGY_VERIFY_TTL_MS", 120_000))
+  this.modelsTtlMs = Math.min(MODELS_TTL_MAX_MS, envDuration("MERIDIAN_AGY_MODELS_TTL_MS", 600_000))
+  this.modelsMaxStaleMs = this.modelsTtlMs > 0 ? this.modelsTtlMs * 6 : 0
+  this.spareEnabled = process.env.MERIDIAN_AGY_SPARE === "1"
+  const spareMax = Number(process.env.MERIDIAN_AGY_SPARE_MAX ?? "1")
+  this.spareMax = Number.isSafeInteger(spareMax) && spareMax > 0 ? Math.min(SPARE_MAX_HARD_CAP, spareMax) : 1
+  const spareIdleMs = Number(process.env.MERIDIAN_AGY_SPARE_IDLE_MS ?? "600000")
+  this.spareIdleMs = Number.isFinite(spareIdleMs) && spareIdleMs >= 0 ? spareIdleMs : 600_000
+  const spareMinMemMb = Number(process.env.MERIDIAN_AGY_SPARE_MIN_MEM_MB ?? "2048")
+  this.spareMinMemMb = Number.isFinite(spareMinMemMb) && spareMinMemMb >= 0 ? spareMinMemMb : 2048
+  this.spareMemInfoPath = process.env.MERIDIAN_AGY_MEMINFO_PATH ?? "/proc/meminfo"
+  this.state = options.statePath ? new AgState(options.statePath) : undefined
+  try {
+  this.nativeSessions = this.state && options.statePath ? new AgNativeSessions(this.state, options.statePath, options) : undefined
+  for (const json of this.state?.list('exchanges').reverse() ?? []) this.record(exchangeSchema.parse(JSON.parse(json)), false)
+  for (const json of this.state?.list('native') ?? []) this.nativeActivity.push(nativeSchema.parse(JSON.parse(json)))
+  } catch (error) { this.state?.close(); throw error }
+  this.childEnv = { ...process.env }
+  for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
+}
   record(exchange: AgExchange, persist = true): void {
     if (persist) try { this.state?.put('exchanges', exchange.requestId, '', JSON.stringify(exchange), Date.now() + 30 * 86400000, 10000, 8 * 1024 * 1024) } catch (error) { this.stateError = String(error) }
     this.requests.unshift(exchange)
@@ -962,7 +964,7 @@ export class AntigravityRuntime {
       if (!(await this.availableModels()).includes(request.model)) throw new AntigravityError("Unknown Antigravity model; use GET /v1/models for account model slugs")
       if (this.draining) throw new AntigravityError("Antigravity is shutting down", 503, "api_error")
       if (signal?.aborted) throw new AntigravityError("Request cancelled", 499, "api_error")
-      const restored = !reusable && estimateAgTokens(request).input_tokens + (request.max_tokens ?? 8192) + 32 <= this.historyLimits.contextTokens ? this.nativeSessions?.claim(request) : undefined
+      const restored = !reusable && estimateAgTokens(request).input_tokens + (request.max_tokens ?? 8192) + 32 <= this.contextBudget(request.model) ? this.nativeSessions?.claim(request) : undefined
       const run = new AntigravityRun(this, request, restored)
       if (restored) this.restored++
       this.runs.set(run.id, run)
