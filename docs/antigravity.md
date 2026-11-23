@@ -214,6 +214,8 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_WHISPER_MODEL` | unset | Local whisper.cpp model for audio transcription |
 | `MERIDIAN_AGY_MAX_CONCURRENT` | `4` | Maximum live processes; idle pending tools can yield capacity |
 | `MERIDIAN_AGY_MAX_TOOL_CALLS` | `256` | Client-call and MCP replay-ledger allowance per live process, integer 1–65536; independent of deadlines and the 128-call warm-reuse cutoff |
+| `MERIDIAN_AGY_VERIFY_TTL_MS` | `120000` | Successful agy version/configuration verification cache lifetime, capped at 600000 ms; stale-while-revalidate after half the TTL; `0` restores per-request checks |
+| `MERIDIAN_AGY_MODELS_TTL_MS` | `600000` | Successful `agy models` cache lifetime, capped at 3600000 ms; stale lists refresh in the background and are retried with backoff; `0` restores the previous 60-second behavior |
 | `MERIDIAN_AGY_TURN_TIMEOUT_MS` | `300000` | Full model/preprocessing deadline for each phase, refreshed after each accepted tool-result batch; paused while waiting for client tools |
 | `MERIDIAN_AGY_TURN_MAX_DURATION_MS` | `7200000` | Absolute per-turn deadline including client tool waits; also passed as CLI `--print-timeout` on every turn (including tool-less turns) |
 | `MERIDIAN_AGY_TOOL_TIMEOUT_MS` | `60000` | Pending client tool-result deadline |
@@ -224,6 +226,17 @@ directories. Meridian does not edit or garbage-collect those private records.
 | `MERIDIAN_AGY_CHUNKED_HISTORY` | `0` | Set to `1` to opt into experimental multi-step cold replay. The default is one trimmed input. |
 | `MERIDIAN_AGY_HISTORY_STEP_BYTES` | `180000` | Extra byte bound for each experimental replay input; 1–190000. |
 | `MERIDIAN_AGY_HISTORY_MAX_STEPS` | `12` | Total experimental replay inputs including the final request; 1–64. |
+
+Verification and model discovery cache only successful results. The verification
+entry records the agy executable and proxy environment fingerprint, so an agy
+upgrade or proxy change invalidates it immediately. A failed agy process,
+authentication-like response, or configuration failure also invalidates the
+entry. A configuration change made while verification is cached is detected
+within the TTL. Set `MERIDIAN_AGY_VERIFY_TTL_MS=0` for strict per-request checks.
+The model cache serves a stale list while one background refresh runs, requires
+a blocking refresh after six TTLs, and keeps the prior list when a background
+refresh fails. Health JSON exposes `verifyCacheHits`, `verifyCacheMisses`,
+`modelsCacheHits`, and `modelsRefreshes`.
 
 Capacity exhaustion returns 429 with `Retry-After`. No unbounded request queue
 is created. Bodies are capped at 8 MiB; upstream stdout is capped at 16 MiB.
