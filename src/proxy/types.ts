@@ -30,6 +30,8 @@ export interface AntigravityOptions {
   pendingToolTimeoutMs?: number
   /** How long a finished conversation's live process waits for the next turn (default pendingToolTimeoutMs). After it expires the next turn replays the whole history. */
   idleConversationMs?: number
+  /** Maximum number of same-conversation agy turn continuations after an invocation-limit stop. */
+  maxInvocationContinues?: number
 }
 
 export interface ProxyConfig {
@@ -89,6 +91,7 @@ export function resolveBackendConfig(config: Partial<ProxyConfig>): ProxyConfig 
       turnMaxDurationMs: process.env.MERIDIAN_AGY_TURN_MAX_DURATION_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TURN_MAX_DURATION_MS),
       pendingToolTimeoutMs: process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_TOOL_TIMEOUT_MS),
       idleConversationMs: process.env.MERIDIAN_AGY_IDLE_CONVERSATION_MS === undefined ? undefined : Number(process.env.MERIDIAN_AGY_IDLE_CONVERSATION_MS),
+      maxInvocationContinues: process.env.MERIDIAN_AGY_MAX_INVOCATION_CONTINUES === undefined ? undefined : Number(process.env.MERIDIAN_AGY_MAX_INVOCATION_CONTINUES),
       ...config.antigravity,
     } } : {}),
   }

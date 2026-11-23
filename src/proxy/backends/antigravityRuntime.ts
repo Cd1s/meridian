@@ -41,7 +41,7 @@ const exec = promisify(execFile)
 const envelope = z.object({
   event: z.string(), conversation_id: z.string().optional(),
   step_update: z.object({ step_type: z.string().optional(), step_index: z.number().int().nonnegative().optional(), conversation_id: z.string().optional(), tool_name: z.string().optional(), state: z.string().optional(), text_delta: z.string().optional(), usage: z.object({ input_tokens: z.number().optional(), output_tokens: z.number().optional(), cache_read_tokens: z.number().optional() }).optional() }).optional(),
-  result: z.object({ status: z.string(), conversation_id: z.string().optional(), error: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
+  result: z.object({ status: z.string(), conversation_id: z.string().optional(), error: z.string().optional(), termination_reason: z.string().optional(), terminationReason: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
 })
 const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]).optional(), method: z.string(), params: z.record(z.string(), z.unknown()).optional() })
 const toolParams = z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) })
@@ -90,6 +90,13 @@ function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value))
 }
 
+function agInvocationLimit(raw: unknown, result?: z.infer<typeof envelope>["result"]): boolean {
+  if (!result || result.status === "SUCCESS") return false
+  const text = [result.error, result.termination_reason, result.terminationReason].filter(Boolean).join(" ").toUpperCase()
+  if (/MAX[_ -](?:GENERATOR[_ -])?INVOCATIONS?/.test(text) || /(?:MAXIMUM|MAX)[^\n]{0,80}INVOCATIONS?/.test(text)) return true
+  const source = raw && typeof raw === "object" ? JSON.stringify(raw).toUpperCase() : ""
+  return /MAX[_ -](?:GENERATOR[_ -])?INVOCATIONS?/.test(source)
+}
 
 export class AntigravityRun {
   readonly id = randomUUID()
@@ -142,6 +149,8 @@ export class AntigravityRun {
   private pendingTimer?: ReturnType<typeof setTimeout>
   private killTimer?: ReturnType<typeof setTimeout>
   private readonly pending = new Map<string, { call: AgCall; resolve: (result: AgToolReply) => void; reject: (error: Error) => void }>()
+  private lastActionWasClientTool = false
+  private invocationContinues = 0
   private toolCalls = 0
   private readonly rpcCalls = new Map<string, { identity: string; result: Promise<AgToolReply> }>()
   private settledResolve!: () => void
@@ -262,7 +271,7 @@ export class AntigravityRun {
       const hookPath = join(this.workspace, "policy.cjs")
       // Workspace contains bridge configuration and supplied attachment bytes only.
       // Permit client MCP dispatch, exact supplied image reads, or schema submission.
-      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const fs=require('node:fs');const loading=fs.existsSync(${JSON.stringify(join(this.workspace, 'history-loading'))});const allowed=!loading&&((${agNativeAllowed.toString()})(t?.name,a,${JSON.stringify(agNativeTools(this.runtime.options))},${!!this.runtime.options.allowNativeBrowser},${!!this.runtime.options.allowNativeSubagents})||(t?.name==='call_mcp_tool'&&a?.ServerName==='meridian_client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||(t?.name==='view_file'&&JSON.parse(fs.readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(a?.AbsolutePath)));const audit=${JSON.stringify(join(this.workspace, 'policy-audit.jsonl'))};if(!fs.existsSync(audit)||fs.statSync(audit).size<65536)fs.appendFileSync(audit,JSON.stringify({name:t?.name,allowed,conversationId:p.conversationId})+'\\n',{mode:384});console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'Meridian restricts tools to client dispatch, supplied attachments, schema submission and operator-enabled native capabilities'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid Meridian hook payload'}));}});`)
+      await writeFile(hookPath, `let input='';process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{try{const p=JSON.parse(input);const t=p.toolCall;const a=t?.args;const fs=require('node:fs');const loading=fs.existsSync(${JSON.stringify(join(this.workspace, 'history-loading'))});const attachmentPath=a?.AbsolutePath||a?.Path||a?.path;const allowed=!loading&&((${agNativeAllowed.toString()})(t?.name,a,${JSON.stringify(agNativeTools(this.runtime.options))},${!!this.runtime.options.allowNativeBrowser},${!!this.runtime.options.allowNativeSubagents})||(t?.name==='call_mcp_tool'&&a?.ServerName==='meridian_client'&&${JSON.stringify(tools.map(t => t.name))}.includes(a?.ToolName))||(t?.name==='finish'&&${Boolean(this.request.output_config?.format)})||((t?.name==='view_file'||t?.name==='read_file')&&JSON.parse(fs.readFileSync(${JSON.stringify(join(this.workspace, 'attachment-paths.json'))},'utf8')).includes(attachmentPath)));const audit=${JSON.stringify(join(this.workspace, 'policy-audit.jsonl'))};if(!fs.existsSync(audit)||fs.statSync(audit).size<65536)fs.appendFileSync(audit,JSON.stringify({name:t?.name,allowed,conversationId:p.conversationId})+'\\n',{mode:384});console.log(JSON.stringify({decision:allowed?'allow':'deny',reason:'Meridian restricts tools to client dispatch, supplied attachments, schema submission and operator-enabled native capabilities'}));}catch(e){console.log(JSON.stringify({decision:'deny',reason:'Invalid Meridian hook payload'}));}});`)
       await writeFile(join(this.workspace, ".agents/hooks.json"), JSON.stringify({ meridian_policy: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: agHookCommand(process.execPath, hookPath), timeout: 5 }] }] } }))
       await writeFile(join(this.workspace, ".agents/mcp_config.json"), JSON.stringify({ mcpServers: {
         meridian_client: { serverUrl: `${this.runtime.mcpUrl}/${this.id}` },
@@ -335,6 +344,10 @@ export class AntigravityRun {
           if (step?.state === "DONE" && step.usage) this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
           if (event.event === "result" && event.result) {
             this.markTiming("result")
+            if (agInvocationLimit(JSON.parse(line), event.result) && this.lastActionWasClientTool && !this.replayFinalText) {
+              void this.continueAfterInvocationLimit().catch(error => this.abort(error instanceof Error ? error : new Error(String(error))))
+              return
+            }
             this.terminal = true
             if (event.result.status !== "SUCCESS" || event.result.error || event.result.denied_actions?.length) {
               this.abort(classifyAgFailure(event.result.error || "Antigravity denied an action; client-owned tool policy or account permission prevented completion"))
@@ -383,6 +396,23 @@ export class AntigravityRun {
       await this.cleanup()
       throw error
     }
+  }
+  private async continueAfterInvocationLimit(): Promise<void> {
+    if (this.invocationContinues >= this.runtime.maxInvocationContinues) {
+      this.abort(new AntigravityError(`Antigravity invocation limit reached and MERIDIAN_AGY_MAX_INVOCATION_CONTINUES=${this.runtime.maxInvocationContinues} was exhausted`, 502, "api_error"))
+      return
+    }
+    if (!this.child || this.child.stdin.destroyed || this.pending.size) {
+      this.abort(new AntigravityError("Antigravity invocation limit reached with unresolved client tools", 502, "api_error"))
+      return
+    }
+    this.invocationContinues++
+    this.terminal = false
+    this.replayFinalText = false
+    this.outputBytes = 0
+    const prompt = "Continue the current task from where it stopped. Previous tool calls are complete."
+    this.resumeModelTimer()
+    this.writeInput(prompt)
   }
   dispatchCall(id: string | number, name: string, input: Record<string, unknown>): Promise<AgToolReply> {
     const key = typeof id + ':' + id
@@ -434,6 +464,7 @@ export class AntigravityRun {
     if (this.pending.size >= 32) throw new Error("Too many outstanding tools")
     if (this.toolCalls >= this.runtime.maxClientToolCalls) throw new Error(`Antigravity conversation exceeded ${this.runtime.maxClientToolCalls} client tool calls`)
     this.toolCalls++
+    this.lastActionWasClientTool = true
     const call: AgCall = { type: "tool_use", id: "toolu_agy_" + randomUUID().replaceAll("-", ""), name, input }
     return new Promise((resolve, reject) => {
       this.pending.set(call.id, { call, resolve, reject })
@@ -453,6 +484,7 @@ export class AntigravityRun {
     this.completedSnapshot = false
     this.continuation = "live"
     this.busy = true
+    this.lastActionWasClientTool = false
     this.idle = false
     clearTimeout(this.pendingTimer)
     this.beginTurn()
@@ -514,6 +546,7 @@ export class AntigravityRun {
       this.runtime.toolOwners.delete(result.tool_use_id)
       pending.resolve({ ...prepared[index]!, clientMessages: index === 0 ? messages : [] })
     }
+    this.lastActionWasClientTool = true
   }
   async stopAtSequence(): Promise<void> {
     this.abort(new AntigravityError("Client stop sequence reached", 499, "api_error"), "completed")
@@ -583,6 +616,7 @@ export class AntigravityRuntime {
   readonly turnMaxDurationMs: number
   readonly pendingToolTimeoutMs: number
   readonly idleConversationMs: number
+  readonly maxInvocationContinues: number
   readonly maxConcurrent: number
   readonly childEnv: NodeJS.ProcessEnv
   // Warm live conversations; expired or restarted processes replay client history.
@@ -703,6 +737,8 @@ export class AntigravityRuntime {
   this.turnMaxDurationMs = options.turnMaxDurationMs ?? 7_200_000
   if (!Number.isSafeInteger(this.turnMaxDurationMs) || this.turnMaxDurationMs <= 0 || this.turnMaxDurationMs > 2_147_483_647) throw new Error("Antigravity absolute turn deadline must be an integer from 1 to 2147483647 ms")
   this.idleConversationMs = options.idleConversationMs ?? this.pendingToolTimeoutMs
+  this.maxInvocationContinues = options.maxInvocationContinues ?? 64
+  if (!Number.isSafeInteger(this.maxInvocationContinues) || this.maxInvocationContinues < 0 || this.maxInvocationContinues > 1024) throw new Error("Antigravity invocation continuations must be an integer from 0 to 1024")
   // The new option has its own range; leaving it unset retains every
   // previously accepted tool deadline rather than adding a startup refusal.
   if (options.idleConversationMs !== undefined && (!Number.isSafeInteger(this.idleConversationMs) || this.idleConversationMs <= 0 || this.idleConversationMs > 86_400_000)) throw new Error("Antigravity idle conversation time must be an integer from 1 to 86400000 ms")
