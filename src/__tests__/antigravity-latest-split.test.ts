@@ -91,4 +91,11 @@ describe('Antigravity oversized latest request splitting', () => {
     const request = base('retry-' + 'z'.repeat(300_000))
     expect(split(request)).toEqual(split(structuredClone(request)))
   })
+
+  it('keeps the prefix of earlier split steps stable when only the latest content grows', () => {
+    const common = 'prefix-' + 'p'.repeat(220_000)
+    const first = split(base(common + 'A'.repeat(10_000)))
+    const larger = split(base(common + 'A'.repeat(10_000) + 'B'.repeat(150_000)))
+    expect(larger[0]).toBe(first[0])
+  })
 })

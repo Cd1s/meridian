@@ -17,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
-import { agHistoryLimits, agContextBudget, assertAgStep, planAgHistory, planAgLatestContent } from "./antigravityHistory"
+import { agHistoryLimits, agContextBudget, assertAgStep, agLatestPayloadBytes, planAgHistory, planAgLatestContent } from "./antigravityHistory"
 import { estimateAgTextTokens, estimateAgTokens } from "./antigravityTokens"
 import { renderAgColdTrim } from "./antigravityColdTrim"
 
@@ -179,7 +179,7 @@ export class AntigravityRun {
     const full = renderAgPrompt(request, native) + this.promptSuffix
     if (this.restored) {
       if ((!promptBytes || Buffer.byteLength(full) <= promptBytes) && estimateAgTextTokens(full) <= maxTokens) return [assertAgStep(full, promptBytes, maxTokens)]
-      const split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens - Math.max(this.writtenTokens, this.reportedInput) - this.outputTokens, true)
+      const split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens - Math.max(this.writtenTokens, this.reportedInput) - this.outputTokens, agLatestPayloadBytes(request) >= 32_000)
       if (split) return split
       this.checkContext(full, request.max_tokens)
       return [assertAgStep(full, promptBytes, maxTokens)]
@@ -194,7 +194,7 @@ export class AntigravityRun {
     let split: string[] | undefined
     let splitError: unknown
     try {
-      split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens, true)
+      split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens, agLatestPayloadBytes(request) >= 32_000)
     } catch (error) {
       splitError = error
     }

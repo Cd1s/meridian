@@ -71,8 +71,13 @@ function latestPayload(request: AgRequest): string {
   return JSON.stringify({ role: latest.role, content: latest.content })
 }
 
+export function agLatestPayloadBytes(request: AgRequest): number {
+  return Buffer.byteLength(latestPayload(request))
+}
+
 function latestPartPrompt(fragment: string, index: number, total: number): string {
-  const text = `${AG_LATEST_PART_PREFIX} ${index} of ${total}. More parts follow. Store this exact fragment as context and do not answer yet. SKIP_TOOLS.\n\nClient request fragment (JSON, in order):\n${fragment}`
+  void total
+  const text = `${AG_LATEST_PART_PREFIX} ${index}. More parts follow. Store this exact fragment as context and do not answer yet. SKIP_TOOLS.\n\nClient request fragment (JSON, in order):\n${fragment}`
   return AG_HISTORY_PREFIX + JSON.stringify([{ role: 'user', content: [{ type: 'text', text }] }])
 }
 
@@ -207,7 +212,7 @@ export function planAgHistory(request: AgRequest, native: string[], suffix: stri
     finalSteps = [assertAgStep('The earlier input steps contain completed conversation history. Use it together with the current user goal and latest messages in this final step.\n\n' + renderAgPrompt(finalRequest, native) + suffix, limit, tokenLimit)]
   } catch (error) {
     if (!(error instanceof AntigravityError) || !error.message.startsWith('prompt is too long:')) throw error
-    finalSteps = planAgLatestContent(finalRequest, native, suffix, limit, tokenLimit, undefined, true) ?? (() => { throw error })()
+    finalSteps = planAgLatestContent(finalRequest, native, suffix, limit, tokenLimit, undefined, agLatestPayloadBytes(finalRequest) >= 32_000) ?? (() => { throw error })()
   }
   const steps: string[] = []
   let chunk: AgMessage[] = []

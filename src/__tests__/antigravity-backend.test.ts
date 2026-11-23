@@ -275,6 +275,23 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(await decode(await send(followup))).toEqual(answer) // Saved answer, no duplicate execution.
     expect((await send({ ...followup, tool_choice: { type: "none" }, messages: [...followup.messages, { role: "user", content: "A new user turn with completed context" }] })).status).toBe(200)
   })
+  it("serves a retried tool-result continuation idempotently without a cold replay", async () => {
+    const { send, runtime } = fixture()
+    const request = initial("NEXT_TOOL")
+    const first = await decode(await send(request))
+    const firstCall = first.content.find(block => block.type === "tool_use")!
+    const followup = { ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: firstCall.id, content: "first" }] }] }
+    const second = await send(followup)
+    expect(second.status).toBe(200)
+    const secondAnswer = await decode(second)
+    expect(secondAnswer.stop_reason).toBe("tool_use")
+    const requests = runtime.requests.length
+    const retried = await send(followup)
+    expect(retried.status).toBe(200)
+    expect(retried.headers.get("x-meridian-response-replayed")).toBe("true")
+    expect(await decode(retried)).toEqual(secondAnswer)
+    expect(runtime.requests.length).toBe(requests)
+  })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
     const { send } = fixture()
     const request = initial("UNICODE_CHUNKS")
@@ -494,7 +511,8 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect((await decode(response)).content[0]!.text).toBe("READY")
   })
   it("shrinks an old tool result of a replayed history to fit agy's input limit and keeps the newest result intact", async () => {
-    const { send } = fixture()
+    const { send, runtime } = fixture()
+    runtime.childEnv.AGY_FIXTURE_CONTEXT_LOG = "/tmp/old-tool-test.log"
     const newest = "NEWEST_RESULT_" + "n".repeat(60000)
     const use = (id: string) => ({ role: "assistant", content: [{ type: "tool_use", id, name: "lookup", input: { key: id } }] })
     const result = (id: string, content: string) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content }] })

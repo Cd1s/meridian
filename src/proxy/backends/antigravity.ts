@@ -267,10 +267,6 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
             // Save the whole validated batch before exposing any client action.
             // If transport loss kills its owner, completed results can use history replay.
             await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
-            if (requestId) {
-              const output = content.filter(block => block.type === "text" || block.type === "tool_use")
-              completedAnswers.put(body, scope, { ...base, content: output, stop_reason: reason, stop_sequence: null, usage }, requestId)
-            }
             for (const [offset, call] of calls.entries()) {
             const index = firstIndex + offset
             emit?.("content_block_start", { type: "content_block_start", index, content_block: { ...call, input: {} } })
@@ -288,6 +284,10 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (canSaveAnswer && !emittedTool && textContent.length === content.length) completedAnswers.put(body, scope, { ...answer, content: textContent }, requestId)
         emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: stops.matched ?? null }, usage })
         emit?.("message_stop", { type: "message_stop" })
+        if (emittedTool && (!body.stream || requestId)) {
+          const output = content.filter(block => block.type === "text" || block.type === "tool_use")
+          completedAnswers.put(body, scope, { ...answer, content: output }, requestId)
+        }
         return answer
       } catch (error) {
         status = error instanceof AntigravityError ? error.status : 502
