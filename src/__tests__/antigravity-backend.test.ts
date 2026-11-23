@@ -292,6 +292,23 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(await decode(retried)).toEqual(secondAnswer)
     expect(runtime.requests.length).toBe(requests)
   })
+  it("replays a successfully completed streaming tool continuation as SSE", async () => {
+    const { send, runtime } = fixture()
+    const request = { ...initial("NEXT_TOOL"), stream: false }
+    const first = await decode(await send(request))
+    const firstCall = first.content.find(block => block.type === "tool_use")!
+    const followup = { ...request, stream: true, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: firstCall.id, content: "first" }] }] }
+    const original = await send(followup)
+    expect(original.status).toBe(200)
+    const originalWire = await original.text()
+    expect(originalWire).toContain("content_block_start")
+    const requests = runtime.requests.length
+    const replay = await send(followup)
+    expect(replay.status).toBe(200)
+    expect(replay.headers.get("x-meridian-response-replayed")).toBe("true")
+    expect(await replay.text()).toBe(originalWire)
+    expect(runtime.requests.length).toBe(requests)
+  })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
     const { send } = fixture()
     const request = initial("UNICODE_CHUNKS")
@@ -509,6 +526,12 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const response = await send({ ...initial("a".repeat(200000)), tools: [] })
     expect(response.status).toBe(200)
     expect((await decode(response)).content[0]!.text).toBe("READY")
+  })
+  it("delivers an unindexed final text frame after an indexed input marker", async () => {
+    const { send } = fixture()
+    const response = await send({ ...initial("IGNORED_FINAL_TEXT"), tools: [] })
+    expect(response.status).toBe(200)
+    expect((await decode(response)).content[0]!.text).toBe("RECOVERED_FINAL_TEXT")
   })
   it("shrinks an old tool result of a replayed history to fit agy's input limit and keeps the newest result intact", async () => {
     const { send, runtime } = fixture()

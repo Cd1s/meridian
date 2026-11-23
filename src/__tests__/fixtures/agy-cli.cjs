@@ -195,6 +195,11 @@ async function main(inputPrompt) {
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'READY' } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }
+  if (prompt.includes('IGNORED_FINAL_TEXT')) {
+    emit({ event: 'step_update', step_update: { step_type: 'user_input', step_index: 0, state: 'DONE' } })
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'RECOVERED_FINAL_TEXT' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
   const lastContent = history.at(-1).content
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []

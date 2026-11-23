@@ -20,6 +20,7 @@ import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, pa
 import { agHistoryLimits, agContextBudget, assertAgStep, agLatestPayloadBytes, planAgHistory, planAgLatestContent } from "./antigravityHistory"
 import { estimateAgTextTokens, estimateAgTokens } from "./antigravityTokens"
 import { renderAgColdTrim } from "./antigravityColdTrim"
+import { AgTextCursor, agTextEventShape } from "./antigravityTextCursor"
 
 import { AgSchemaCompiler, agSchemaError, agUpstreamSchema } from "./antigravitySchema"
 import type { ValidateFunction } from "ajv"
@@ -41,7 +42,7 @@ const exec = promisify(execFile)
 const envelope = z.object({
   event: z.string(), conversation_id: z.string().optional(),
   step_update: z.object({ step_type: z.string().optional(), step_index: z.number().int().nonnegative().optional(), conversation_id: z.string().optional(), tool_name: z.string().optional(), state: z.string().optional(), text_delta: z.string().optional(), usage: z.object({ input_tokens: z.number().optional(), output_tokens: z.number().optional(), cache_read_tokens: z.number().optional() }).optional() }).optional(),
-  result: z.object({ status: z.string(), conversation_id: z.string().optional(), error: z.string().optional(), termination_reason: z.string().optional(), terminationReason: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
+  result: z.object({ status: z.string(), conversation_id: z.string().optional(), error: z.string().optional(), response: z.string().optional(), termination_reason: z.string().optional(), terminationReason: z.string().optional(), denied_actions: z.array(z.unknown()).optional(), structured_output: z.unknown().optional() }).optional(),
 })
 const rpcSchema = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]).optional(), method: z.string(), params: z.record(z.string(), z.unknown()).optional() })
 const toolParams = z.object({ name: z.string(), arguments: z.record(z.string(), z.unknown()).default({}) })
@@ -130,6 +131,9 @@ export class AntigravityRun {
   private replaySeenIndex = -1
   private replayFinalText = false
   private latestSplit = false
+  private readonly textCursor = new AgTextCursor()
+  private loggedIgnoredText = false
+  responseId?: string
   private writtenTokens = 0
   private reportedInput = 0
   private outputTokens = 0
@@ -292,6 +296,7 @@ export class AntigravityRun {
       const messages = await this.attachments.messages(this.request.messages.slice(this.restored?.count ?? 0))
       this.steps = this.plan({ ...this.request, messages })
       this.latestSplit = this.steps.some(step => step.includes("Current request part"))
+      this.textCursor.begin(this.steps.length > 1)
       if (this.loadingHistory) await writeFile(join(this.workspace, "history-loading"), "", { mode: 0o600 })
       await writeFile(join(this.workspace, "policy-audit.jsonl"), "", { mode: 0o600 })
       const hookPath = join(this.workspace, "policy.cjs")
@@ -335,7 +340,19 @@ export class AntigravityRun {
         try {
           if (this.terminal) throw new Error("CLI emitted data after its terminal result")
           this.markTiming("firstEvent")
-          const event = envelope.parse(JSON.parse(line))
+          const raw = JSON.parse(line) as unknown
+          const event = envelope.parse(raw)
+          const scope = this.textCursor.observe(raw)
+          if (scope.stale) {
+            if (event.step_update?.step_type === "agent_response" || event.result?.response) {
+              if (!this.loggedIgnoredText) {
+                this.loggedIgnoredText = true
+                console.warn(JSON.stringify({ event: "antigravity.text_step_ignored", requestId: this.responseId, runId: this.id, conversationId: this.conversationId, after: this.textCursor.after, inputStep: scope.stepIndex, shape: agTextEventShape(raw) }))
+              }
+            }
+            return
+          }
+          const textAllowed = scope.textAllowed || (this.latestSplit && !this.loadingHistory)
           if (event.event === "init" && event.conversation_id && !this.conversationId) this.conversationId = event.conversation_id
           if (this.steps.length > 1 && !this.acceptReplayFrame(event)) return
           const step = event.step_update
@@ -356,19 +373,25 @@ export class AntigravityRun {
                 return
               }
               this.stepIndex++
+              this.textCursor.commit()
+              this.textCursor.nextPhase()
               this.replayInputIndex = undefined
               this.writeReplayStep()
             }
             return
           }
           if ((step?.step_type === "tool" || step?.step_type === "subagent") && step.tool_name && agNativeTools(this.runtime.options).includes(step.tool_name)) this.runtime.recordNative({ runId: this.id, name: step.tool_name, state: step.state ?? "unknown", timestamp: Date.now() })
-          if (step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) {
+          if (textAllowed && step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) {
             if (step.text_delta.trim()) this.replayFinalText = true
             this.queue.push({ kind: "text", text: step.text_delta })
           }
-          if (step?.step_type === "agent_response" && step.text_delta) this.markTiming("firstToken")
+          if (textAllowed && step?.step_type === "agent_response" && step.text_delta) this.markTiming("firstToken")
           if (step?.state === "DONE" && step.usage) this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
           if (event.event === "result" && event.result) {
+            if (textAllowed && event.result.response && !this.request.output_config?.format) {
+              this.replayFinalText = true
+              this.queue.push({ kind: "text", text: event.result.response })
+            }
             this.markTiming("result")
             if (agInvocationLimit(JSON.parse(line), event.result) && this.lastActionWasClientTool && !this.replayFinalText) {
               void this.continueAfterInvocationLimit().catch(error => this.abort(error instanceof Error ? error : new Error(String(error))))
@@ -564,6 +587,7 @@ export class AntigravityRun {
     this.writtenTokens += estimateAgTextTokens(batch) + 32
     clearTimeout(this.pendingTimer)
     this.delivered = []
+    this.textCursor.nextPhase()
     for (let index = 0; index < results.length; index++) {
       const result = results[index]!
       const pending = this.pending.get(result.tool_use_id)!

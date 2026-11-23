@@ -1,4 +1,4 @@
-import { AgCompletedAnswers, agRequestId, replayAgAnswer } from "./antigravityReplay"
+import { AgCompletedAnswers, agRequestId, replayAgAnswer, type AgCompletedAnswer } from "./antigravityReplay"
 import { AgResponseJobs, agEventStream, responseEvents } from "./antigravityJobs"
 import { estimateAgTokens } from "./antigravityTokens"
 import { agOpenai } from "./antigravityOpenai"
@@ -212,11 +212,13 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
     let run: AntigravityRun
     try { run = await selectRun(body, request.signal) } catch (error) { release(); throw error }
     let completed = false, cancelledDuringResponse = false
+    let completedAnswer: AgCompletedAnswer | undefined
     const cancel = () => { if (!completed) { cancelledDuringResponse = true; run.abort(new AntigravityError("Request cancelled", 499, "api_error")) } }
     request.signal.addEventListener("abort", cancel, { once: true })
     if (request.signal.aborted) cancel()
     const started = Date.now()
     const id = "msg_agy_" + randomUUID().replaceAll("-", "")
+    run.responseId = id
     async function consume(emit?: (event: string, value: unknown) => void) {
       const content: AgBlock[] = []
       const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
@@ -267,6 +269,10 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
             // Save the whole validated batch before exposing any client action.
             // If transport loss kills its owner, completed results can use history replay.
             await runtime.plugins.observe("onResponse", { ...base, content, stop_reason: reason, usage }, request.signal)
+            if (requestId) {
+              const output = content.filter(block => block.type === "text" || block.type === "tool_use")
+              completedAnswers.put(body, scope, { ...base, content: output, stop_reason: reason, stop_sequence: null, usage }, requestId)
+            }
             for (const [offset, call] of calls.entries()) {
             const index = firstIndex + offset
             emit?.("content_block_start", { type: "content_block_start", index, content_block: { ...call, input: {} } })
@@ -284,10 +290,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
         if (canSaveAnswer && !emittedTool && textContent.length === content.length) completedAnswers.put(body, scope, { ...answer, content: textContent }, requestId)
         emit?.("message_delta", { type: "message_delta", delta: { stop_reason: reason, stop_sequence: stops.matched ?? null }, usage })
         emit?.("message_stop", { type: "message_stop" })
-        if (emittedTool && (!body.stream || requestId)) {
-          const output = content.filter(block => block.type === "text" || block.type === "tool_use")
-          completedAnswers.put(body, scope, { ...answer, content: output }, requestId)
-        }
+        if (emittedTool) completedAnswer = { ...answer, content: content.filter(block => block.type === "text" || block.type === "tool_use") }
         return answer
       } catch (error) {
         status = error instanceof AntigravityError ? error.status : 502
@@ -310,6 +313,7 @@ export function createAntigravityServer(config: ProxyConfig, runtime = new Antig
           runtime.record(metric)
           await runtime.plugins.observe("onTelemetry", metric, request.signal)
         } finally {
+          if (status === 200 && emittedTool && completedAnswer && (!body.stream || !cancelledDuringResponse)) completedAnswers.put(body, scope, completedAnswer, requestId)
           completed = true
           run.busy = false
           request.signal.removeEventListener("abort", cancel)
