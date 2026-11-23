@@ -49,7 +49,8 @@ export class AgTextCursor {
         this.awaitingInput = false
         return { textAllowed: false, stale: false, stepIndex: index }
       }
-      if (this.awaitingInput) return { textAllowed: false, stale: true, stepIndex: index }
+      if (this.awaitingInput && update?.step_type !== "agent_response") return { textAllowed: false, stale: true, stepIndex: index }
+      if (update?.step_type === "agent_response") this.awaitingInput = false
       this.observedThrough = Math.max(this.observedThrough, index)
       return { textAllowed: true, stale: false, stepIndex: index }
     }

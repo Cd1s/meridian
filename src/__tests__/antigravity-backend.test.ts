@@ -309,6 +309,16 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     expect(await replay.text()).toBe(originalWire)
     expect(runtime.requests.length).toBe(requests)
   })
+  it("delivers the final indexed agent response after the last tool result", async () => {
+    const { send } = fixture({ reuseConversations: true })
+    const request = { ...initial("FINAL_AFTER_TOOL"), stream: false }
+    const first = await decode(await send(request))
+    const call = first.content.find(block => block.type === "tool_use")!
+    const followup = { ...request, stream: true, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "done" }] }] }
+    const response = await send(followup)
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain("FINAL_AFTER_TOOL_TEXT")
+  })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
     const { send } = fixture()
     const request = initial("UNICODE_CHUNKS")

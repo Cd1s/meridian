@@ -200,6 +200,11 @@ async function main(inputPrompt) {
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'RECOVERED_FINAL_TEXT' } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }
+  if (nativePrompts[0]?.includes('FINAL_AFTER_TOOL') && nativePrompts.length > 1) {
+    emit({ event: 'step_update', step_update: { conversation_id: '', step_type: 'agent_response', step_index: 3, state: 'ACTIVE', text_delta: 'FINAL_AFTER_TOOL_TEXT' } })
+    emit({ event: 'step_update', step_update: { conversation_id: '', step_type: 'agent_response', step_index: 3, state: 'DONE', usage: { input_tokens: 120, output_tokens: 4 } } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
   const lastContent = history.at(-1).content
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []
@@ -209,6 +214,11 @@ async function main(inputPrompt) {
     const calls = Array.from({ length: prompt.includes('PARALLEL2') ? 2 : 1 }, (_, n) => rpc('tools/call', { name: tools[0].name, arguments: { key: `probe${n}` } }))
     if (prompt.includes('RPC_RETRY')) calls.push(rpc('tools/call', {name:tools[0].name,arguments:{key:'probe0'}},2))
     const results = await Promise.all(calls)
+    if (prompt.includes('FINAL_AFTER_TOOL')) {
+      emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: 3, state: 'ACTIVE', text_delta: 'FINAL_AFTER_TOOL_TEXT' } })
+      emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: 3, state: 'DONE', usage: { input_tokens: 120, output_tokens: 4 } } })
+      return emit({ event: 'result', result: { status: 'SUCCESS' } })
+    }
     if (prompt.includes('FAIL_CONTINUATION_504')) { setInterval(() => {}, 1000); return }
     if (prompt.includes('FAIL_CONTINUATION')) {
       const error = prompt.includes('_503') ? 'Service unavailable' : prompt.includes('_429') ? 'Quota exhausted; retry in 1 seconds' : prompt.includes('_401') ? 'Authentication required' : 'Fixture process lost after receiving tool results'
