@@ -21,6 +21,16 @@ function agColdTrimBoundaries(messages: AgRequest["messages"]): number[] {
   return boundaries
 }
 
+
+function preservedUserMessages(messages: AgRequest["messages"], start: number, retained: AgRequest["messages"]): AgRequest["messages"] {
+  const retainedSet = new Set(retained)
+  return messages.slice(0, start).filter(message => message.role === "user" && !retainedSet.has(message)).map(message => {
+    if (typeof message.content === "string") return message
+    const text = blocks(message).filter(block => block.type === "text")
+    return text.length ? { ...message, content: text } : undefined
+  }).filter((message): message is AgRequest["messages"][number] => message !== undefined)
+}
+
 /** Only called for fresh replay; warm continuations supply their delta directly. */
 export function renderAgColdTrim(
   request: AgRequest,
@@ -60,10 +70,10 @@ export function renderAgColdTrim(
   }
   const whole = compact(request)
   if (whole) return whole
-  const at = (start: number) => ({
-    ...request,
-    messages: start > current && anchor.length ? [...anchor, ...request.messages.slice(start)] : request.messages.slice(start),
-  })
+  const at = (start: number) => {
+    const retained = start > current && anchor.length ? [...anchor, ...request.messages.slice(start)] : request.messages.slice(start)
+    return { ...request, messages: [...preservedUserMessages(request.messages, start, retained), ...retained] }
+  }
   const render = (start: number) => prefix + renderAgPrompt(at(start), native) + suffix
   // Within a replay with omissions, suffix sizes decrease at each safe boundary.
   let lo = 1, hi = boundaries.length

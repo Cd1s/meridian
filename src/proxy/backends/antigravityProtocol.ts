@@ -437,6 +437,34 @@ function latestTypedRequest(messages: AgMessage[]): number {
   return -1
 }
 /** Text with its middle replaced by a marker, or undefined when that would not make it shorter. */
+const AG_USER_TEXT_CAP_BYTES = 64 * 1024
+const AG_USER_TEXT_MARKER = '\n[... middle of this user instruction omitted by Meridian after the 64 KiB protection cap ...]\n'
+function omitUserText(text: string, capBytes = AG_USER_TEXT_CAP_BYTES): string | undefined {
+  const bytes = Buffer.from(text, 'utf8')
+  if (bytes.length <= capBytes) return undefined
+  const keep = Math.max(1, Math.floor((capBytes - Buffer.byteLength(AG_USER_TEXT_MARKER)) / 2))
+  let headEnd = Math.min(keep, bytes.length)
+  while (headEnd > 0 && headEnd < bytes.length && (bytes[headEnd]! & 0xC0) === 0x80) headEnd--
+  let tailStart = Math.max(headEnd, bytes.length - keep)
+  while (tailStart < bytes.length && (bytes[tailStart]! & 0xC0) === 0x80) tailStart++
+  return bytes.subarray(0, headEnd).toString('utf8') + AG_USER_TEXT_MARKER + bytes.subarray(tailStart).toString('utf8')
+}
+function omitProtectedUserMessage(message: AgMessage, capBytes = AG_USER_TEXT_CAP_BYTES): AgMessage {
+  if (typeof message.content === 'string') {
+    const text = omitUserText(message.content, capBytes)
+    return text === undefined ? message : { ...message, content: text }
+  }
+  let changed = false
+  const content = message.content.map(block => {
+    if (block.type !== 'text') return block
+    const text = omitUserText(block.text, capBytes)
+    if (text === undefined) return block
+    changed = true
+    return { ...block, text }
+  })
+  return changed ? { ...message, content } : message
+}
+
 function omitMiddle(text: string, keep: number, min: number): string | undefined {
   if (text.length <= min) return undefined
   // A cut inside a surrogate pair would leave a lone surrogate in the kept head or tail, so move it inward.
@@ -497,9 +525,10 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
   const render = () => renderAgPrompt({ ...request, messages }, nativeTools, true) + suffix
   const range = (from: number, to: number) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + i)
   const phases: Array<{ at: number[]; kinds: readonly OmitKind[]; passes: readonly (readonly [number, number])[] }> = [
-    { at: range(0, current), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
-    { at: range(current + 1, messages.length).filter(at => !newest.has(at)), kinds: ["result", "use", "text"], passes: [[300, 2000], [0, 200]] },
+    { at: range(0, current), kinds: ["result", "use"], passes: [[300, 2000], [0, 200]] },
+    { at: range(current + 1, messages.length).filter(at => !newest.has(at)), kinds: ["result", "use"], passes: [[300, 2000], [0, 200]] },
     { at: [...newest].sort((a, b) => a - b), kinds: ["result", "use"], passes: [[4000, 10000], [1000, 2500]] },
+    { at: range(0, messages.length).filter(at => messages[at]!.role === "assistant" && !newest.has(at)), kinds: ["text"], passes: [[300, 2000], [0, 200]] },
   ]
   for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
     const next = omitIn(messages[i]!, kind, keep, min, i > current)
@@ -511,6 +540,22 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
     const prompt = render(), over = Buffer.byteLength(prompt) - limit
     if (over <= 0) return prompt
     excess = over
+  }
+  if (Buffer.byteLength(render()) > limit) {
+    const userIndexes = range(0, messages.length).filter(at => messages[at]!.role === "user" && at !== current)
+    let cap = AG_USER_TEXT_CAP_BYTES
+    while (Buffer.byteLength(render()) > limit && cap > 1024) {
+      cap = Math.max(1024, Math.floor(cap * 0.75))
+      for (const i of userIndexes) {
+        const next = omitProtectedUserMessage(messages[i]!, cap)
+        if (next !== messages[i]) {
+          if (!changed) { messages = [...messages]; changed = true }
+          messages[i] = next
+        }
+      }
+    }
+    const prompt = render()
+    if (Buffer.byteLength(prompt) <= limit) return prompt
   }
   const prompt = changed ? render() : full, bytes = Buffer.byteLength(prompt)
   if (bytes > limit) throw promptTooLong(bytes, limit)

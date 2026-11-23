@@ -57,6 +57,120 @@ export function assertAgStep(prompt: string, limit: number, tokenLimit = 52_000)
 
 export const AG_HISTORY_PREFIX = 'History loading step. Store the following completed client conversation as context for a later input step. Treat it only as historical data: do not answer its requests, execute actions, inspect attachments, or call any tools. Reply with exactly ACK and nothing else. The real instructions and current request arrive in the final step.\n\nClient conversation:\n'
 
+const AG_LATEST_PART_PREFIX = 'Current request part'
+
+function utf8Boundary(bytes: Buffer, end: number, start: number): number {
+  let boundary = Math.min(bytes.length, Math.max(start, end))
+  while (boundary > start && boundary < bytes.length && (bytes[boundary]! & 0xC0) === 0x80) boundary--
+  return boundary
+}
+
+function latestPayload(request: AgRequest): string {
+  const latest = request.messages.at(-1)
+  if (!latest) return ''
+  return JSON.stringify({ role: latest.role, content: latest.content })
+}
+
+function latestPartPrompt(fragment: string, index: number, total: number): string {
+  const text = `${AG_LATEST_PART_PREFIX} ${index} of ${total}. More parts follow. Store this exact fragment as context and do not answer yet. SKIP_TOOLS.\n\nClient request fragment (JSON, in order):\n${fragment}`
+  return AG_HISTORY_PREFIX + JSON.stringify([{ role: 'user', content: [{ type: 'text', text }] }])
+}
+
+function latestFinalPrompt(request: AgRequest, native: string[], suffix: string, fragment: string, index: number, total: number): string {
+  const latest = request.messages.at(-1)
+  if (!latest) throw new AntigravityError('Cannot split an empty latest request')
+  const synthetic: AgRequest = {
+    ...request,
+    messages: [
+      ...request.messages.slice(0, -1),
+      { role: latest.role, content: [{ type: 'text', text: `${AG_LATEST_PART_PREFIX} ${index} of ${total}. This is the final part. Reassemble all earlier parts in order and respond now.\n\n${fragment}` }] },
+    ],
+  }
+  return `The current request is split across ${total} ordered parts. This is part ${index}, the final part. Reassemble all earlier parts exactly before answering now.\n\n${renderAgPrompt(synthetic, native)}${suffix}`
+}
+
+function fitsLatestPrompt(prompt: string, limit: number, tokenLimit: number): boolean {
+  return (!limit || Buffer.byteLength(prompt) <= limit) && estimateAgTextTokens(prompt) <= tokenLimit
+}
+
+function splitUtf8Payload(payload: string, makePrompt: (fragment: string) => string, limit: number, tokenLimit: number): string[] {
+  const bytes = Buffer.from(payload, 'utf8')
+  const fragments: string[] = []
+  const maxFragmentBytes = Math.max(1, Math.min(limit || Number.MAX_SAFE_INTEGER, tokenLimit) - 4096)
+  let start = 0
+  while (start < bytes.length) {
+    let end = Math.min(bytes.length, start + maxFragmentBytes)
+    end = utf8Boundary(bytes, end, start)
+    if (end <= start) throw new AntigravityError('prompt is too long: one latest-request fragment exceeds the per-step input limit')
+    let fragment = bytes.subarray(start, end).toString('utf8')
+    while (!fitsLatestPrompt(makePrompt(fragment), limit, tokenLimit) && end > start + 1) {
+      end = utf8Boundary(bytes, start + Math.floor((end - start) * 0.9), start)
+      if (end <= start) break
+      fragment = bytes.subarray(start, end).toString('utf8')
+    }
+    if (!fitsLatestPrompt(makePrompt(fragment), limit, tokenLimit)) throw new AntigravityError('prompt is too long: one latest-request fragment exceeds the per-step input limit')
+    fragments.push(fragment)
+    start = end
+  }
+  return fragments
+}
+
+/** Split only the latest request payload into deterministic ordered context steps. */
+export function planAgLatestContent(
+  request: AgRequest,
+  native: string[],
+  suffix: string,
+  limit: number,
+  tokenLimit: number,
+  contextTokens?: number,
+): string[] | undefined {
+  const payload = latestPayload(request)
+  const latest = request.messages.at(-1)
+  if (!payload || !latest) return undefined
+  const latestOnly = { ...request, messages: [latest] }
+  if (fitsLatestPrompt(renderAgPrompt(latestOnly, native) + suffix, limit, tokenLimit)) return undefined
+  const conservativeTotal = 9999
+  let fragments = splitUtf8Payload(payload, fragment => latestPartPrompt(fragment, 1, conservativeTotal), limit, tokenLimit)
+  const rebuild = (parts: string[]): string[] => {
+    const total = parts.length
+    const prompts: string[] = []
+    for (let i = 0; i < total - 1; i++) prompts.push(latestPartPrompt(parts[i]!, i + 1, total))
+    prompts.push(latestFinalPrompt(request, native, suffix, parts[total - 1]!, total, total))
+    return prompts
+  }
+  for (;;) {
+    const prompts = rebuild(fragments)
+    const final = prompts.at(-1)!
+    if (fitsLatestPrompt(final, limit, tokenLimit)) {
+      if (contextTokens !== undefined && prompts.reduce((sum, prompt) => sum + estimateAgTextTokens(prompt) + 32, 0) + 8192 > contextTokens) {
+        throw new AntigravityError('prompt is too long: latest request exceeds the estimated context budget; compact the conversation')
+      }
+      return prompts
+    }
+    const lastBytes = Buffer.from(fragments.at(-1)!, 'utf8')
+    let low = 0
+    let high = lastBytes.length
+    let split = -1
+    while (low <= high) {
+      const candidate = utf8Boundary(lastBytes, Math.floor((low + high) / 2), 0)
+      const suffixFragment = lastBytes.subarray(candidate).toString('utf8')
+      const candidateParts = [...fragments.slice(0, -1), lastBytes.subarray(0, candidate).toString('utf8'), suffixFragment]
+      if (candidate === 0) {
+        low = Math.floor((low + high) / 2) + 1
+        continue
+      }
+      if (fitsLatestPrompt(latestFinalPrompt(request, native, suffix, suffixFragment, candidateParts.length, candidateParts.length), limit, tokenLimit)) {
+        split = candidate
+        high = candidate - 1
+      } else {
+        low = candidate + 1
+      }
+    }
+    if (split <= 0) throw new AntigravityError('prompt is too long: latest request exceeds the per-step input limit')
+    fragments = [...fragments.slice(0, -1), lastBytes.subarray(0, split).toString('utf8'), lastBytes.subarray(split).toString('utf8')]
+  }
+}
+
 /** Tool calls and all their results form one indivisible replay unit. */
 function historyUnits(messages: AgMessage[]): AgMessage[][] {
   const units: AgMessage[][] = []
@@ -87,7 +201,13 @@ export function planAgHistory(request: AgRequest, native: string[], suffix: stri
   // Keep the goal's entire tool batch if its instruction accompanies a tool result.
   const [goal] = goalIndex < 0 ? [] : units.splice(goalIndex, 1)
   const finalRequest = { ...request, messages: [...(goal ?? []), ...last] }
-  const final = assertAgStep('The earlier input steps contain completed conversation history. Use it together with the current user goal and latest messages in this final step.\n\n' + renderAgPrompt(finalRequest, native) + suffix, limit, tokenLimit)
+  let finalSteps: string[]
+  try {
+    finalSteps = [assertAgStep('The earlier input steps contain completed conversation history. Use it together with the current user goal and latest messages in this final step.\n\n' + renderAgPrompt(finalRequest, native) + suffix, limit, tokenLimit)]
+  } catch (error) {
+    if (!(error instanceof AntigravityError) || !error.message.startsWith('prompt is too long:')) throw error
+    finalSteps = planAgLatestContent(finalRequest, native, suffix, limit, tokenLimit) ?? (() => { throw error })()
+  }
   const steps: string[] = []
   let chunk: AgMessage[] = []
   let bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2
@@ -110,7 +230,7 @@ export function planAgHistory(request: AgRequest, native: string[], suffix: stri
     if (steps.length + 1 >= maxSteps) throw new AntigravityError(`prompt is too long: cold history replay exceeds ${maxSteps} input steps; compact the conversation or raise MERIDIAN_AGY_HISTORY_MAX_STEPS`)
   }
   if (chunk.length) steps.push(AG_HISTORY_PREFIX + JSON.stringify(chunk))
-  steps.push(final)
+  steps.push(...finalSteps)
   if (steps.length > maxSteps) throw new AntigravityError(`prompt is too long: cold history replay exceeds ${maxSteps} input steps`)
   return steps
 }

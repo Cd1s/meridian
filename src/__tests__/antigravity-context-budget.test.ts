@@ -174,7 +174,7 @@ describe("Antigravity context budgeting", () => {
     expect(await result.text()).toContain("estimated")
   })
 
-  it("applies the step budget before starting a restored CLI process", async () => {
+  it("splits an oversized restored latest request before starting the CLI process", async () => {
     const { send, steps, runtime } = await fixture(undefined, true)
     const history = [text("SKIP_TOOLS completed"), assistant("READY")]
     const native = runtime.nativeSessions!
@@ -183,13 +183,18 @@ describe("Antigravity context budgeting", () => {
       conversationId: "11111111-1111-4111-8111-111111111111", workspace, count: history.length,
     })
     const response = await send([...history, text("\u6f22".repeat(20000))])
-    expect(response.status).toBe(400)
+    expect(response.status).toBe(200)
     expect(runtime.restored).toBe(1)
-    expect(await resultMessage(response)).toContain("estimated")
-    await expect(steps()).rejects.toThrow("ENOENT")
+    expect((await response.json() as { content: unknown[] }).content).toHaveLength(1)
+    expect((await steps()).length).toBeGreaterThan(1)
+  })
+
+  it("loads bounded cold history before splitting an oversized latest request", async () => {
+    const { send, steps } = await fixture()
+    const history = [text("ORIGINAL_TASK")]
+    history.push(...historicalPairs(10, "r".repeat(20000)))
+    const response = await send([...history, text("z".repeat(300000))])
+    expect(response.status).toBe(200)
+    expect((await steps()).length).toBeGreaterThan(2)
   })
 })
-
-async function resultMessage(response: Response): Promise<string> {
-  return (await response.json() as { error: { message: string } }).error.message
-}

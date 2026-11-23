@@ -191,6 +191,10 @@ async function main(inputPrompt) {
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: JSON.stringify(results) } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }
+  if (prompt.includes('This is the final part of the current request.')) {
+    emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'READY' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+  }
   const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
   const lastContent = history.at(-1).content
   const replayedResults = Array.isArray(lastContent) ? lastContent.filter(b => b.type === 'tool_result') : []

@@ -17,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
-import { agHistoryLimits, agContextBudget, assertAgStep, planAgHistory } from "./antigravityHistory"
+import { agHistoryLimits, agContextBudget, assertAgStep, planAgHistory, planAgLatestContent } from "./antigravityHistory"
 import { estimateAgTextTokens, estimateAgTokens } from "./antigravityTokens"
 import { renderAgColdTrim } from "./antigravityColdTrim"
 
@@ -129,6 +129,7 @@ export class AntigravityRun {
   private replayInputIndex?: number
   private replaySeenIndex = -1
   private replayFinalText = false
+  private latestSplit = false
   private writtenTokens = 0
   private reportedInput = 0
   private outputTokens = 0
@@ -177,6 +178,9 @@ export class AntigravityRun {
     if (maxTokens < 1) throw new AntigravityError("prompt is too long: output reserve exceeds the estimated context budget")
     const full = renderAgPrompt(request, native) + this.promptSuffix
     if (this.restored) {
+      if ((!promptBytes || Buffer.byteLength(full) <= promptBytes) && estimateAgTextTokens(full) <= maxTokens) return [assertAgStep(full, promptBytes, maxTokens)]
+      const split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens - Math.max(this.writtenTokens, this.reportedInput) - this.outputTokens)
+      if (split) return split
       this.checkContext(full, request.max_tokens)
       return [assertAgStep(full, promptBytes, maxTokens)]
     }
@@ -186,6 +190,25 @@ export class AntigravityRun {
       estimateAgTokens(request).input_tokens + (request.max_tokens ?? 8192) <= contextTokens) {
       const steps = planAgHistory(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), limits.maxSteps, maxTokens)
       if (steps.reduce((sum, step) => sum + estimateAgTextTokens(step) + 32, 0) + (request.max_tokens ?? 8192) <= contextTokens) return steps
+    }
+    let split: string[] | undefined
+    let splitError: unknown
+    try {
+      split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens)
+    } catch (error) {
+      splitError = error
+    }
+    if (split || splitError) {
+      if (request.messages.length > 1) {
+        try {
+          const historySteps = planAgHistory(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), limits.maxSteps, maxTokens)
+          if (historySteps.reduce((sum, step) => sum + estimateAgTextTokens(step) + 32, 0) + (request.max_tokens ?? 8192) <= contextTokens) return historySteps
+        } catch (error) {
+          if (!(error instanceof AntigravityError) || !error.message.startsWith("prompt is too long:")) throw error
+        }
+      }
+      if (splitError) throw splitError
+      return split!
     }
     return [renderAgColdTrim(request, native, this.promptSuffix, { bytes: promptBytes, tokens: maxTokens, estimateTokens: estimateAgTextTokens })]
   }
@@ -222,10 +245,12 @@ export class AntigravityRun {
       return false
     }
     if (event.result && this.replayInputIndex === undefined) {
+      if (this.latestSplit) return true
       if (event.result.status !== "SUCCESS" || event.result.error || event.result.denied_actions?.length) return true
       throw new Error("Antigravity completed a history step without observing its input marker")
     }
     if (!step) return true
+    if (this.latestSplit && !this.loadingHistory && this.replayInputIndex === undefined) return true
     if (this.replayInputIndex === undefined || index === undefined || index <= this.replayInputIndex) return false
     this.replaySeenIndex = Math.max(this.replaySeenIndex, index)
     return true
@@ -266,6 +291,7 @@ export class AntigravityRun {
       this.attachments = new AgAttachments(this.workspace, this.attachmentAbort.signal)
       const messages = await this.attachments.messages(this.request.messages.slice(this.restored?.count ?? 0))
       this.steps = this.plan({ ...this.request, messages })
+      this.latestSplit = this.steps.some(step => step.includes("Current request part"))
       if (this.loadingHistory) await writeFile(join(this.workspace, "history-loading"), "", { mode: 0o600 })
       await writeFile(join(this.workspace, "policy-audit.jsonl"), "", { mode: 0o600 })
       const hookPath = join(this.workspace, "policy.cjs")
