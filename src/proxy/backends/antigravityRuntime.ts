@@ -179,7 +179,7 @@ export class AntigravityRun {
     const full = renderAgPrompt(request, native) + this.promptSuffix
     if (this.restored) {
       if ((!promptBytes || Buffer.byteLength(full) <= promptBytes) && estimateAgTextTokens(full) <= maxTokens) return [assertAgStep(full, promptBytes, maxTokens)]
-      const split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens - Math.max(this.writtenTokens, this.reportedInput) - this.outputTokens)
+      const split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens - Math.max(this.writtenTokens, this.reportedInput) - this.outputTokens, true)
       if (split) return split
       this.checkContext(full, request.max_tokens)
       return [assertAgStep(full, promptBytes, maxTokens)]
@@ -194,7 +194,7 @@ export class AntigravityRun {
     let split: string[] | undefined
     let splitError: unknown
     try {
-      split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens)
+      split = planAgLatestContent(request, native, this.promptSuffix, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), maxTokens, contextTokens, true)
     } catch (error) {
       splitError = error
     }

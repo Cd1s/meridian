@@ -191,7 +191,7 @@ async function main(inputPrompt) {
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: JSON.stringify(results) } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }
-  if (prompt.includes('This is the final part of the current request.')) {
+  if (prompt.includes('Current request part') && prompt.includes('This is the final part.')) {
     emit({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: 'READY' } })
     return emit({ event: 'result', result: { status: 'SUCCESS' } })
   }

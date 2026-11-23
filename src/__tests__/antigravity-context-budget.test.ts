@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AntigravityRuntime } from "../proxy/backends/antigravityRuntime"
 import { createAntigravityServer } from "../proxy/backends/antigravity"
-import { blocks, parseAgRequest, type AgMessage } from "../proxy/backends/antigravityProtocol"
+import { blocks, parseAgRequest, renderAgPrompt, type AgMessage } from "../proxy/backends/antigravityProtocol"
 import { estimateAgTextTokens } from "../proxy/backends/antigravityTokens"
 import { DEFAULT_PROXY_CONFIG } from "../proxy/types"
 
@@ -45,11 +45,18 @@ async function fixture(priming?: string, persist = false) {
   if (priming) runtime.childEnv.AGY_FIXTURE_CONTEXT_PRIMING = priming
   const backend = createAntigravityServer({ ...DEFAULT_PROXY_CONFIG, backend: "antigravity" }, runtime)
   cleanup.push(backend.closeBackend, () => rm(directory, { recursive: true, force: true }))
-  const send = (messages: AgMessage[]) => backend.app.fetch(new Request("http://local/v1/messages", {
-    method: "POST", body: JSON.stringify({ model: "fixture-model", tools, max_tokens: 128, messages }),
+  const send = (messages: AgMessage[], overrides: Record<string, unknown> = {}) => backend.app.fetch(new Request("http://local/v1/messages", {
+    method: "POST", body: JSON.stringify({ model: "fixture-model", tools, max_tokens: 128, messages, ...overrides }),
   }))
-  const steps = async (): Promise<{ pid: number; prompt: string }[]> =>
-    (await readFile(path, "utf8")).trim().split("\n").map(line => JSON.parse(line))
+  const steps = async (): Promise<{ pid: number; prompt: string }[]> => {
+    try {
+      const text = (await readFile(path, "utf8")).trim()
+      return text ? text.split("\n").map(line => JSON.parse(line)) : []
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return []
+      throw error
+    }
+  }
   return { send, steps, runtime }
 }
 
@@ -196,5 +203,35 @@ describe("Antigravity context budgeting", () => {
     const response = await send([...history, text("z".repeat(300000))])
     expect(response.status).toBe(200)
     expect((await steps()).length).toBeGreaterThan(2)
+  })
+
+  it("preserves the production 150620-byte shape by splitting the latest tool result", async () => {
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "0"
+    process.env.MERIDIAN_AGY_HISTORY_STEP_BYTES = "180000"
+    process.env.MERIDIAN_AGY_HISTORY_MAX_STEPS = "20"
+    process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES = "150620"
+    const largeTool = { name: "read_report", description: "T".repeat(40000), input_schema: { type: "object", properties: { path: { type: "string" } } } }
+    const baseMessages: AgMessage[] = [
+      text("U".repeat(30000)),
+      { role: "assistant", content: [{ type: "tool_use", id: "old", name: "read_report", input: { path: "/old" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "old", content: "O".repeat(10000) }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "latest", name: "read_report", input: { path: "/latest" } }] },
+    ]
+    for (const size of [60000, 250000]) {
+      const { send, steps } = await fixture()
+      const latest = { role: "user" as const, content: [{ type: "tool_result" as const, tool_use_id: "latest", content: "N".repeat(size) }] }
+      const request = { model: "fixture-model", system: "S".repeat(30000), tools: [largeTool], messages: [...baseMessages, latest], stream: false }
+      expect(Buffer.byteLength(renderAgPrompt(request)) > 150620).toBe(true)
+      const before = (await steps()).length
+      const response = await send(request.messages, { system: request.system, tools: request.tools, stream: false })
+      expect(response.status).toBe(200)
+      const frames = (await steps()).slice(before)
+      expect(frames.length).toBeGreaterThan(1)
+      expect(frames.every(frame => Buffer.byteLength(frame.prompt) <= 180000)).toBe(true)
+      const joined = frames.map(frame => frame.prompt).join("\n")
+      expect(joined).toContain("U".repeat(30000))
+      expect((joined.match(/N/g) ?? []).length).toBeGreaterThan(size - 1000)
+      expect(joined).not.toContain("omitted by Meridian")
+    }
   })
 })

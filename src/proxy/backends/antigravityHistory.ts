@@ -123,12 +123,13 @@ export function planAgLatestContent(
   limit: number,
   tokenLimit: number,
   contextTokens?: number,
+  force = false,
 ): string[] | undefined {
   const payload = latestPayload(request)
   const latest = request.messages.at(-1)
   if (!payload || !latest) return undefined
   const latestOnly = { ...request, messages: [latest] }
-  if (fitsLatestPrompt(renderAgPrompt(latestOnly, native) + suffix, limit, tokenLimit)) return undefined
+  if (!force && fitsLatestPrompt(renderAgPrompt(latestOnly, native) + suffix, limit, tokenLimit)) return undefined
   const conservativeTotal = 9999
   let fragments = splitUtf8Payload(payload, fragment => latestPartPrompt(fragment, 1, conservativeTotal), limit, tokenLimit)
   const rebuild = (parts: string[]): string[] => {
@@ -206,7 +207,7 @@ export function planAgHistory(request: AgRequest, native: string[], suffix: stri
     finalSteps = [assertAgStep('The earlier input steps contain completed conversation history. Use it together with the current user goal and latest messages in this final step.\n\n' + renderAgPrompt(finalRequest, native) + suffix, limit, tokenLimit)]
   } catch (error) {
     if (!(error instanceof AntigravityError) || !error.message.startsWith('prompt is too long:')) throw error
-    finalSteps = planAgLatestContent(finalRequest, native, suffix, limit, tokenLimit) ?? (() => { throw error })()
+    finalSteps = planAgLatestContent(finalRequest, native, suffix, limit, tokenLimit, undefined, true) ?? (() => { throw error })()
   }
   const steps: string[] = []
   let chunk: AgMessage[] = []
