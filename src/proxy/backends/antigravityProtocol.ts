@@ -247,7 +247,7 @@ function normalizeAgRequestInput(value: unknown): { value: unknown; droppedTools
   }
   return { value: next, droppedTools: Array.from(dropped), steering }
 }
-export function parseAgRequestWithMeta(value: unknown, adaptThinkingBudgets = false, availableModels?: readonly string[]): { request: AgRequest; droppedTools: string[] } {
+export function parseAgRequestWithMeta(value: unknown, adaptThinkingBudgets = false, availableModels?: readonly string[], applyEffort = true): { request: AgRequest; droppedTools: string[] } {
   const normalized = normalizeAgRequestInput(value)
   const parsed = schema.safeParse(normalized.value)
   if (!parsed.success) throw new AntigravityError("Antigravity supports text, images, documents and adapted media; invalid or unsupported request: " + parsed.error.issues.map(i => i.path.join(".") + " " + i.message).join("; "))
@@ -266,7 +266,7 @@ export function parseAgRequestWithMeta(value: unknown, adaptThinkingBudgets = fa
     delete request[key]
   }
   if (request.betas !== undefined) throw new AntigravityError("Antigravity does not support betas")
-  applyAgEffortAndBudget(request, availableModels)
+  if (applyEffort) applyAgEffortAndBudget(request, availableModels)
   const choice = request.tool_choice
   if (choice?.type === "tool" && !request.tools.some(t => t.name === choice.name)) throw new AntigravityError("tool_choice names an unknown tool")
   if (request.tool_choice?.type === "any" && !request.tools.length) throw new AntigravityError("tool_choice any requires tools")
@@ -343,7 +343,7 @@ export async function resolveAgRequest(
   adaptThinkingBudgets: boolean,
   discoverModels: () => Promise<readonly string[]>,
 ): Promise<AgRequest> {
-  const request = parseAgRequestWithMeta(value, adaptThinkingBudgets).request
+  const request = parseAgRequestWithMeta(value, adaptThinkingBudgets, undefined, false).request
   const gemini = parseGeminiModel(request.model)
   const needsDiscovery = Boolean(gemini && ((adaptThinkingBudgets && request.thinking?.type === "enabled") || (!gemini.suffix && request.output_config?.effort !== undefined)))
   return parseAgRequestWithMeta(value, adaptThinkingBudgets, needsDiscovery ? await discoverModels() : undefined).request
