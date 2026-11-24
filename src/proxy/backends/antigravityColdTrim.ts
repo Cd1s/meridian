@@ -42,7 +42,7 @@ export function renderAgColdTrim(
   let iterations = 0
   const guard = () => {
     iterations++
-    if (iterations > 4096 || Date.now() - started > 1000) throw new AntigravityError("prompt is too long: cold-history planning exceeded the safety budget; reduce the conversation")
+    if (iterations > 4096 || Date.now() - started > 3000) throw new AntigravityError("prompt is too long: cold-history planning exceeded the safety budget; reduce the conversation")
   }
   const fits = (prompt: string) =>
     (!budget.bytes || Buffer.byteLength(prompt) <= budget.bytes) &&

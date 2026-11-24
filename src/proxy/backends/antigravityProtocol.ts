@@ -519,7 +519,7 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
   let iterations = 0
   const guard = () => {
     iterations++
-    if (iterations > 4096 || Date.now() - started > 1000) throw new AntigravityError("prompt is too long: prompt trimming exceeded the planning safety budget; reduce the conversation")
+    if (iterations > 4096 || Date.now() - started > 3000) throw new AntigravityError("prompt is too long: prompt trimming exceeded the planning safety budget; reduce the conversation")
   }
   const full = renderAgPrompt(request, nativeTools) + suffix
   if (!limit || Buffer.byteLength(full) <= limit) return full

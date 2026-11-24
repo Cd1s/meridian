@@ -112,4 +112,15 @@ describe('Antigravity oversized latest request splitting', () => {
     expect(() => planAgLatestContent(request, [], '', 1, 1, 480_000, true)).toThrow('prompt is too long')
     expect(Date.now() - started).toBeLessThan(500)
   })
+
+  it('plans production-sized shapes in under 50 ms on the build host', () => {
+    const shapes: AgRequest[] = [
+      base('x'.repeat(300_000)),
+      base([{ type: 'tool_result', tool_use_id: 'bench', content: 'x'.repeat(250_000) }]),
+      { ...base('x'.repeat(60_000)), system: 's'.repeat(100_000) },
+    ]
+    const started = performance.now()
+    for (const request of shapes) expect(planAgLatestContent(request, [], '', 150_620, STEP_TOKENS, 480_000, true)).toBeDefined()
+    expect(performance.now() - started).toBeLessThan(50)
+  })
 })

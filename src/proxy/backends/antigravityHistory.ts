@@ -59,7 +59,7 @@ export const AG_HISTORY_PREFIX = 'History loading step. Store the following comp
 
 const AG_LATEST_PART_PREFIX = 'Current request part'
 const AG_PLANNING_MAX_ITERATIONS = 4096
-const AG_PLANNING_MAX_MS = 1000
+const AG_PLANNING_MAX_MS = 3000
 
 function planningGuard(label: string): () => void {
   const started = Date.now()
@@ -105,6 +105,42 @@ function latestFinalPrompt(request: AgRequest, native: string[], suffix: string,
     ],
   }
   return `The current request is split across ${total} ordered parts. This is part ${index}, the final part. Reassemble all earlier parts exactly before answering now.\n\n${renderAgPrompt(synthetic, native)}${suffix}`
+}
+
+interface PromptTemplate {
+  prefix: string
+  suffix: string
+  bytes: number
+  ascii: number
+}
+
+function asciiCount(text: string): number {
+  let count = 0
+  for (let index = 0; index < text.length; index++) if (text.charCodeAt(index) <= 0x7f) count++
+  return count
+}
+
+function promptTemplate(rendered: string, encodedSentinel: string): PromptTemplate {
+  const at = rendered.lastIndexOf(encodedSentinel)
+  if (at < 0) throw new AntigravityError('Cannot construct a deterministic latest-request prompt template')
+  const prefix = rendered.slice(0, at), suffix = rendered.slice(at + encodedSentinel.length)
+  return { prefix, suffix, bytes: Buffer.byteLength(prefix) + Buffer.byteLength(suffix), ascii: asciiCount(prefix) + asciiCount(suffix) }
+}
+
+function encodedFragment(fragment: string): string {
+  return JSON.stringify(fragment).slice(1, -1)
+}
+
+function templatePrompt(template: PromptTemplate, fragment: string): string {
+  return template.prefix + encodedFragment(fragment) + template.suffix
+}
+
+function fitsTemplate(template: PromptTemplate, fragment: string, limit: number, tokenLimit: number): boolean {
+  const encoded = encodedFragment(fragment)
+  const bytes = template.bytes + Buffer.byteLength(encoded)
+  if (limit && bytes > limit) return false
+  const ascii = template.ascii + asciiCount(encoded)
+  return Math.ceil(Math.max(bytes / 4, bytes - ascii * 0.75)) <= tokenLimit
 }
 
 function fitsLatestPrompt(prompt: string, limit: number, tokenLimit: number): boolean {
@@ -172,9 +208,11 @@ export function planAgLatestContent(
   }
   for (;;) {
     guard()
-    const prompts = rebuild(fragments)
-    const final = prompts.at(-1)!
-    if (fitsLatestPrompt(final, limit, tokenLimit)) {
+    const total = fragments.length
+    const sentinel = '\u0000MERIDIAN_LATEST_FRAGMENT_SENTINEL_7f4b\u0000'
+    const finalTemplate = promptTemplate(latestFinalPrompt(request, native, suffix, sentinel, total, total), encodedFragment(sentinel))
+    if (fitsTemplate(finalTemplate, fragments.at(-1)!, limit, tokenLimit)) {
+      const prompts = rebuild(fragments)
       if (contextTokens !== undefined && prompts.reduce((sum, prompt) => sum + estimateAgTextTokens(prompt) + 32, 0) + 8192 > contextTokens) {
         throw new AntigravityError('prompt is too long: latest request exceeds the estimated context budget; compact the conversation')
       }
@@ -184,16 +222,17 @@ export function planAgLatestContent(
     let low = 0
     let high = lastBytes.length
     let split = -1
+    const splitTotal = total + 1
+    const splitTemplate = promptTemplate(latestFinalPrompt(request, native, suffix, sentinel, splitTotal, splitTotal), encodedFragment(sentinel))
     while (low <= high) {
       guard()
       const candidate = utf8Boundary(lastBytes, Math.floor((low + high) / 2), 0)
       const suffixFragment = lastBytes.subarray(candidate).toString('utf8')
-      const candidateParts = [...fragments.slice(0, -1), lastBytes.subarray(0, candidate).toString('utf8'), suffixFragment]
       if (candidate === 0) {
         low = Math.floor((low + high) / 2) + 1
         continue
       }
-      if (fitsLatestPrompt(latestFinalPrompt(request, native, suffix, suffixFragment, candidateParts.length, candidateParts.length), limit, tokenLimit)) {
+      if (fitsTemplate(splitTemplate, suffixFragment, limit, tokenLimit)) {
         split = candidate
         high = candidate - 1
       } else {
