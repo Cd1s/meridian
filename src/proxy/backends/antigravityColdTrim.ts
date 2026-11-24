@@ -38,6 +38,12 @@ export function renderAgColdTrim(
   suffix: string,
   budget: PromptBudget,
 ): string {
+  const started = Date.now()
+  let iterations = 0
+  const guard = () => {
+    iterations++
+    if (iterations > 4096 || Date.now() - started > 1000) throw new AntigravityError("prompt is too long: cold-history planning exceeded the safety budget; reduce the conversation")
+  }
   const fits = (prompt: string) =>
     (!budget.bytes || Buffer.byteLength(prompt) <= budget.bytes) &&
     budget.estimateTokens(prompt) <= budget.tokens
@@ -55,6 +61,7 @@ export function renderAgColdTrim(
   const compact = (history: AgRequest, head = "") => {
     let bytes = budget.bytes || Buffer.byteLength(renderAgPrompt(history, native) + suffix) + Buffer.byteLength(head)
     for (let attempts = 0; attempts < 8; attempts++) {
+      guard()
       const allowed = bytes - Buffer.byteLength(head)
       if (allowed < 1) return
       let prompt: string
@@ -78,6 +85,7 @@ export function renderAgColdTrim(
   // Within a replay with omissions, suffix sizes decrease at each safe boundary.
   let lo = 1, hi = boundaries.length
   while (lo < hi) {
+    guard()
     const mid = lo + Math.floor((hi - lo) / 2)
     if (fits(render(boundaries[mid]!))) hi = mid
     else lo = mid + 1

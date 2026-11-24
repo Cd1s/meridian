@@ -515,6 +515,12 @@ function omitIn(message: AgMessage, kind: OmitKind, keep: number, min: number, p
  * limit the prompt is unchanged.
  */
 export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: string[] = [], suffix = "", limit = agPromptByteLimit()): string {
+  const started = Date.now()
+  let iterations = 0
+  const guard = () => {
+    iterations++
+    if (iterations > 4096 || Date.now() - started > 1000) throw new AntigravityError("prompt is too long: prompt trimming exceeded the planning safety budget; reduce the conversation")
+  }
   const full = renderAgPrompt(request, nativeTools) + suffix
   if (!limit || Buffer.byteLength(full) <= limit) return full
   const current = latestTypedRequest(request.messages)
@@ -533,6 +539,7 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
     { at: range(0, messages.length).filter(at => messages[at]!.role === "assistant" && !newest.has(at)), kinds: ["text"], passes: [[300, 2000], [0, 200]] },
   ]
   for (const { at, kinds, passes } of phases) for (const [keep, min] of passes) for (const kind of kinds) for (const i of at) {
+    guard()
     const next = omitIn(messages[i]!, kind, keep, min, i > current)
     if (next === messages[i]) continue
     if (!changed) { messages = [...messages]; changed = true }
@@ -547,6 +554,7 @@ export function renderAgPromptWithinLimit(request: AgRequest, nativeTools: strin
     const userIndexes = range(0, messages.length).filter(at => messages[at]!.role === "user" && at !== current)
     let cap = AG_USER_TEXT_CAP_BYTES
     while (Buffer.byteLength(render()) > limit && cap > 1024) {
+      guard()
       cap = Math.max(1024, Math.floor(cap * 0.75))
       for (const i of userIndexes) {
         const next = omitProtectedUserMessage(messages[i]!, cap)

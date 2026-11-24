@@ -105,4 +105,11 @@ describe('Antigravity oversized latest request splitting', () => {
     const larger = split(base(common + 'A'.repeat(10_000) + 'B'.repeat(150_000)))
     expect(larger[0]).toBe(first[0])
   })
+
+  it('fails fast for tiny limits and dense Unicode inputs', () => {
+    const request = base('中文🙂'.repeat(200_000))
+    const started = Date.now()
+    expect(() => planAgLatestContent(request, [], '', 1, 1, 480_000, true)).toThrow('prompt is too long')
+    expect(Date.now() - started).toBeLessThan(500)
+  })
 })
