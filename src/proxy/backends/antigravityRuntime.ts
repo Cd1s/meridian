@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
-import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
+import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, AGY_1513_INPUT_STEP_BYTES, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 import { agHistoryLimits, agContextBudget, assertAgStep, agLatestPayloadBytes, planAgHistory, planAgLatestContent } from "./antigravityHistory"
 import { estimateAgTextTokens, estimateAgTokens } from "./antigravityTokens"
 import { renderAgColdTrim } from "./antigravityColdTrim"
@@ -657,7 +657,13 @@ export class AntigravityRun {
 
 export class AntigravityRuntime {
   readonly historyLimits = agHistoryLimits()
-  readonly promptBytes = agPromptByteLimit()
+  // The deployment may retain the older 190000 setting, but agy 1.5.13
+  // accepts only 150620 bytes in one input step. Plan below the provider cap
+  // so an oversized latest request reaches the deterministic splitter.
+  readonly promptBytes = (() => {
+    const configured = agPromptByteLimit()
+    return configured === 0 ? 0 : Math.min(configured, AGY_1513_INPUT_STEP_BYTES)
+  })()
   // Exited processes leave admission maps before asynchronous workspace cleanup.
   // Keep joining them before the backend closes the shared state database.
   readonly settling = new Set<Promise<void>>()

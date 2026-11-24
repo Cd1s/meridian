@@ -17,6 +17,10 @@ async function main(inputPrompt) {
   let prompt = args[args.indexOf('-p') + 1]
   if (inputPrompt !== undefined) prompt = inputPrompt
   nativePrompts.push(prompt)
+  const maxPromptBytes = Number(process.env.AGY_FIXTURE_MAX_PROMPT_BYTES || 0)
+  if (maxPromptBytes > 0 && Buffer.byteLength(prompt) > maxPromptBytes) {
+    return emit({ event: 'result', result: { status: 'ERROR', error: `prompt is too long: ${Buffer.byteLength(prompt)} bytes > ${maxPromptBytes} maximum` } })
+  }
   if (inputPrompt !== undefined && process.env.AGY_FIXTURE_CONTEXT_LOG) {
     contextFrameIndex = (nativePrompts.length - 1) * 2
     if (process.env.AGY_FIXTURE_CONTEXT_PRIMING !== 'no-marker') {

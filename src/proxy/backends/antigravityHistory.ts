@@ -133,6 +133,15 @@ export function planAgLatestContent(
   const payload = latestPayload(request)
   const latest = request.messages.at(-1)
   if (!payload || !latest) return undefined
+  const basePrompt = renderAgPrompt({ ...request, messages: [] }, native) + suffix
+  const baseBytes = Buffer.byteLength(basePrompt)
+  const baseTokens = estimateAgTextTokens(basePrompt)
+  if (limit && baseBytes > limit) {
+    throw new AntigravityError(`prompt is too long: base prompt is ${baseBytes} bytes > ${limit} per-step input limit; the latest request cannot be split`)
+  }
+  if (baseTokens > tokenLimit) {
+    throw new AntigravityError(`prompt is too long: base prompt is estimated at ${baseTokens} tokens > ${tokenLimit} per-step token limit; the latest request cannot be split`)
+  }
   const latestOnly = { ...request, messages: [latest] }
   if (!force && fitsLatestPrompt(renderAgPrompt(latestOnly, native) + suffix, limit, tokenLimit)) return undefined
   const conservativeTotal = 9999

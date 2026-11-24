@@ -410,6 +410,8 @@ export function renderAgPrompt(request: AgRequest, nativeTools: string[] = [], o
 // so the newest messages and tool results are what disappears. Measured in UTF-8 bytes for English, JSON-heavy and
 // Chinese text alike; JSON escaping is not counted twice.
 export const AG_MAX_PROMPT_BYTES = 190_000
+/** agy 1.5.13 rejects a user-input step above this measured provider limit. */
+export const AGY_1513_INPUT_STEP_BYTES = 150_620
 export function agClientToolCallLimit(env: Record<string, string | undefined> = process.env): number {
   const raw = env.MERIDIAN_AGY_MAX_TOOL_CALLS
   if (raw === undefined || raw === "") return 256

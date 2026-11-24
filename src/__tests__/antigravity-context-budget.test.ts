@@ -234,4 +234,23 @@ describe("Antigravity context budgeting", () => {
       expect(joined).not.toContain("omitted by Meridian")
     }
   })
+
+  it("uses the agy 1.5.13 step limit when the configured limit is still 190000", async () => {
+    process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "0"
+    process.env.MERIDIAN_AGY_MAX_PROMPT_BYTES = "190000"
+    const { send, steps, runtime } = await fixture()
+    runtime.childEnv.AGY_FIXTURE_MAX_PROMPT_BYTES = "150620"
+    const request = {
+      model: "fixture-model",
+      system: "S".repeat(100000),
+      messages: [text("U".repeat(60000))],
+      tools: [],
+      stream: false,
+    }
+    expect(Buffer.byteLength(renderAgPrompt(request))).toBeGreaterThan(150620)
+    const response = await send(request.messages, { system: request.system, tools: request.tools, stream: false })
+    expect(response.status).toBe(200)
+    expect((await steps()).length).toBeGreaterThan(1)
+    expect((await steps()).every(frame => Buffer.byteLength(frame.prompt) <= 150620)).toBe(true)
+  })
 })

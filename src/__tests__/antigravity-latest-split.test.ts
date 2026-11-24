@@ -92,6 +92,13 @@ describe('Antigravity oversized latest request splitting', () => {
     expect(split(request)).toEqual(split(structuredClone(request)))
   })
 
+  it('reports an unsplittable base prompt with its measured limit', () => {
+    const request = base('latest')
+    request.system = 'S'.repeat(STEP_BYTES)
+    expect(() => planAgLatestContent(request, [], '', STEP_BYTES, STEP_TOKENS, 480_000, true)).toThrow(`base prompt is`)
+    expect(() => planAgLatestContent(request, [], '', STEP_BYTES, STEP_TOKENS, 480_000, true)).toThrow(`${STEP_BYTES} per-step input limit`)
+  })
+
   it('keeps the prefix of earlier split steps stable when only the latest content grows', () => {
     const common = 'prefix-' + 'p'.repeat(220_000)
     const first = split(base(common + 'A'.repeat(10_000)))
