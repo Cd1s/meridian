@@ -317,7 +317,18 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const followup = { ...request, stream: true, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "done" }] }] }
     const response = await send(followup)
     expect(response.status).toBe(200)
-    expect(await response.text()).toContain("FINAL_AFTER_TOOL_TEXT")
+    const wire = await response.text()
+    expect(wire.match(/FINAL_AFTER_TOOL_TEXT/g) ?? []).toHaveLength(1)
+  })
+  it("deduplicates final indexed response text for non-streaming replies", async () => {
+    const { send } = fixture({ reuseConversations: true })
+    const request = { ...initial("FINAL_AFTER_TOOL"), stream: false }
+    const first = await decode(await send(request))
+    const call = first.content.find(block => block.type === "tool_use")!
+    const response = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "done" }] }] })
+    expect(response.status).toBe(200)
+    const answer = await decode(response)
+    expect(answer.content.filter(block => block.type === "text").map(block => block.text)).toEqual(["FINAL_AFTER_TOOL_TEXT"])
   })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
     const { send } = fixture()

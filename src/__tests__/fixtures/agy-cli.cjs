@@ -215,7 +215,7 @@ async function main(inputPrompt) {
   if (nativePrompts[0]?.includes('FINAL_AFTER_TOOL') && nativePrompts.length > 1) {
     emit({ event: 'step_update', step_update: { conversation_id: '', step_type: 'agent_response', step_index: 3, state: 'ACTIVE', text_delta: 'FINAL_AFTER_TOOL_TEXT' } })
     emit({ event: 'step_update', step_update: { conversation_id: '', step_type: 'agent_response', step_index: 3, state: 'DONE', usage: { input_tokens: 120, output_tokens: 4 } } })
-    return emit({ event: 'result', result: { status: 'SUCCESS' } })
+    return emit({ event: 'result', result: { status: 'SUCCESS', response: 'FINAL_AFTER_TOOL_TEXT' } })
   }
   const history = JSON.parse(prompt.split('Client conversation:\n').at(-1))
   const lastContent = history.at(-1).content
@@ -229,7 +229,7 @@ async function main(inputPrompt) {
     if (prompt.includes('FINAL_AFTER_TOOL')) {
       emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: 3, state: 'ACTIVE', text_delta: 'FINAL_AFTER_TOOL_TEXT' } })
       emit({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: 3, state: 'DONE', usage: { input_tokens: 120, output_tokens: 4 } } })
-      return emit({ event: 'result', result: { status: 'SUCCESS' } })
+      return emit({ event: 'result', result: { status: 'SUCCESS', response: 'FINAL_AFTER_TOOL_TEXT' } })
     }
     if (prompt.includes('FAIL_CONTINUATION_504')) { setInterval(() => {}, 1000); return }
     if (prompt.includes('FAIL_CONTINUATION')) {

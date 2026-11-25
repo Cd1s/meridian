@@ -130,6 +130,8 @@ export class AntigravityRun {
   private replayInputIndex?: number
   private replaySeenIndex = -1
   private replayFinalText = false
+  private streamedResponseStep?: number
+  private streamedResponseText = ""
   private latestSplit = false
   private readonly textCursor = new AgTextCursor()
   private loggedIgnoredText = false
@@ -170,6 +172,19 @@ export class AntigravityRun {
     const schemas = new AgSchemaCompiler()
     for (const tool of request.tools) this.toolValidators.set(tool.name, schemas.compile(tool.input_schema, `Tool ${tool.name}`))
     if (request.output_config?.format) this.outputValidator = schemas.compile(request.output_config.format.schema, "output_config.format.schema")
+  }
+  private recordStreamedResponseText(stepIndex: number | undefined, text: string): void {
+    const key = stepIndex ?? this.textCursor.after
+    if (this.streamedResponseStep !== key) {
+      this.streamedResponseStep = key
+      this.streamedResponseText = ""
+    }
+    this.streamedResponseText += text
+  }
+  private missingResponseText(response: string): string {
+    if (!this.streamedResponseText) return response
+    if (response.startsWith(this.streamedResponseText)) return response.slice(this.streamedResponseText.length)
+    return ""
   }
   private get promptSuffix(): string {
     return this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : ""
@@ -388,6 +403,7 @@ export class AntigravityRun {
           }
           if ((step?.step_type === "tool" || step?.step_type === "subagent") && step.tool_name && agNativeTools(this.runtime.options).includes(step.tool_name)) this.runtime.recordNative({ runId: this.id, name: step.tool_name, state: step.state ?? "unknown", timestamp: Date.now() })
           if (textAllowed && step?.step_type === "agent_response" && step.text_delta && !this.request.output_config?.format) {
+            this.recordStreamedResponseText(step.step_index, step.text_delta)
             if (step.text_delta.trim()) this.replayFinalText = true
             this.queue.push({ kind: "text", text: step.text_delta })
           }
@@ -395,8 +411,11 @@ export class AntigravityRun {
           if (step?.state === "DONE" && step.usage) this.queue.push({ kind: "usage", input: step.usage.input_tokens ?? 0, output: step.usage.output_tokens ?? 0, cache: step.usage.cache_read_tokens ?? 0 })
           if (event.event === "result" && event.result) {
             if (textAllowed && event.result.response && !this.request.output_config?.format) {
-              this.replayFinalText = true
-              this.queue.push({ kind: "text", text: event.result.response })
+              const missing = this.missingResponseText(event.result.response)
+              if (missing) {
+                this.replayFinalText = true
+                this.queue.push({ kind: "text", text: missing })
+              }
             }
             this.markTiming("result")
             if (agInvocationLimit(JSON.parse(line), event.result) && this.lastActionWasClientTool && !this.replayFinalText) {
