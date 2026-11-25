@@ -572,10 +572,24 @@ export class AntigravityRun {
       Object.assign(this.request, request)
       this.history = request.messages
       this.terminal = false; this.idle = false; this.outputBytes = 0
-      this.steps = []; this.stepIndex = 0
-      const prompt = assertAgStep(renderAgPrompt({ ...request, messages: delta }, agNativeTools(this.runtime.options)) + this.promptSuffix, this.runtime.promptBytes, this.runtime.historyLimits.stepTokens)
-      this.checkContext(prompt, request.max_tokens)
-      this.writeInput(prompt)
+      this.steps = []; this.stepIndex = 0; this.replayInputIndex = undefined; this.replaySeenIndex = -1
+      this.latestSplit = false
+      const continuationRequest = { ...request, messages: delta }
+      const native = agNativeTools(this.runtime.options)
+      const maxTokens = Math.min(this.runtime.historyLimits.stepTokens, this.runtime.contextBudget(request.model) - (request.max_tokens ?? 8192) - 32)
+      if (maxTokens < 1) throw new AntigravityError("prompt is too long: output reserve exceeds the estimated context budget")
+      const fullPrompt = renderAgPrompt(continuationRequest, native) + this.promptSuffix
+      if ((!this.runtime.promptBytes || Buffer.byteLength(fullPrompt) <= this.runtime.promptBytes) && estimateAgTextTokens(fullPrompt) <= maxTokens) {
+        this.steps = [fullPrompt]
+      } else {
+        const split = planAgLatestContent(continuationRequest, native, this.promptSuffix, this.runtime.promptBytes, maxTokens, this.runtime.contextBudget(request.model), true)
+        if (!split) throw new AntigravityError("prompt is too long: live tool continuation could not be split")
+        this.steps = split
+        this.latestSplit = this.steps.length > 1
+      }
+      this.textCursor.begin(this.steps.length > 1)
+      if (this.loadingHistory) await writeFile(join(this.workspace!, "history-loading"), "", { mode: 0o600 })
+      this.writeReplayStep()
       this.runtime.reused++
     } catch (error) {
       this.abort(error instanceof Error ? error : new Error(String(error)))
@@ -607,7 +621,7 @@ export class AntigravityRun {
     for (const result of results) prepared.push(await this.attachments!.toolResult(result))
     const messages = await this.attachments!.messages(clientMessages)
     if (this.stopped || results.some(result => !this.pending.has(result.tool_use_id))) throw new AntigravityError("Tool result was not requested by this turn", 409)
-    const batch = assertAgStep(JSON.stringify({ results: prepared, messages }), this.runtime.promptBytes, this.runtime.historyLimits.stepTokens)
+    const batch = JSON.stringify({ results: prepared, messages })
     this.checkContext(batch, this.request.max_tokens)
     this.writtenTokens += estimateAgTextTokens(batch) + 32
     clearTimeout(this.pendingTimer)

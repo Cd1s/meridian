@@ -330,6 +330,14 @@ describe.skipIf(process.platform === "win32")("Antigravity HTTP/CLI integration"
     const answer = await decode(response)
     expect(answer.content.filter(block => block.type === "text").map(block => block.text)).toEqual(["FINAL_AFTER_TOOL_TEXT"])
   })
+  it("splits an oversized live tool continuation before sending it", async () => {
+    const { send } = fixture({ reuseConversations: true })
+    const request = initial("NEXT_TOOL")
+    const first = await decode(await send(request))
+    const call = first.content.find(block => block.type === "tool_use")!
+    const response = await send({ ...request, messages: [...request.messages, { role: "assistant", content: first.content }, { role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "x".repeat(520000) }] }] })
+    expect(response.status).toBe(200)
+  })
   it("preserves UTF-8 tool arguments split across MCP network chunks", async () => {
     const { send } = fixture()
     const request = initial("UNICODE_CHUNKS")
