@@ -159,15 +159,15 @@ describe("Antigravity context budgeting", () => {
     })
   }
 
-  it("rejects a dense warm input that fits the byte guard but exceeds the step estimate", async () => {
+  it("splits a dense warm input that fits the byte guard but exceeds the step estimate", async () => {
     const { send, steps } = await fixture()
     expect((await send([text("SKIP_TOOLS first")])).status).toBe(200)
     const result = await send([text("SKIP_TOOLS first"), assistant("READY"), text("\u6f22".repeat(20000))])
-    expect(result.status).toBe(400)
-    expect(await steps()).toHaveLength(1)
+    expect(result.status).toBe(200)
+    expect((await steps()).length).toBeGreaterThan(2)
   })
 
-  it("rejects an oversized client tool result before the CLI can receive it", async () => {
+  it("splits an oversized client tool result instead of sending it as one step", async () => {
     const { send } = await fixture()
     const messages = [text("Run lookup")]
     const first = await send(messages)
@@ -177,8 +177,7 @@ describe("Antigravity context budgeting", () => {
     const result = await send([...messages, { role: "assistant", content: reply.content }, {
       role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "\u6f22".repeat(20000) }],
     }])
-    expect(result.status).toBe(400)
-    expect(await result.text()).toContain("estimated")
+    expect(result.status).toBe(200)
   })
 
   it("splits an oversized restored latest request before starting the CLI process", async () => {

@@ -18,6 +18,11 @@ import { createInterface } from "node:readline"
 import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, AGY_1513_INPUT_STEP_BYTES, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
 import { agHistoryLimits, agContextBudget, assertAgStep, agLatestPayloadBytes, planAgHistory, planAgLatestContent } from "./antigravityHistory"
+
+/** agy release whose probes, model catalog and context windows this build validates. */
+export const AG_VALIDATED_CLI_VERSION = "1.5.17"
+/** Default agy auto-compaction threshold: the whole model window, so the client decides when to compact. */
+export const AG_DEFAULT_AUTO_COMPACT_OVERRIDE = "100%"
 import { estimateAgTextTokens, estimateAgTokens } from "./antigravityTokens"
 import { renderAgColdTrim } from "./antigravityColdTrim"
 import { AgTextCursor, agTextEventShape } from "./antigravityTextCursor"
@@ -856,6 +861,9 @@ export class AntigravityRuntime {
   } catch (error) { this.state?.close(); throw error }
   this.childEnv = { ...process.env }
   for (const key of Object.keys(this.childEnv)) if (/^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_GENAI_USE_.*|GOOGLE_GEMINI_BASE_URL|ANTHROPIC_.*|OPENAI_.*|OPENROUTER_.*|AZURE_OPENAI_.*|MERIDIAN_API_KEY)$/.test(key)) delete this.childEnv[key]
+  // agy 1.5.17 compacts server-side at its default checkpoint (512K for Gemini) unless overridden.
+  // The client owns compaction in passthrough, so let agy keep the full model window by default.
+  if (!this.childEnv.AGY_CLI_AUTO_COMPACT_OVERRIDE) this.childEnv.AGY_CLI_AUTO_COMPACT_OVERRIDE = AG_DEFAULT_AUTO_COMPACT_OVERRIDE
 }
   record(exchange: AgExchange, persist = true): void {
     if (persist) try { this.state?.put('exchanges', exchange.requestId, '', JSON.stringify(exchange), Date.now() + 30 * 86400000, 10000, 8 * 1024 * 1024) } catch (error) { this.stateError = String(error) }
@@ -1001,9 +1009,9 @@ export class AntigravityRuntime {
     const options = { env: this.childEnv, signal: this.shutdown.signal }
     this.cliVersion = (await readAgProbe(this.executable, "version", options)).trim()
     // Validate the binary before asking it to inspect subscription configuration.
-    if (this.cliVersion !== "1.5.13") throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy 1.5.13. Validate a CLI upgrade before updating the compatibility gate.`)
+    if (this.cliVersion !== AG_VALIDATED_CLI_VERSION) throw new Error(`Unsupported agy version ${this.cliVersion}; this Meridian build validates agy ${AG_VALIDATED_CLI_VERSION}. Validate a CLI upgrade before updating the compatibility gate.`)
     const config = await readAgProbe(this.executable, "configuration", options)
-    // agy 1.5.5 and 1.5.13 print the effective settings as a TSV block inside `response`,
+    // agy 1.5.5, 1.5.13 and 1.5.17 print the effective settings as a TSV block inside `response`,
     // replacing 1.2.7's command.data.config envelope. An explicit `false` credits
     // row is required: a missing or malformed row is indeterminate, not verified disabled.
     const envelope = z.object({ status: z.string(), response: z.string() }).parse(JSON.parse(config))
