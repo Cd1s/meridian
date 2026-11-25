@@ -148,13 +148,13 @@ describe("Antigravity context budgeting", () => {
       process.env.MERIDIAN_AGY_CHUNKED_HISTORY = "1"
       const { send, steps } = await fixture(mode)
       const result = await send([text("EARLIEST"), ...historicalPairs(12, "x".repeat(24000)), text("SKIP_TOOLS CURRENT_TAIL")])
-      if (mode === "rpc") {
+      if (mode === "no-marker") {
+        expect(result.status).toBe(502)
+        expect(await steps()).toHaveLength(1)
+      } else {
         expect(result.status).toBe(200)
         const reply = await result.json() as { content: { type: string; text: string }[] }
         expect(reply.content).toEqual([{ type: "text", text: "READY" }])
-      } else {
-        expect(result.status).toBe(502)
-        expect(await steps()).toHaveLength(1)
       }
     })
   }

@@ -363,7 +363,11 @@ export class AntigravityRun {
             this.outputTokens += step.usage.output_tokens ?? 0
           }
           if (this.loadingHistory) {
-            if (step?.step_type === "tool" || step?.step_type === "subagent") throw new Error("Antigravity attempted an action while loading history")
+            if (step?.step_type === "tool" || step?.step_type === "subagent") {
+              // agy can emit a native action frame while priming history. Do not expose or execute it.
+              // The terminal result still advances the replay to the current request.
+              return
+            }
             if (step?.state === "DONE" && step.usage) {
               this.primingUsage.input += step.usage.input_tokens ?? 0
               this.primingUsage.output += step.usage.output_tokens ?? 0
