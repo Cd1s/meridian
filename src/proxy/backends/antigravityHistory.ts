@@ -202,15 +202,43 @@ export function planAgLatestContent(
     return planLatestTail(request, native, suffix, limit, tokenLimit, contextTokens, force, 1)
   } catch (error) {
     const maxTail = Math.min(request.messages.length, AG_MAX_LATEST_TAIL)
-    if (!(error instanceof AntigravityError) || !PER_STEP_LIMIT.test(error.message) || maxTail < 2) throw error
+    if (!(error instanceof AntigravityError) || !PER_STEP_LIMIT.test(error.message)) throw error
+    if (maxTail < 2) { logLatestSplitFailure(request, native, suffix, limit, tokenLimit, contextTokens, 1, error); throw error }
     for (let tail = 2; ; tail++) {
       try {
-        return planLatestTail(request, native, suffix, limit, tokenLimit, contextTokens, true, tail)
+        const steps = planLatestTail(request, native, suffix, limit, tokenLimit, contextTokens, true, tail)
+        console.error(JSON.stringify({ event: 'antigravity.latest-split.folded', tail, messages: request.messages.length, steps: steps?.length }))
+        return steps
       } catch (retry) {
-        if (!(retry instanceof AntigravityError) || !PER_STEP_LIMIT.test(retry.message) || tail >= maxTail) throw retry
+        if (!(retry instanceof AntigravityError) || !PER_STEP_LIMIT.test(retry.message) || tail >= maxTail) {
+          logLatestSplitFailure(request, native, suffix, limit, tokenLimit, contextTokens, tail, retry)
+          throw retry
+        }
       }
     }
   }
+}
+
+/** Sizes and roles only, never content: enough to tell which planner path and message overflowed. */
+function logLatestSplitFailure(request: AgRequest, native: string[], suffix: string, limit: number, tokenLimit: number, contextTokens: number | undefined, tail: number, error: unknown): void {
+  try {
+    const base = renderAgPrompt({ ...request, messages: [] }, native) + suffix
+    const last = request.messages.slice(-AG_MAX_LATEST_TAIL).map(message => ({
+      role: message.role,
+      bytes: Buffer.byteLength(JSON.stringify(message.content)),
+      blocks: blocks(message).map(block => block.type),
+    }))
+    const caller = (new Error().stack ?? '').split('\n').slice(2, 5).map(line => line.trim().replace(/\(.*\//, '(')).join(' | ')
+    console.error(JSON.stringify({
+      event: 'antigravity.latest-split.failed',
+      error: error instanceof Error ? error.message : String(error),
+      messages: request.messages.length,
+      allMessagesBytes: Buffer.byteLength(JSON.stringify(request.messages)),
+      baseBytes: Buffer.byteLength(base),
+      baseTokens: estimateAgTextTokens(base),
+      limit, tokenLimit, contextTokens, tailTried: tail, last, caller,
+    }))
+  } catch { /* diagnostics must never change the outcome */ }
 }
 
 function planLatestTail(
