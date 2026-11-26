@@ -81,11 +81,15 @@ function utf8Boundary(bytes: Buffer, end: number, start: number): number {
   return boundary
 }
 
-function latestPayload(request: AgRequest): string {
+function latestPayload(request: AgRequest, tail = 1): string {
   const latest = request.messages.at(-1)
   if (!latest) return ''
-  return JSON.stringify({ role: latest.role, content: latest.content })
+  if (tail === 1) return JSON.stringify({ role: latest.role, content: latest.content })
+  return JSON.stringify(request.messages.slice(-tail).map(message => ({ role: message.role, content: message.content })))
 }
+
+/** Most newest messages folded into one split payload when the latest message alone cannot be split. */
+export const AG_MAX_LATEST_TAIL = 8
 
 export function agLatestPayloadBytes(request: AgRequest): number {
   return Buffer.byteLength(latestPayload(request))
@@ -97,14 +101,15 @@ function latestPartPrompt(fragment: string, index: number, total: number): strin
   return AG_HISTORY_PREFIX + JSON.stringify([{ role: 'user', content: [{ type: 'text', text }] }])
 }
 
-function latestFinalPrompt(request: AgRequest, native: string[], suffix: string, fragment: string, index: number, total: number): string {
+function latestFinalPrompt(request: AgRequest, native: string[], suffix: string, fragment: string, index: number, total: number, tail = 1): string {
   const latest = request.messages.at(-1)
   if (!latest) throw new AntigravityError('Cannot split an empty latest request')
+  const shape = tail === 1 ? '' : ` The reassembled JSON is an array of the newest ${tail} client messages, in order; it continues the conversation above.`
   const synthetic: AgRequest = {
     ...request,
     messages: [
-      ...request.messages.slice(0, -1),
-      { role: latest.role, content: [{ type: 'text', text: `${AG_LATEST_PART_PREFIX} ${index} of ${total}. This is the final part. Reassemble all earlier parts in order and respond now.\n\n${fragment}` }] },
+      ...request.messages.slice(0, -tail),
+      { role: latest.role, content: [{ type: 'text', text: `${AG_LATEST_PART_PREFIX} ${index} of ${total}. This is the final part. Reassemble all earlier parts in order and respond now.${shape}\n\n${fragment}` }] },
     ],
   }
   return `The current request is split across ${total} ordered parts. This is part ${index}, the final part. Reassemble all earlier parts exactly before answering now.\n\n${renderAgPrompt(synthetic, native)}${suffix}`
@@ -175,7 +180,15 @@ function splitUtf8Payload(payload: string, makePrompt: (fragment: string) => str
   return fragments
 }
 
-/** Split only the latest request payload into deterministic ordered context steps. */
+const PER_STEP_LIMIT = /per-step input limit$/
+
+/**
+ * Split the latest request payload into deterministic ordered context steps.
+ * The final step still carries every earlier message of `request`; when one of
+ * those (typically a large parallel tool_use batch just before the results)
+ * leaves no room for even an empty fragment, the newest messages are folded
+ * into the split payload, up to AG_MAX_LATEST_TAIL of them.
+ */
 export function planAgLatestContent(
   request: AgRequest,
   native: string[],
@@ -185,7 +198,32 @@ export function planAgLatestContent(
   contextTokens?: number,
   force = false,
 ): string[] | undefined {
-  const payload = latestPayload(request)
+  try {
+    return planLatestTail(request, native, suffix, limit, tokenLimit, contextTokens, force, 1)
+  } catch (error) {
+    const maxTail = Math.min(request.messages.length, AG_MAX_LATEST_TAIL)
+    if (!(error instanceof AntigravityError) || !PER_STEP_LIMIT.test(error.message) || maxTail < 2) throw error
+    for (let tail = 2; ; tail++) {
+      try {
+        return planLatestTail(request, native, suffix, limit, tokenLimit, contextTokens, true, tail)
+      } catch (retry) {
+        if (!(retry instanceof AntigravityError) || !PER_STEP_LIMIT.test(retry.message) || tail >= maxTail) throw retry
+      }
+    }
+  }
+}
+
+function planLatestTail(
+  request: AgRequest,
+  native: string[],
+  suffix: string,
+  limit: number,
+  tokenLimit: number,
+  contextTokens: number | undefined,
+  force: boolean,
+  tail: number,
+): string[] | undefined {
+  const payload = latestPayload(request, tail)
   const latest = request.messages.at(-1)
   if (!payload || !latest) return undefined
   const basePrompt = renderAgPrompt({ ...request, messages: [] }, native) + suffix
@@ -206,14 +244,14 @@ export function planAgLatestContent(
     const total = parts.length
     const prompts: string[] = []
     for (let i = 0; i < total - 1; i++) prompts.push(latestPartPrompt(parts[i]!, i + 1, total))
-    prompts.push(latestFinalPrompt(request, native, suffix, parts[total - 1]!, total, total))
+    prompts.push(latestFinalPrompt(request, native, suffix, parts[total - 1]!, total, total, tail))
     return prompts
   }
   for (;;) {
     guard()
     const total = fragments.length
     const sentinel = '\u0000MERIDIAN_LATEST_FRAGMENT_SENTINEL_7f4b\u0000'
-    const finalTemplate = promptTemplate(latestFinalPrompt(request, native, suffix, sentinel, total, total), encodedFragment(sentinel))
+    const finalTemplate = promptTemplate(latestFinalPrompt(request, native, suffix, sentinel, total, total, tail), encodedFragment(sentinel))
     if (fitsTemplate(finalTemplate, fragments.at(-1)!, limit, tokenLimit)) {
       const prompts = rebuild(fragments)
       if (contextTokens !== undefined && prompts.reduce((sum, prompt) => sum + estimateAgTextTokens(prompt) + 32, 0) + 8192 > contextTokens) {
@@ -226,7 +264,7 @@ export function planAgLatestContent(
     let high = lastBytes.length
     let split = -1
     const splitTotal = total + 1
-    const splitTemplate = promptTemplate(latestFinalPrompt(request, native, suffix, sentinel, splitTotal, splitTotal), encodedFragment(sentinel))
+    const splitTemplate = promptTemplate(latestFinalPrompt(request, native, suffix, sentinel, splitTotal, splitTotal, tail), encodedFragment(sentinel))
     while (low <= high) {
       guard()
       const candidate = utf8Boundary(lastBytes, Math.floor((low + high) / 2), 0)

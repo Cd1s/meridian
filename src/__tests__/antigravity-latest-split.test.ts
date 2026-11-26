@@ -124,3 +124,52 @@ describe('Antigravity oversized latest request splitting', () => {
     expect(performance.now() - started).toBeLessThan(50)
   })
 })
+
+describe('Antigravity latest split with a large preceding message', () => {
+  // Live tool continuation delta: the assistant's parallel tool_use batch, then its results.
+  function delta(inputBytes: number, resultBytes: number): AgRequest {
+    const calls = Array.from({ length: 5 }, (_, i) => ({ type: 'tool_use' as const, id: `toolu_p${i}`, name: 'Write', input: { file_path: `/w/f${i}.ts`, content: `INPUT-${i}-` + 'w'.repeat(inputBytes) } }))
+    return {
+      model: 'gemini-4-neon-xhigh',
+      messages: [
+        { role: 'assistant', content: calls },
+        { role: 'user', content: calls.map(c => ({ type: 'tool_result' as const, tool_use_id: c.id, content: `RESULT-${c.id}-` + 'r'.repeat(resultBytes) })) },
+      ],
+      tools: [],
+      stream: true,
+    }
+  }
+
+  it('folds the preceding tool_use batch into the split when the final step cannot fit it', () => {
+    const request = delta(40_000, 4_000)
+    // Before the fix this threw "latest request exceeds the per-step input limit".
+    const parts = planAgLatestContent(request, [], '', STEP_BYTES, STEP_TOKENS, 1_000_000, true)
+    expect(parts).toBeDefined()
+    expect(parts!.length).toBeGreaterThan(1)
+    for (const part of parts!) {
+      expect(Buffer.byteLength(part)).toBeLessThanOrEqual(STEP_BYTES)
+      expect(estimateAgTextTokens(part)).toBeLessThanOrEqual(STEP_TOKENS)
+    }
+    const joined = parts!.join('\n')
+    for (let i = 0; i < 5; i++) {
+      expect(joined).toContain(`INPUT-${i}-`)
+      expect(joined).toContain(`RESULT-toolu_p${i}-`)
+    }
+    expect(joined.indexOf('INPUT-4-')).toBeLessThan(joined.indexOf('RESULT-toolu_p0-'))
+    expect(parts!.at(-1)).toContain('array of the newest 2 client messages')
+  })
+
+  it('keeps the single-message split when the preceding message is small', () => {
+    const request = delta(100, 60_000)
+    const parts = planAgLatestContent(request, [], '', STEP_BYTES, STEP_TOKENS, 1_000_000, true)
+    expect(parts).toBeDefined()
+    expect(parts!.at(-1)).not.toContain('array of the newest')
+    expect(parts!.at(-1)).toContain('INPUT-0-')
+  })
+
+  it('still rejects when the base prompt itself exceeds the step limit', () => {
+    const request = delta(40_000, 4_000)
+    request.system = 's'.repeat(STEP_BYTES + 1)
+    expect(() => planAgLatestContent(request, [], '', STEP_BYTES, STEP_TOKENS, 1_000_000, true)).toThrow('base prompt')
+  })
+})
