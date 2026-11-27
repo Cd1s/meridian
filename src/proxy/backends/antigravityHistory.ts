@@ -341,6 +341,33 @@ function historyUnitParts(serialized: string, limit: number, tokenLimit: number)
   return fragments.map((fragment, index) => historyPartPrompt(fragment, index + 1))
 }
 
+export const AG_CONTEXT_PREFIX = 'Context loading step. Store the following client system instructions and tool descriptions. They are authoritative for every later step of this conversation. Do not act on them yet, do not answer, and do not call any tools. Reply with exactly ACK and nothing else.\n\n'
+export const AG_CONTEXT_POINTER = '[The client system instructions were loaded in the earlier context steps of this conversation. They remain authoritative: follow them exactly.]'
+const AG_TOOL_DESCRIPTION_POINTER = "See this tool's description in the earlier context steps."
+
+function clientSystemText(request: AgRequest): string {
+  return typeof request.system === 'string' ? request.system : request.system?.map(block => block.text).join('\n') ?? ''
+}
+
+/** The request as rendered once its system text and tool descriptions live in earlier context steps. */
+export function agClientContextRequest(request: AgRequest): AgRequest {
+  return {
+    ...request,
+    system: AG_CONTEXT_POINTER,
+    tools: request.tools.map(tool => tool.description ? { ...tool, description: AG_TOOL_DESCRIPTION_POINTER } : tool),
+  }
+}
+
+/** Ordered context steps carrying the client system text and tool descriptions, each within one step. */
+export function planAgClientContext(request: AgRequest, limit: number, tokenLimit: number): string[] {
+  const parts = ['Client system instructions:\n' + clientSystemText(request)]
+  const described = request.tools.filter(tool => tool.description)
+  if (described.length) parts.push('Client tool descriptions (each applies to the client tool of that name):\n' + described.map(tool => `## ${tool.name}\n${tool.description}`).join('\n\n'))
+  const make = (fragment: string, index: number) => `${AG_CONTEXT_PREFIX}Client context part ${index}. The parts concatenate in order.\n\n${fragment}`
+  const fragments = splitUtf8Payload(parts.join('\n\n'), fragment => make(fragment, 9999), limit, tokenLimit)
+  return fragments.map((fragment, index) => make(fragment, index + 1))
+}
+
 /** Plan everything before spawning: no partially loaded histories on cap/size failures. */
 export function planAgHistory(request: AgRequest, native: string[], suffix: string, limit: number, maxSteps: number, tokenLimit = 52_000): string[] {
   const full = renderAgPrompt(request, native) + suffix

@@ -17,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
 import { z } from "zod"
 import { AgEventQueue, AntigravityError, classifyAgFailure, availableAgTools, parallelAgTool, hasAgImages, blocks, agClientToolCallLimit, agPromptByteLimit, AGY_1513_INPUT_STEP_BYTES, renderAgPrompt, contractKey, historyKey, stable, type AgRequest, type AgMessage, type AgCall, type AgResult } from "./antigravityProtocol"
-import { agHistoryLimits, agContextBudget, assertAgStep, agLatestPayloadBytes, planAgHistory, planAgLatestContent } from "./antigravityHistory"
+import { agHistoryLimits, agContextBudget, assertAgStep, agLatestPayloadBytes, planAgHistory, planAgLatestContent, agClientContextRequest, planAgClientContext } from "./antigravityHistory"
 
 /** agy release whose probes, model catalog and context windows this build validates. */
 export const AG_VALIDATED_CLI_VERSION = "1.5.17"
@@ -134,6 +134,7 @@ export class AntigravityRun {
   private stepIndex = 0
   private replayInputIndex?: number
   private replaySeenIndex = -1
+  private clientContextLoaded = false
   private replayFinalText = false
   private streamedResponseStep?: number
   private streamedResponseText = ""
@@ -194,7 +195,31 @@ export class AntigravityRun {
   private get promptSuffix(): string {
     return this.runtime.options.allowNativeBrowser ? "\nFor browser work, invoke_subagent with TypeName browser and Workspace inherit. Its chrome_devtools MCP tools are enabled; ordinary self agents may not have that browser tool catalog." : ""
   }
+  /**
+   * When the client's own system text and tool descriptions leave no room in one agy input step, load them
+   * as earlier context steps once per native conversation and render later steps with a pointer instead.
+   */
+  private withClientContext(request: AgRequest, limit: number, tokenLimit: number): { request: AgRequest; pre: string[] } {
+    if (this.clientContextLoaded) return { request: agClientContextRequest(request), pre: [] }
+    const base = renderAgPrompt({ ...request, messages: [] }, agNativeTools(this.runtime.options)) + this.promptSuffix
+    // Only when the base itself is close to a full step; ordinary prompts keep their exact rendering.
+    if ((!limit || Buffer.byteLength(base) <= limit * 0.9) && estimateAgTextTokens(base) <= tokenLimit * 0.9) return { request, pre: [] }
+    return { request: agClientContextRequest(request), pre: planAgClientContext(request, limit, tokenLimit) }
+  }
   private plan(request: AgRequest): string[] {
+    const { historyLimits: limits, promptBytes } = this.runtime
+    const tokenLimit = Math.min(limits.stepTokens, this.runtime.contextBudget(request.model) - (request.max_tokens ?? 8192) - 32)
+    const { request: planned, pre } = tokenLimit > 0
+      ? this.withClientContext(request, Math.min(promptBytes || limits.stepBytes, limits.stepBytes), tokenLimit)
+      : { request, pre: [] as string[] }
+    const steps = this.planSteps(planned)
+    if (pre.length) {
+      this.clientContextLoaded = true
+      console.error(JSON.stringify({ event: "antigravity.client-context.loaded", steps: pre.length }))
+    }
+    return [...pre, ...steps]
+  }
+  private planSteps(request: AgRequest): string[] {
     const { historyLimits: limits, promptBytes } = this.runtime
     const contextTokens = this.runtime.contextBudget(request.model)
     const native = agNativeTools(this.runtime.options)
@@ -584,14 +609,20 @@ export class AntigravityRun {
       const native = agNativeTools(this.runtime.options)
       const maxTokens = Math.min(this.runtime.historyLimits.stepTokens, this.runtime.contextBudget(request.model) - (request.max_tokens ?? 8192) - 32)
       if (maxTokens < 1) throw new AntigravityError("prompt is too long: output reserve exceeds the estimated context budget")
-      const fullPrompt = renderAgPrompt(continuationRequest, native) + this.promptSuffix
+      const context = this.withClientContext(continuationRequest, this.runtime.promptBytes || this.runtime.historyLimits.stepBytes, maxTokens)
+      const renderRequest = context.request
+      const fullPrompt = renderAgPrompt(renderRequest, native) + this.promptSuffix
       if ((!this.runtime.promptBytes || Buffer.byteLength(fullPrompt) <= this.runtime.promptBytes) && estimateAgTextTokens(fullPrompt) <= maxTokens) {
-        this.steps = [fullPrompt]
+        this.steps = [...context.pre, fullPrompt]
       } else {
-        const split = planAgLatestContent(continuationRequest, native, this.promptSuffix, this.runtime.promptBytes, maxTokens, this.runtime.contextBudget(request.model), true)
+        const split = planAgLatestContent(renderRequest, native, this.promptSuffix, this.runtime.promptBytes, maxTokens, this.runtime.contextBudget(request.model), true)
         if (!split) throw new AntigravityError("prompt is too long: live tool continuation could not be split")
-        this.steps = split
-        this.latestSplit = this.steps.length > 1
+        this.steps = [...context.pre, ...split]
+      }
+      this.latestSplit = this.steps.length > 1
+      if (context.pre.length) {
+        this.clientContextLoaded = true
+        console.error(JSON.stringify({ event: "antigravity.client-context.loaded", steps: context.pre.length, live: true }))
       }
       this.textCursor.begin(this.steps.length > 1)
       if (this.loadingHistory) await writeFile(join(this.workspace!, "history-loading"), "", { mode: 0o600 })

@@ -253,3 +253,37 @@ describe("Antigravity context budgeting", () => {
     expect((await steps()).every(frame => Buffer.byteLength(frame.prompt) <= 150620)).toBe(true)
   })
 })
+
+describe("Antigravity oversized client context", () => {
+  it("loads a system prompt and tool descriptions larger than one step as context steps", async () => {
+    const { send, steps } = await fixture()
+    const system = "SYSTEM-RULE-ALPHA keep answers short. " + "Background policy text for the client. ".repeat(3200)
+    const bigTools = [{ name: "lookup", description: "TOOLDESC-BETA " + "Detailed usage notes for lookup. ".repeat(1300), input_schema: { type: "object", properties: { key: { type: "string" } } } }]
+    const first = await send([text("SKIP_TOOLS hello")], { system, tools: bigTools })
+    expect(first.status).toBe(200)
+    const written = (await steps()).map(step => step.prompt)
+    const contextSteps = written.filter(prompt => prompt.startsWith("Context loading step."))
+    expect(contextSteps.length).toBeGreaterThan(0)
+    const joined = contextSteps.join("\n")
+    expect(joined).toContain("SYSTEM-RULE-ALPHA")
+    expect(joined).toContain("TOOLDESC-BETA")
+    expect(joined.indexOf("SYSTEM-RULE-ALPHA")).toBeLessThan(joined.indexOf("TOOLDESC-BETA"))
+    const final = written.at(-1)!
+    expect(final).toContain("loaded in the earlier context steps")
+    expect(final).not.toContain("Background policy text for the client. Background policy text")
+    expect(final).toContain("SKIP_TOOLS hello")
+    for (const prompt of written) expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(150_620)
+
+    const second = await send([text("SKIP_TOOLS hello"), assistant("READY"), text("SKIP_TOOLS again")], { system, tools: bigTools })
+    expect(second.status).toBe(200)
+    for (const prompt of (await steps()).map(step => step.prompt)) expect(Buffer.byteLength(prompt)).toBeLessThanOrEqual(150_620)
+  })
+
+  it("leaves ordinary requests unchanged", async () => {
+    const { send, steps } = await fixture()
+    expect((await send([text("SKIP_TOOLS hello")], { system: "short system" })).status).toBe(200)
+    const written = (await steps()).map(step => step.prompt)
+    expect(written.some(prompt => prompt.startsWith("Context loading step."))).toBe(false)
+    expect(written.at(-1)).toContain("short system")
+  })
+})

@@ -27,7 +27,7 @@ async function main(inputPrompt) {
       emit({ event: 'step_update', step_update: { step_type: 'user_input', step_index: contextFrameIndex } })
     }
     appendFileSync(process.env.AGY_FIXTURE_CONTEXT_LOG, JSON.stringify({ pid: process.pid, prompt }) + '\n')
-    if (prompt.startsWith('History loading step.')) {
+    if (prompt.startsWith('History loading step.') || prompt.startsWith('Context loading step.')) {
       const result = spawnSync(process.execPath, ['policy.cjs'], {
         input: JSON.stringify({ toolCall: { name: 'call_mcp_tool', args: { ServerName: 'meridian_client', ToolName: 'lookup' } } }),
         encoding: 'utf8',
