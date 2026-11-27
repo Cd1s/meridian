@@ -31,7 +31,6 @@ Validated on macOS arm64 with agy **1.2.7**, Pi **0.72.1** and OpenCode V1
 | Output | Model/effort selection, forced tools and validated JSON schemas |
 | APIs | Anthropic Messages, OpenAI Chat Completions and the documented Responses subset |
 | Attachments | Images/public HTTPS images; local document, speech and video adapters |
-| YouTube context | Opt-in bounded title, description and subtitle enrichment through local `yt-dlp` |
 | Continuity | Warm reuse, eligible completed-session restoration, history replay and bounded saved-answer recovery |
 | Management | Web/macOS provider setup, separate status/quotas and shared activity/navigation |
 | Native tools | Browser/subagents through separate explicit grants |
@@ -42,15 +41,6 @@ Exact generation budgets, sampling controls and some native media/reasoning
 semantics depend on capabilities the official CLI does not expose. See the
 [complete support and recovery checklist](antigravity-support.md) for alternatives
 and the requirements to close each gap.
-
-Set `MERIDIAN_AGY_YOUTUBE_CONTEXT=1` to enrich user messages containing public
-YouTube links with bounded metadata and subtitle text. Meridian invokes the
-local executable named by `MERIDIAN_AGY_YTDLP_PATH` (default `yt-dlp`) and
-passes `MERIDIAN_AGY_YOUTUBE_PROXY` when set. It processes at most three links
-per user message, caches successful results for 24 hours, caps each transcript
-at 60,000 UTF-8 bytes, and turns fetch failures into a short context note so a
-normal text request can continue. The official CLI cannot open video URLs
-directly, so this enrichment remains opt-in.
 
 ## Start
 
