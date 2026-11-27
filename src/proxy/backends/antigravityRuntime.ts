@@ -229,6 +229,7 @@ export class AntigravityRun {
           if (historySteps.reduce((sum, step) => sum + estimateAgTextTokens(step) + 32, 0) + (request.max_tokens ?? 8192) <= contextTokens) return historySteps
         } catch (error) {
           if (!(error instanceof AntigravityError) || !error.message.startsWith("prompt is too long:")) throw error
+          console.error(JSON.stringify({ event: "antigravity.history-replay.failed", error: error.message, messages: request.messages.length }))
         }
       }
       if (splitError) throw splitError

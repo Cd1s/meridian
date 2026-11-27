@@ -330,6 +330,17 @@ function historyUnits(messages: AgMessage[]): AgMessage[][] {
   return units
 }
 
+function historyPartPrompt(fragment: string, index: number): string {
+  const text = `Oversized history entry, part ${index}. The parts of this entry arrive in consecutive history steps and concatenate in order into a JSON array of completed client messages. Store this exact fragment as context.\n\n${fragment}`
+  return AG_HISTORY_PREFIX + JSON.stringify([{ role: 'user', content: [{ type: 'text', text }] }])
+}
+
+/** A completed history unit that cannot fit one step, as ordered history steps. */
+function historyUnitParts(serialized: string, limit: number, tokenLimit: number): string[] {
+  const fragments = splitUtf8Payload(serialized, fragment => historyPartPrompt(fragment, 9999), limit, tokenLimit)
+  return fragments.map((fragment, index) => historyPartPrompt(fragment, index + 1))
+}
+
 /** Plan everything before spawning: no partially loaded histories on cap/size failures. */
 export function planAgHistory(request: AgRequest, native: string[], suffix: string, limit: number, maxSteps: number, tokenLimit = 52_000): string[] {
   const full = renderAgPrompt(request, native) + suffix
@@ -360,10 +371,17 @@ export function planAgHistory(request: AgRequest, native: string[], suffix: stri
     const unitTokens = agTextTokenWeight(serialized) - 0.5
     if (bytes + unitBytes + (chunk.length ? 1 : 0) > limit || tokens + unitTokens + (chunk.length ? 0.25 : 0) > tokenLimit) {
       if (chunk.length) steps.push(AG_HISTORY_PREFIX + JSON.stringify(chunk))
-      assertAgStep(AG_HISTORY_PREFIX + serialized, limit, tokenLimit)
-      chunk = unit
-      bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2 + unitBytes
-      tokens = agTextTokenWeight(AG_HISTORY_PREFIX) + 0.5 + unitTokens
+      if (fitsLatestPrompt(AG_HISTORY_PREFIX + serialized, limit, tokenLimit)) {
+        chunk = unit
+        bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2 + unitBytes
+        tokens = agTextTokenWeight(AG_HISTORY_PREFIX) + 0.5 + unitTokens
+      } else {
+        // One tool batch (or message) larger than a step: load it as ordered fragments.
+        steps.push(...historyUnitParts(serialized, limit, tokenLimit))
+        chunk = []
+        bytes = Buffer.byteLength(AG_HISTORY_PREFIX) + 2
+        tokens = agTextTokenWeight(AG_HISTORY_PREFIX) + 0.5
+      }
     } else {
       bytes += unitBytes + (chunk.length ? 1 : 0)
       tokens += unitTokens + (chunk.length ? 0.25 : 0)

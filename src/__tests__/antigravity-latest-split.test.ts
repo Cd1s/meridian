@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { AntigravityError, renderAgPrompt, type AgRequest } from '../proxy/backends/antigravityProtocol'
-import { planAgLatestContent } from '../proxy/backends/antigravityHistory'
+import { planAgHistory, planAgLatestContent } from '../proxy/backends/antigravityHistory'
 import { estimateAgTextTokens } from '../proxy/backends/antigravityTokens'
 
 const STEP_BYTES = 180_000
@@ -171,5 +171,51 @@ describe('Antigravity latest split with a large preceding message', () => {
     const request = delta(40_000, 4_000)
     request.system = 's'.repeat(STEP_BYTES + 1)
     expect(() => planAgLatestContent(request, [], '', STEP_BYTES, STEP_TOKENS, 1_000_000, true)).toThrow('base prompt')
+  })
+})
+
+describe('Antigravity cold replay with an oversized history entry', () => {
+  // Shape of the 2026-11-27 10:49 production failure: ~117 KB base prompt, a tool batch in
+  // history that alone exceeds one step, and a latest batch of 13 tool results (~158 KB).
+  function incident(): AgRequest {
+    const batch = (tag: string, n: number, bytes: number) => {
+      const calls = Array.from({ length: n }, (_, i) => ({ type: 'tool_use' as const, id: `toolu_${tag}${i}`, name: 'Read', input: { file_path: `/w/${tag}${i}.ts` } }))
+      return [
+        { role: 'assistant' as const, content: calls },
+        { role: 'user' as const, content: calls.map(c => ({ type: 'tool_result' as const, tool_use_id: c.id, content: `${tag.toUpperCase()}-RESULT-${c.id}-` + 'x'.repeat(bytes) })) },
+      ]
+    }
+    return {
+      model: 'gemini-4-neon-xhigh',
+      system: 'SYSTEM-' + 's'.repeat(110_000),
+      messages: [
+        { role: 'user', content: 'GOAL: review the workspace and fix the failing build.' },
+        ...batch('old', 6, 30_000),
+        ...batch('mid', 2, 3_000),
+        ...batch('new', 13, 12_000),
+      ],
+      tools: [],
+      stream: true,
+    }
+  }
+
+  it('loads a history tool batch larger than one step as ordered fragments', () => {
+    const steps = planAgHistory(incident(), [], '', 150_620, 12, 52_000)
+    for (const step of steps) {
+      expect(Buffer.byteLength(step)).toBeLessThanOrEqual(150_620)
+      expect(estimateAgTextTokens(step)).toBeLessThanOrEqual(52_000)
+    }
+    const joined = steps.join('\n')
+    expect(joined).toContain('Oversized history entry, part 1')
+    expect(joined).toContain('Oversized history entry, part 2')
+    for (const id of ['toolu_old0', 'toolu_old5', 'toolu_mid1', 'toolu_new0', 'toolu_new12']) expect(joined).toContain(id)
+    expect(joined.indexOf('OLD-RESULT-toolu_old0')).toBeLessThan(joined.indexOf('OLD-RESULT-toolu_old5'))
+    expect(joined.indexOf('OLD-RESULT-toolu_old5')).toBeLessThan(joined.indexOf('MID-RESULT-toolu_mid0'))
+    expect(steps.at(-1)).toContain('GOAL: review the workspace')
+    expect(steps.at(-1)).toContain('SYSTEM-')
+  })
+
+  it('still honours the step cap', () => {
+    expect(() => planAgHistory(incident(), [], '', 150_620, 3, 52_000)).toThrow('input steps')
   })
 })
