@@ -169,9 +169,12 @@ function splitUtf8Payload(payload: string, makePrompt: (fragment: string) => str
     end = utf8Boundary(bytes, end, start)
     if (end <= start) throw new AntigravityError('prompt is too long: one latest-request fragment exceeds the per-step input limit')
     let fragment = bytes.subarray(start, end).toString('utf8')
-    while (!fitsLatestPrompt(makePrompt(fragment), limit, tokenLimit) && end > start + 1) {
+    for (let prompt = makePrompt(fragment); !fitsLatestPrompt(prompt, limit, tokenLimit) && end > start + 1; prompt = makePrompt(fragment)) {
       guard()
-      end = utf8Boundary(bytes, start + Math.floor((end - start) * 0.9), start)
+      // Jump close to the token budget in one step for dense text, then shrink by 10%.
+      const tokens = estimateAgTextTokens(prompt)
+      const ratio = tokens > tokenLimit ? Math.max(0.05, Math.min(0.9, (tokenLimit / tokens) * 0.97)) : 0.9
+      end = utf8Boundary(bytes, start + Math.floor((end - start) * ratio), start)
       if (end <= start) break
       fragment = bytes.subarray(start, end).toString('utf8')
     }
