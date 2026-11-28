@@ -159,7 +159,9 @@ function splitUtf8Payload(payload: string, makePrompt: (fragment: string) => str
   const bytes = Buffer.from(payload, 'utf8')
   const fragments: string[] = []
   const guard = planningGuard('latest-request splitting')
-  const maxFragmentBytes = Math.max(1, Math.min(limit || Number.MAX_SAFE_INTEGER, tokenLimit) - 4096)
+  // Start from the byte budget; the loop below shrinks a fragment until its token estimate also fits.
+  // (Capping by tokenLimit as bytes made ASCII fragments ~3x smaller than a step allows.)
+  const maxFragmentBytes = Math.max(1, (limit || Math.max(tokenLimit * 4, 4096)) - 4096)
   let start = 0
   while (start < bytes.length) {
     guard()

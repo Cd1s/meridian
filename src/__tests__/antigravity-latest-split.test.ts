@@ -219,3 +219,35 @@ describe('Antigravity cold replay with an oversized history entry', () => {
     expect(() => planAgHistory(incident(), [], '', 150_620, 3, 52_000)).toThrow('input steps')
   })
 })
+
+describe('Antigravity split fragment sizing', () => {
+  it('fills a step with ASCII history fragments instead of token-as-byte sized ones', () => {
+    const big = 'ascii text for a large tool result. '.repeat(30_000) // ~1.08 MB ASCII
+    const request: AgRequest = {
+      model: 'gemini-4-neon-xhigh',
+      messages: [
+        { role: 'user', content: 'GOAL: summarise the file.' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_big', name: 'Read', input: { file_path: '/w/big.txt' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_big', content: big }] },
+        { role: 'assistant', content: 'Read it.' },
+        { role: 'user', content: 'Now summarise.' },
+      ],
+      tools: [],
+      stream: true,
+    }
+    const steps = planAgHistory(request, [], '', 150_620, 40, 52_000)
+    for (const step of steps) {
+      expect(Buffer.byteLength(step)).toBeLessThanOrEqual(150_620)
+      expect(estimateAgTextTokens(step)).toBeLessThanOrEqual(52_000)
+    }
+    // ~1.08 MB at up to ~146 KB per fragment needs about 8 steps; token-as-byte sizing needed ~23.
+    expect(steps.length).toBeLessThanOrEqual(12)
+  })
+
+  it('keeps CJK fragments within the token budget', () => {
+    const cjk = '漢字文本'.repeat(60_000) // 720 KB, about one token per byte by estimate
+    const parts = planAgLatestContent(base(cjk), [], '', 150_620, 52_000, 1_000_000, true)!
+    for (const part of parts) expect(estimateAgTextTokens(part)).toBeLessThanOrEqual(52_000)
+    expect(parts.join('')).toContain('漢字文本'.repeat(100))
+  })
+})
